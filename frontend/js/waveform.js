@@ -43,12 +43,32 @@ class RGBWaveform {
   loadTrack(trackData) {
     this.trackData = trackData;
     this.currentTime = 0;
-    // Ensure waveform exists or synthesize fallback immediately
-    if (this.trackData && (!this.trackData.waveform || !this.trackData.waveform.overall || this.trackData.waveform.overall.length === 0)) {
-      this.trackData.waveform = this.synthesizeWaveform(
-        this.trackData.duration || 180,
-        this.trackData.bpm || 128
-      );
+    if (this.trackData) {
+      // Ensure waveform exists or synthesize fallback immediately (800 bins)
+      if (!this.trackData.waveform || !this.trackData.waveform.overall || this.trackData.waveform.overall.length === 0) {
+        this.trackData.waveform = this.synthesizeWaveform(
+          this.trackData.duration || 180,
+          this.trackData.bpm || 128
+        );
+      }
+      // Ensure beatgrid exists or synthesize fallback immediately
+      if (!this.trackData.beat_times || this.trackData.beat_times.length === 0) {
+        const dur = this.trackData.duration || 180;
+        const bpm = this.trackData.bpm || 128;
+        const spb = 60.0 / Math.max(60, bpm);
+        const beats = [];
+        const downbeats = [];
+        const phrases = [];
+        for (let b = 0; b < Math.floor(dur / spb); b++) {
+          const bt = Math.round(b * spb * 1000) / 1000;
+          beats.push(bt);
+          if (b % 4 === 0) downbeats.push(bt);
+          if (b % 64 === 0) phrases.push(bt);
+        }
+        this.trackData.beat_times = beats;
+        this.trackData.downbeat_times = downbeats;
+        this.trackData.phrase_16_times = phrases;
+      }
     }
     this.draw();
   }
@@ -105,7 +125,15 @@ class RGBWaveform {
       mid.push(Math.round(Math.min(1.0, (snare * 0.75 + macro * 0.5)) * 1000) / 1000);
       high.push(Math.round(Math.min(1.0, (hihat * 0.7 + macro * 0.3)) * 1000) / 1000);
     }
-    return { overall, low, mid, high };
+    return {
+      overall,
+      low,
+      mid,
+      high,
+      low_red: low,
+      mid_green: mid,
+      high_blue: high
+    };
   }
 
   setupEvents() {
@@ -304,9 +332,9 @@ class RGBWaveform {
       if (x + binPixelWidth < 0 || x > w) continue;
 
       const tot = wf.overall[i] || 0;
-      const r = wf.low_red[i] || 0;
-      const g = wf.mid_green[i] || 0;
-      const b = wf.high_blue[i] || 0;
+      const r = (wf.low_red ? wf.low_red[i] : (wf.low ? wf.low[i] : 0)) || 0;
+      const g = (wf.mid_green ? wf.mid_green[i] : (wf.mid ? wf.mid[i] : 0)) || 0;
+      const b = (wf.high_blue ? wf.high_blue[i] : (wf.high ? wf.high[i] : 0)) || 0;
 
       const barH = Math.max(2, tot * maxBarH);
 
