@@ -1,14 +1,22 @@
 /**
- * waveform.js - Pioneer Rekordbox 3-Band RGB Dynamic Waveform Visualizer
- * Features:
- * - Real-Time 60 FPS Continuous Scrolling Waveform under Center Playhead (50%)
- * - 3-Band RGB Frequency Separation (Deep Bass Red, Mid Vocal Green, High Air Blue)
- * - Dynamic Beatgrid Tracking (Quarter Beats, Downbeat Bar Starts, 16-Bar Phrases)
- * - Cue Markers (Intro Green, Outro Red) and Transition Zone Highlight
- * - Built-in Mini Full-Track Overview Strip with Position Scrubber
- * - Lead-In (Pre-Track) and Run-Out (Post-Track) Hatch Rendering
- * - Seamless Zoom (0.5x, 1.0x, 1.5x, 2.0x, 3.0x, 4.0x) and Full Overview Mode
- * - Fallback Synthesizer: Guarantees immediate rich waveform display without blank state
+ * waveform.js - Professional VirtualDJ-Style 3-Band RGB Dynamic Waveform Visualizer
+ *
+ * Distinctive VirtualDJ Characteristics:
+ * 1. High-Density Transient Spikes: Crisp 2px vertical slices with 1px dark separation slits (NO flat blocks).
+ * 2. 3-Tier Multi-Band Color Layering:
+ *    - Highs (Hats / Cymbals / Sibilance): Piercing Electric Cyan (#00f0ff) outer needles with white tips (#e0f7ff).
+ *    - Mids (Vocals / Melodies / Synths): Vibrant Neon Lime Green (#00e676) body.
+ *    - Lows (Kicks / 808 Sub): Blazing Crimson Red (#ff1744) core anchored around the center zero-crossing line.
+ * 3. Authentic VirtualDJ Beatgrid with Beat Numbers:
+ *    - Beat 1 (Downbeat): Prominent accent line + glowing deck-colored [ 1 ] badge.
+ *    - Beats 2, 3, 4: Vertical grid ticks with crisp "2", "3", "4" numbers.
+ *    - 16-Bar Phrases: Vivid purple accent lines with [16B] badge.
+ * 4. Center Playhead Needle:
+ *    - Crisp white glowing needle with top pointer (▼), bottom pointer (▲), and illuminated center pip.
+ * 5. Mini Full-Track Overview Strip:
+ *    - True 3-band energy overview with illuminated zoom window bracket and playhead scrubber.
+ * 6. High-Density Synthesizer & Sub-Sample Interpolator:
+ *    - Guarantees razor-sharp transient spikes even for fallback audio or coarse arrays.
  */
 
 class RGBWaveform {
@@ -17,14 +25,14 @@ class RGBWaveform {
     this.ctx = this.canvas ? this.canvas.getContext('2d') : null;
     this.deckNum = deckNumber;
     this.onSeek = onSeek;
-    
+
     this.trackData = null;
     this.currentTime = 0;
     this.zoom = 1.0; // 1.0x = ~16s visible, 2.0x = ~8s, 4.0x = ~4s
-    this.mode = 'scroll'; // 'scroll' (CDJ style) or 'overview' (full track)
+    this.mode = 'scroll'; // 'scroll' (VirtualDJ CDJ style) or 'overview' (full track)
     this.isDragging = false;
     this.dragMode = null; // 'scrolling' or 'overview'
-    
+
     this.transitionZone = null; // { start, duration, isOutgoing }
 
     this.setupEvents();
@@ -44,7 +52,7 @@ class RGBWaveform {
     this.trackData = trackData;
     this.currentTime = 0;
     if (this.trackData) {
-      // Ensure waveform exists or synthesize fallback immediately (800 bins)
+      // Ensure high-density waveform exists or synthesize fallback immediately (50 bins/sec)
       if (!this.trackData.waveform || !this.trackData.waveform.overall || this.trackData.waveform.overall.length === 0) {
         this.trackData.waveform = this.synthesizeWaveform(
           this.trackData.duration || 180,
@@ -86,14 +94,21 @@ class RGBWaveform {
     if (this.mode === 'overview') {
       return (this.trackData && this.trackData.duration) ? this.trackData.duration : 180.0;
     }
-    // Standard Pioneer CDJ club view: 16.0 seconds visible at 1.0x (~8 bars / 32 beats at 128 BPM)
+    // Standard VirtualDJ view: 16.0 seconds visible at 1.0x (~8 bars / 32 beats at 128 BPM)
     const baseWindow = 16.0;
     return Math.max(2.0, baseWindow / Math.max(0.25, this.zoom));
   }
 
+  /**
+   * Generates high-density (50 bins/sec) authentic VirtualDJ transients:
+   * Real exponential kick decays, snappy snares on beats 2 & 4, cyan hi-hat spikes,
+   * and musical macro structure (breaks, risers, drops).
+   */
   synthesizeWaveform(duration = 180, bpm = 128) {
-    const bins = 800;
+    const binsPerSec = 50;
+    const bins = Math.min(12000, Math.max(3600, Math.floor(duration * binsPerSec)));
     const spb = 60.0 / Math.max(60, bpm);
+
     const overall = [];
     const low = [];
     const mid = [];
@@ -101,30 +116,65 @@ class RGBWaveform {
 
     for (let i = 0; i < bins; i++) {
       const t = (i / bins) * duration;
-      const beatProgress = (t % spb) / spb;
-      
-      // Kick drum transient on beat 1 of each beat
-      const kick = beatProgress < 0.18 ? Math.cos(beatProgress * Math.PI * 2.7) : 0;
-      // Snare on offbeats
-      const snare = (beatProgress > 0.45 && beatProgress < 0.65) ? 0.65 : 0;
-      // High hat ticks
-      const hihat = (beatProgress > 0.22 && beatProgress < 0.32) || (beatProgress > 0.72 && beatProgress < 0.82) ? 0.4 : 0;
-      
-      // Macro energy envelope (intro, verse, drop, breakdown, drop 2, outro)
-      const normT = t / duration;
-      let macro = 0.55;
-      if (normT < 0.15) macro = 0.2 + (normT / 0.15) * 0.4; // Intro build
-      else if (normT < 0.45) macro = 0.85; // Drop 1
-      else if (normT < 0.55) macro = 0.35; // Breakdown
-      else if (normT < 0.85) macro = 0.95; // Peak Drop 2
-      else macro = 0.85 - ((normT - 0.85) / 0.15) * 0.6; // Outro fade
+      const beatTime = t % spb;
+      const beatProgress = beatTime / spb;
+      const beatIndex = Math.floor(t / spb);
+      const beatInBar = (beatIndex % 4) + 1; // 1, 2, 3, 4
 
-      const totVal = Math.min(1.0, Math.max(0.08, (macro * 0.6 + kick * 0.35 + snare * 0.2 + hihat * 0.15)));
+      // Macro energy envelope (intro build, drop 1, breakdown, riser, drop 2, outro)
+      const normT = t / duration;
+      let macro = 0.65;
+      let isBreakdown = false;
+
+      if (normT < 0.12) {
+        macro = 0.25 + (normT / 0.12) * 0.45; // Intro buildup
+      } else if (normT < 0.42) {
+        macro = 0.88; // Drop 1
+      } else if (normT < 0.52) {
+        macro = 0.38; // Melodic breakdown (kick cuts out)
+        isBreakdown = true;
+      } else if (normT < 0.58) {
+        macro = 0.45 + ((normT - 0.52) / 0.06) * 0.45; // Tension riser
+      } else if (normT < 0.86) {
+        macro = 0.96; // Peak drop 2
+      } else {
+        macro = 0.85 - ((normT - 0.86) / 0.14) * 0.60; // Outro
+      }
+
+      // 1. Kick Drum: Steep exponential transient on every beat (unless in breakdown)
+      let kick = 0;
+      if (!isBreakdown) {
+        // Extra punch on Beat 1 (downbeat)
+        const kickWeight = (beatInBar === 1) ? 1.0 : 0.88;
+        kick = Math.exp(-beatTime / 0.048) * kickWeight;
+      }
+
+      // 2. Snare / Clap: Sharp crack on beats 2 & 4
+      let snare = 0;
+      if (beatInBar === 2 || beatInBar === 4) {
+        snare = Math.exp(-beatTime / 0.068) * 0.85;
+      }
+
+      // 3. Hi-Hats: 16th and 8th note ticks
+      const hatCycle = beatTime % (spb / 2);
+      const hat = Math.exp(-hatCycle / 0.024) * 0.65;
+
+      // Micro acoustic jitter so each transient looks organically sculpted
+      const jitter = (Math.sin(i * 13.37 + (i % 5) * 3.14) * 0.5 + 0.5) * 0.12;
+
+      // 3-Band Frequency Calculation
+      const lVal = Math.min(1.0, Math.max(0.02, (kick * 0.92 + (isBreakdown ? 0.05 : macro * 0.22)) * (1 + jitter * 0.4)));
+      const mVal = Math.min(1.0, Math.max(0.04, (snare * 0.78 + macro * 0.52) * (1 + jitter * 0.8)));
+      const hVal = Math.min(1.0, Math.max(0.03, (hat * 0.72 + snare * 0.35 + macro * 0.32) * (1 + jitter * 1.2)));
+
+      const totVal = Math.min(1.0, Math.max(0.06, lVal * 0.85 + mVal * 0.72 + hVal * 0.55));
+
       overall.push(Math.round(totVal * 1000) / 1000);
-      low.push(Math.round(Math.min(1.0, (kick * 0.85 + macro * 0.4)) * 1000) / 1000);
-      mid.push(Math.round(Math.min(1.0, (snare * 0.75 + macro * 0.5)) * 1000) / 1000);
-      high.push(Math.round(Math.min(1.0, (hihat * 0.7 + macro * 0.3)) * 1000) / 1000);
+      low.push(Math.round(lVal * 1000) / 1000);
+      mid.push(Math.round(mVal * 1000) / 1000);
+      high.push(Math.round(hVal * 1000) / 1000);
     }
+
     return {
       overall,
       low,
@@ -134,6 +184,53 @@ class RGBWaveform {
       mid_green: mid,
       high_blue: high
     };
+  }
+
+  /**
+   * Smoothly samples the waveform at time t with sub-bin linear interpolation.
+   * If the underlying array has low resolution (< 2500 bins), applies beat-synchronized
+   * transient modulation so the waveform NEVER renders as flat blocks.
+   */
+  sampleWaveformAt(t, dur) {
+    if (!this.trackData || !this.trackData.waveform) {
+      return { tot: 0.1, r: 0.05, g: 0.05, b: 0.05 };
+    }
+    const wf = this.trackData.waveform;
+    const overall = wf.overall || [];
+    const N = overall.length;
+    if (N === 0) return { tot: 0.1, r: 0.05, g: 0.05, b: 0.05 };
+
+    const normT = Math.max(0, Math.min(1, t / dur));
+    const fIndex = normT * (N - 1);
+    const i0 = Math.floor(fIndex);
+    const i1 = Math.min(N - 1, i0 + 1);
+    const frac = fIndex - i0;
+
+    const lowArr = wf.low_red || wf.low || overall;
+    const midArr = wf.mid_green || wf.mid || overall;
+    const highArr = wf.high_blue || wf.high || overall;
+
+    let tot = (1 - frac) * overall[i0] + frac * overall[i1];
+    let r = (1 - frac) * lowArr[i0] + frac * lowArr[i1];
+    let g = (1 - frac) * midArr[i0] + frac * midArr[i1];
+    let b = (1 - frac) * highArr[i0] + frac * highArr[i1];
+
+    // Beat-synchronized transient modulation for low-resolution source arrays (< 2500 bins)
+    if (N < 2500 && this.trackData.bpm) {
+      const spb = 60.0 / this.trackData.bpm;
+      const bTime = t % spb;
+      const kickEnv = Math.exp(-bTime / 0.052);
+      const hatEnv = Math.exp(-(bTime % (spb / 2)) / 0.032);
+      const modKick = 0.65 + 0.35 * kickEnv;
+      const modHat = 0.75 + 0.25 * hatEnv;
+
+      tot = Math.min(1.0, tot * modKick);
+      r = Math.min(1.0, r * (0.35 + 0.65 * kickEnv));
+      g = Math.min(1.0, g * 0.92);
+      b = Math.min(1.0, b * modHat);
+    }
+
+    return { tot, r, g, b };
   }
 
   setupEvents() {
@@ -208,19 +305,20 @@ class RGBWaveform {
     const h = this.canvas.height;
     const ctx = this.ctx;
 
-    // Background fill
-    ctx.fillStyle = '#080a0e';
+    // Background: Deep VirtualDJ Carbon Slate
+    ctx.fillStyle = '#07090e';
     ctx.fillRect(0, 0, w, h);
 
-    const mainH = 74; // Top 74px: Main Scrolling Waveform
-    const overviewY = 74; // Bottom 16px: Mini Full-Track Overview
-    const overviewH = 16;
-    const midY = mainH / 2;
+    const mainH = 72; // Top 72px: Main Scrolling Waveform
+    const overviewY = 73; // Bottom 17px: Mini Full-Track Overview
+    const overviewH = 17;
+    const midY = 41; // Shift slightly down to leave room for VirtualDJ beat numbers at top
     const centerX = w * 0.5; // Locked center playhead line (50%)
+    const maxBarH = 29; // ~29px max height above and below center line
 
     // If no track data, draw idle grid lines
     if (!this.trackData) {
-      ctx.strokeStyle = '#151b24';
+      ctx.strokeStyle = '#131922';
       ctx.lineWidth = 1;
       for (let x = 0; x < w; x += 40) {
         ctx.beginPath();
@@ -246,7 +344,7 @@ class RGBWaveform {
       viewEnd = dur;
     }
 
-    // Helper: Map time to X coordinate on canvas
+    // Helper: Map audio time to canvas X coordinate
     const timeToX = (t) => {
       if (isScrolling) {
         return centerX + ((t - this.currentTime) / visibleDur) * w;
@@ -255,12 +353,21 @@ class RGBWaveform {
       }
     };
 
+    // Helper: Map canvas X coordinate to audio time
+    const xToTime = (x) => {
+      if (isScrolling) {
+        return this.currentTime + ((x - centerX) / w) * visibleDur;
+      } else {
+        return (x / w) * dur;
+      }
+    };
+
     // --- 1. Lead-In Pre-Track Silence (Hatched Grid) ---
     const startX = timeToX(0);
     if (startX > 0) {
-      ctx.fillStyle = 'rgba(12, 16, 24, 0.95)';
+      ctx.fillStyle = 'rgba(10, 14, 20, 0.95)';
       ctx.fillRect(0, 0, startX, mainH);
-      ctx.strokeStyle = '#1e293b';
+      ctx.strokeStyle = '#1c2533';
       ctx.lineWidth = 1;
       const step = 20;
       for (let x = (startX % step) - step; x < startX; x += step) {
@@ -285,9 +392,9 @@ class RGBWaveform {
     // --- 2. Run-Out Post-Track Silence ---
     const endX = timeToX(dur);
     if (endX < w) {
-      ctx.fillStyle = 'rgba(12, 16, 24, 0.95)';
+      ctx.fillStyle = 'rgba(10, 14, 20, 0.95)';
       ctx.fillRect(endX, 0, w - endX, mainH);
-      ctx.strokeStyle = '#1e293b';
+      ctx.strokeStyle = '#1c2533';
       ctx.lineWidth = 1;
       const step = 20;
       for (let x = endX; x < w; x += step) {
@@ -305,53 +412,56 @@ class RGBWaveform {
 
       ctx.fillStyle = '#ef4444';
       ctx.font = 'bold 9px monospace';
-      ctx.fillText('END', endX - 25, 12);
+      ctx.fillText('END', endX - 26, 12);
     }
 
-    // --- 3. Render 3-Band RGB Frequency Waveform Bars ---
-    let wf = this.trackData.waveform;
-    if (!wf || !wf.overall || wf.overall.length === 0) {
-      wf = this.synthesizeWaveform(dur, this.trackData.bpm || 128);
-      this.trackData.waveform = wf;
-    }
+    // --- 3. Render VirtualDJ Multi-Band Layered Waveform Slices ---
+    // VirtualDJ Signature Geometry: 2.0px crisp vertical transient bars + 1.0px dark slit gap
+    const sliceW = 2.0;
+    const gap = 1.0;
+    const sliceStep = sliceW + gap; // 3.0px total step per slice
 
-    const bins = wf.overall.length;
-    const dtPerBin = dur / bins;
-    const binPixelWidth = isScrolling 
-      ? Math.max(1.5, (dtPerBin / visibleDur) * w) 
-      : Math.max(1.0, w / bins);
+    for (let x = 0; x < w; x += sliceStep) {
+      const t = xToTime(x + sliceW / 2);
+      if (t < 0 || t > dur) continue;
 
-    const startBin = Math.max(0, Math.floor((viewStart / dur) * bins));
-    const endBin = Math.min(bins, Math.ceil((viewEnd / dur) * bins) + 1);
+      const sample = this.sampleWaveformAt(t, dur);
+      const tot = sample.tot;
+      const r = sample.r;
+      const g = sample.g;
+      const b = sample.b;
 
-    const maxBarH = midY - 6;
+      // Total bar height (symmetrical positive/negative)
+      const totalH = Math.max(1.5, tot * maxBarH);
 
-    for (let i = startBin; i < endBin; i++) {
-      const t = (i / bins) * dur;
-      const x = timeToX(t);
-      if (x + binPixelWidth < 0 || x > w) continue;
+      // ─── LAYER 1: High Frequencies (Electric Cyan Needle Spikes) ───
+      ctx.fillStyle = '#00f0ff';
+      ctx.fillRect(x, midY - totalH, sliceW, totalH * 2);
 
-      const tot = wf.overall[i] || 0;
-      const r = (wf.low_red ? wf.low_red[i] : (wf.low ? wf.low[i] : 0)) || 0;
-      const g = (wf.mid_green ? wf.mid_green[i] : (wf.mid ? wf.mid[i] : 0)) || 0;
-      const b = (wf.high_blue ? wf.high_blue[i] : (wf.high ? wf.high[i] : 0)) || 0;
-
-      const barH = Math.max(2, tot * maxBarH);
-
-      // Rekordbox 3-Band RGB blend
-      const redByte = Math.min(255, Math.floor((r * 0.75 + tot * 0.35) * 255 * 1.3));
-      const greenByte = Math.min(255, Math.floor((g * 0.75 + tot * 0.25) * 255 * 1.1));
-      const blueByte = Math.min(255, Math.floor((b * 0.75 + tot * 0.35) * 255 * 1.4));
-
-      ctx.fillStyle = `rgb(${redByte}, ${greenByte}, ${blueByte})`;
-      ctx.fillRect(x, midY - barH, binPixelWidth, barH * 2);
-
-      // Low frequency punch core (warm red/orange interior)
-      if (r > 0.15) {
-        const lowH = Math.max(1, r * (maxBarH * 0.55));
-        ctx.fillStyle = 'rgba(255, 45, 85, 0.85)';
-        ctx.fillRect(x, midY - lowH, binPixelWidth, lowH * 2);
+      // Glowing needle crest caps (top & bottom tips)
+      if (totalH > 6) {
+        ctx.fillStyle = '#e0f7ff';
+        ctx.fillRect(x, midY - totalH, sliceW, 1.5);
+        ctx.fillRect(x, midY + totalH - 1.5, sliceW, 1.5);
       }
+
+      // ─── LAYER 2: Mid Frequencies (Neon Lime Green / Body / Vocals) ───
+      const midRatio = Math.max(0.15, Math.min(0.92, g / Math.max(0.01, tot)));
+      const midH = Math.max(1, Math.min(totalH - 1, totalH * (0.32 + 0.68 * midRatio)));
+      ctx.fillStyle = '#00e676';
+      ctx.fillRect(x, midY - midH, sliceW, midH * 2);
+
+      // ─── LAYER 3: Bass / Kicks / 808 Sub (Blazing Crimson Red Core) ───
+      const lowRatio = Math.max(0.0, Math.min(1.0, r / Math.max(0.01, tot)));
+      if (lowRatio > 0.12) {
+        const lowH = Math.max(1, Math.min(midH - 1, totalH * (0.18 + 0.82 * lowRatio)));
+        ctx.fillStyle = '#ff1744';
+        ctx.fillRect(x, midY - lowH, sliceW, lowH * 2);
+      }
+
+      // ─── LAYER 4: VirtualDJ Center Zero-Crossing Hairline ───
+      ctx.fillStyle = 'rgba(7, 9, 14, 0.75)';
+      ctx.fillRect(x, midY - 0.5, sliceW, 1);
     }
 
     // --- 4. Transition Zone Shaded Highlight (on outgoing or incoming deck) ---
@@ -364,10 +474,10 @@ class RGBWaveform {
       if (zX2 > 0 && zX1 < w) {
         const drawX1 = Math.max(0, zX1);
         const drawX2 = Math.min(w, zX2);
-        ctx.fillStyle = 'rgba(157, 78, 221, 0.16)';
+        ctx.fillStyle = 'rgba(157, 78, 221, 0.20)';
         ctx.fillRect(drawX1, 0, drawX2 - drawX1, mainH);
 
-        ctx.strokeStyle = 'rgba(157, 78, 221, 0.8)';
+        ctx.strokeStyle = 'rgba(192, 132, 252, 0.9)';
         ctx.setLineDash([4, 4]);
         ctx.lineWidth = 1.5;
         if (zX1 >= 0 && zX1 <= w) {
@@ -378,54 +488,92 @@ class RGBWaveform {
         }
         ctx.setLineDash([]);
 
-        // Label
+        // Transition Label
         if (zX1 + 10 < w && zX2 > 10) {
-          ctx.fillStyle = '#c084fc';
+          ctx.fillStyle = '#d8b4fe';
           ctx.font = 'bold 9px monospace';
-          ctx.fillText('TRANSITION ZONE // BASS SWAP', Math.max(6, zX1 + 6), 24);
+          ctx.fillText('TRANSITION DROP WINDOW // BASS SWAP', Math.max(8, zX1 + 6), 25);
         }
       }
     }
 
-    // --- 5. Beatgrid Lines (Quarter Beats, Downbeats, 16-Bar Phrases) ---
+    // --- 5. VirtualDJ Beatgrid Lines & Beat Numbers (1, 2, 3, 4) ---
     if (this.trackData.beat_times && this.trackData.beat_times.length > 0) {
-      const downbeats = new Set(this.trackData.downbeat_times || []);
-      const phrases = new Set(this.trackData.phrase_16_times || []);
+      const downbeatSet = new Set(this.trackData.downbeat_times || []);
+      const phraseSet = new Set(this.trackData.phrase_16_times || []);
+      const beats = this.trackData.beat_times;
 
-      for (let t of this.trackData.beat_times) {
-        if (t < viewStart - 0.5 || t > viewEnd + 0.5) continue;
-        const x = timeToX(t);
-        if (x < -2 || x > w + 2) continue;
+      let beatInBar = 1;
 
-        if (phrases.has(t)) {
-          // 16-Bar Phrase Boundary: Vivid Purple
-          ctx.strokeStyle = '#c084fc';
-          ctx.lineWidth = 2;
-          ctx.beginPath();
-          ctx.moveTo(x, 0);
-          ctx.lineTo(x, mainH);
-          ctx.stroke();
+      for (let idx = 0; idx < beats.length; idx++) {
+        const t = beats[idx];
+        const isDownbeat = downbeatSet.has(t) || (idx % 4 === 0);
+        const isPhrase = phraseSet.has(t) || (idx % 64 === 0);
 
-          ctx.fillStyle = '#c084fc';
-          ctx.font = 'bold 9px monospace';
-          ctx.fillText('16B', x + 3, 10);
-        } else if (downbeats.has(t)) {
-          // Downbeat (Bar 1): Deck Accent Color (Deck 1 Cyan, Deck 2 Orange)
-          ctx.strokeStyle = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
-          ctx.lineWidth = 1.5;
-          ctx.beginPath();
-          ctx.moveTo(x, 4);
-          ctx.lineTo(x, mainH - 4);
-          ctx.stroke();
-        } else {
-          // Regular quarter beat ticks
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(x, midY - 10);
-          ctx.lineTo(x, midY + 10);
-          ctx.stroke();
+        if (isDownbeat) {
+          beatInBar = 1;
         }
+
+        if (t >= viewStart - 0.5 && t <= viewEnd + 0.5) {
+          const x = Math.round(timeToX(t));
+          if (x >= -15 && x <= w + 15) {
+            if (isPhrase) {
+              // 16-Bar Phrase: Vivid Purple full line
+              ctx.strokeStyle = '#c084fc';
+              ctx.lineWidth = 2;
+              ctx.beginPath();
+              ctx.moveTo(x, 14);
+              ctx.lineTo(x, mainH);
+              ctx.stroke();
+
+              // VirtualDJ Phrase Pill Badge at top
+              ctx.fillStyle = '#9333ea';
+              ctx.fillRect(x - 12, 1, 24, 12);
+              ctx.fillStyle = '#ffffff';
+              ctx.font = 'bold 8px -apple-system, sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('16B', x, 10);
+              ctx.textAlign = 'left';
+
+            } else if (isDownbeat) {
+              // Beat 1 (Downbeat): Deck Color Accent Line
+              const deckColor = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
+              ctx.strokeStyle = deckColor;
+              ctx.lineWidth = 1.5;
+              ctx.beginPath();
+              ctx.moveTo(x, 14);
+              ctx.lineTo(x, mainH);
+              ctx.stroke();
+
+              // VirtualDJ Downbeat [ 1 ] Badge
+              ctx.fillStyle = deckColor;
+              ctx.fillRect(x - 6, 1, 12, 12);
+              ctx.fillStyle = '#000000';
+              ctx.font = 'bold 9px -apple-system, sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('1', x, 10);
+              ctx.textAlign = 'left';
+
+            } else {
+              // Beats 2, 3, 4: Clean vertical tick + number
+              ctx.strokeStyle = 'rgba(255, 255, 255, 0.20)';
+              ctx.lineWidth = 1;
+              ctx.beginPath();
+              ctx.moveTo(x, 14);
+              ctx.lineTo(x, mainH - 2);
+              ctx.stroke();
+
+              // VirtualDJ Beat Number (2, 3, 4)
+              ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
+              ctx.font = 'bold 8px monospace';
+              ctx.textAlign = 'center';
+              ctx.fillText(String(beatInBar), x, 10);
+              ctx.textAlign = 'left';
+            }
+          }
+        }
+
+        beatInBar = (beatInBar % 4) + 1;
       }
     }
 
@@ -435,15 +583,15 @@ class RGBWaveform {
       const x = timeToX(t);
       if (x >= -10 && x <= w + 10) {
         ctx.fillStyle = '#10b981';
-        ctx.fillRect(x - 2, 0, 4, 15);
+        ctx.fillRect(x - 2, 14, 4, 14);
         ctx.beginPath();
-        ctx.moveTo(x - 6, 0);
-        ctx.lineTo(x + 6, 0);
-        ctx.lineTo(x, 8);
+        ctx.moveTo(x - 6, 14);
+        ctx.lineTo(x + 6, 14);
+        ctx.lineTo(x, 22);
         ctx.fill();
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 8px sans-serif';
-        ctx.fillText('IN', x + 4, 11);
+        ctx.fillText('IN', x + 4, 23);
       }
     }
 
@@ -452,7 +600,7 @@ class RGBWaveform {
       const x = timeToX(t);
       if (x >= -10 && x <= w + 10) {
         ctx.fillStyle = '#ef4444';
-        ctx.fillRect(x - 2, mainH - 15, 4, 15);
+        ctx.fillRect(x - 2, mainH - 16, 4, 16);
         ctx.beginPath();
         ctx.moveTo(x - 6, mainH);
         ctx.lineTo(x + 6, mainH);
@@ -460,27 +608,51 @@ class RGBWaveform {
         ctx.fill();
         ctx.fillStyle = '#ffffff';
         ctx.font = 'bold 8px sans-serif';
-        ctx.fillText('OUT', x + 4, mainH - 3);
+        ctx.fillText('OUT', x + 4, mainH - 4);
       }
     }
 
-    // --- 7. Playhead Indicators ---
+    // --- 7. VirtualDJ Center Playhead Needle ---
     if (isScrolling) {
-      // In scrolling mode, center line is playhead
-      ctx.fillStyle = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
-      // Top playhead arrow
+      ctx.shadowColor = '#ffffff';
+      ctx.shadowBlur = 6;
+
+      // Vertical White Needle
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
       ctx.beginPath();
-      ctx.moveTo(centerX - 5, 0);
-      ctx.lineTo(centerX + 5, 0);
-      ctx.lineTo(centerX, 7);
+      ctx.moveTo(centerX, 0);
+      ctx.lineTo(centerX, mainH);
+      ctx.stroke();
+
+      // Top White Pointer Triangle (pointing down ▼)
+      ctx.fillStyle = '#ffffff';
+      ctx.beginPath();
+      ctx.moveTo(centerX - 6, 0);
+      ctx.lineTo(centerX + 6, 0);
+      ctx.lineTo(centerX, 8);
+      ctx.closePath();
       ctx.fill();
 
-      // Bottom playhead arrow
+      // Bottom White Pointer Triangle (pointing up ▲)
       ctx.beginPath();
-      ctx.moveTo(centerX - 5, mainH);
-      ctx.lineTo(centerX + 5, mainH);
-      ctx.lineTo(centerX, mainH - 7);
+      ctx.moveTo(centerX - 6, mainH);
+      ctx.lineTo(centerX + 6, mainH);
+      ctx.lineTo(centerX, mainH - 8);
+      ctx.closePath();
       ctx.fill();
+
+      ctx.shadowBlur = 0;
+
+      // Illuminated Center Diamond / Pip
+      const deckColor = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
+      ctx.fillStyle = deckColor;
+      ctx.beginPath();
+      ctx.arc(centerX, midY, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1;
+      ctx.stroke();
     } else {
       // In overview mode, playhead travels across
       const playX = timeToX(this.currentTime);
@@ -499,15 +671,19 @@ class RGBWaveform {
     this.drawOverviewStrip(w, h, overviewY, overviewH);
   }
 
+  /**
+   * Renders the mini full-track overview strip along the bottom 17px
+   * in VirtualDJ 3-band colors with illuminated zoom bracket.
+   */
   drawOverviewStrip(w, h, overviewY, overviewH) {
     const ctx = this.ctx;
     const dur = (this.trackData && this.trackData.duration) ? this.trackData.duration : 180;
     const visibleDur = this.getVisibleDuration();
 
     // Strip background
-    ctx.fillStyle = '#06080d';
+    ctx.fillStyle = '#05070a';
     ctx.fillRect(0, overviewY, w, overviewH);
-    ctx.strokeStyle = '#161d27';
+    ctx.strokeStyle = '#121820';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, overviewY);
@@ -516,42 +692,57 @@ class RGBWaveform {
 
     if (!this.trackData || !this.trackData.waveform) return;
 
-    const wf = this.trackData.waveform;
-    const bins = wf.overall.length;
-    const barW = Math.max(1, w / bins);
     const midY = overviewY + (overviewH / 2);
-    const maxH = (overviewH / 2) - 1;
+    const maxH = (overviewH / 2) - 1.5;
 
-    // Mini compressed waveform
-    ctx.fillStyle = (this.deckNum === 1) ? 'rgba(0, 229, 255, 0.45)' : 'rgba(255, 140, 0, 0.45)';
-    for (let i = 0; i < bins; i++) {
-      const x = (i / bins) * w;
-      const tot = wf.overall[i] || 0;
-      const bH = Math.max(1, tot * maxH);
-      ctx.fillRect(x, midY - bH, barW, bH * 2);
+    // Mini compressed waveform in VirtualDJ 3-band colors
+    const overviewStep = 2.0;
+    for (let x = 0; x < w; x += overviewStep) {
+      const t = (x / w) * dur;
+      const sample = this.sampleWaveformAt(t, dur);
+      const totH = Math.max(1, sample.tot * maxH);
+      const lowH = Math.max(0, sample.r * maxH);
+
+      // Mid/High background bar
+      ctx.fillStyle = (this.deckNum === 1) ? 'rgba(0, 229, 255, 0.55)' : 'rgba(255, 140, 0, 0.55)';
+      ctx.fillRect(x, midY - totH, 1.5, totH * 2);
+
+      // Low kick core
+      if (lowH > 0.5) {
+        ctx.fillStyle = 'rgba(255, 23, 68, 0.85)';
+        ctx.fillRect(x, midY - lowH, 1.5, lowH * 2);
+      }
     }
 
     // Cue dots on mini overview
-    if (this.trackData.suggested_cue_intro) {
+    if (this.trackData.suggested_cue_intro !== undefined) {
       const inX = (this.trackData.suggested_cue_intro / dur) * w;
       ctx.fillStyle = '#10b981';
-      ctx.fillRect(inX - 1.5, overviewY + 2, 3, overviewH - 4);
+      ctx.fillRect(inX - 1.5, overviewY + 1, 3, overviewH - 2);
     }
-    if (this.trackData.suggested_cue_outro) {
+    if (this.trackData.suggested_cue_outro !== undefined) {
       const outX = (this.trackData.suggested_cue_outro / dur) * w;
       ctx.fillStyle = '#ef4444';
-      ctx.fillRect(outX - 1.5, overviewY + 2, 3, overviewH - 4);
+      ctx.fillRect(outX - 1.5, overviewY + 1, 3, overviewH - 2);
     }
 
-    // Visible window bracket in scrolling mode
+    // Visible window illuminated bracket in scrolling mode
     if (this.mode === 'scroll') {
       const winLeft = Math.max(0, ((this.currentTime - visibleDur / 2) / dur) * w);
       const winRight = Math.min(w, ((this.currentTime + visibleDur / 2) / dur) * w);
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.1)';
-      ctx.fillRect(winLeft, overviewY, winRight - winLeft, overviewH);
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(winLeft, overviewY, Math.max(4, winRight - winLeft), overviewH);
+      const winW = Math.max(6, winRight - winLeft);
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.fillRect(winLeft, overviewY, winW, overviewH);
+
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(winLeft, overviewY, winW, overviewH);
+
+      // Bracket handles
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(winLeft, overviewY, 2, overviewH);
+      ctx.fillRect(winLeft + winW - 2, overviewY, 2, overviewH);
     }
 
     // Current playhead position cursor on mini overview

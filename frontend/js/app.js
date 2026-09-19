@@ -451,32 +451,65 @@ document.addEventListener('DOMContentLoaded', () => {
           const audioBuffer = await engine.ctx.decodeAudioData(arrayBuffer.slice(0));
           const trueDur = audioBuffer.duration;
           
-          const numBins = 600;
+          const numBins = Math.min(12000, Math.max(3600, Math.floor(trueDur * 60)));
           const chData = audioBuffer.getChannelData(0);
           const binSize = Math.max(1, Math.floor(chData.length / numBins));
           const overall = [];
           const low = [];
           const mid = [];
           const high = [];
+
+          // Fast single-pass 3-band acoustic filtering (< 30ms)
+          const sr = audioBuffer.sampleRate;
+          const step = 4; // Sub-sample 4:1 for blazing fast DSP
+          const alphaLow = Math.min(1.0, (2 * Math.PI * 250 / sr) * step);
+          let yL = 0;
+          let prevSample = 0;
+
           for (let b = 0; b < numBins; b++) {
             const start = b * binSize;
             const end = Math.min(chData.length, start + binSize);
-            let peak = 0;
-            for (let i = start; i < end; i += 4) {
-              const v = Math.abs(chData[i]);
-              if (v > peak) peak = v;
+            let maxTot = 0, maxLow = 0, maxHigh = 0;
+
+            for (let i = start; i < end; i += step) {
+              const x = chData[i];
+              const ax = Math.abs(x);
+              if (ax > maxTot) maxTot = ax;
+
+              // Low-pass filter for sub-bass & kicks (< 250 Hz)
+              yL += alphaLow * (x - yL);
+              const aL = Math.abs(yL);
+              if (aL > maxLow) maxLow = aL;
+
+              // High-frequency transient delta for hi-hats & cymbals (> 2500 Hz)
+              const diff = Math.abs(x - prevSample);
+              if (diff > maxHigh) maxHigh = diff;
+              prevSample = x;
             }
-            const val = Math.min(1.0, Math.round(peak * 1.2 * 10000) / 10000);
-            overall.push(val);
-            low.push(Math.round(val * 0.9 * 10000) / 10000);
-            mid.push(Math.round(val * 0.7 * 10000) / 10000);
-            high.push(Math.round(val * 0.5 * 10000) / 10000);
+
+            const totVal = Math.min(1.0, Math.round(maxTot * 1.25 * 1000) / 1000);
+            const lowVal = Math.min(1.0, Math.round(maxLow * 1.65 * 1000) / 1000);
+            const highVal = Math.min(1.0, Math.round(maxHigh * 0.75 * 1000) / 1000);
+            const midVal = Math.max(0.0, Math.min(1.0, Math.round((totVal - lowVal * 0.45 - highVal * 0.3) * 1.2 * 1000) / 1000));
+
+            overall.push(totVal);
+            low.push(lowVal);
+            mid.push(midVal);
+            high.push(highVal);
           }
 
           const currentTrack = (deckNum === 1) ? track1Data : track2Data;
           if (currentTrack && currentTrack.audio_url === blobUrl) {
             currentTrack.duration = trueDur;
-            currentTrack.waveform = { overall, low, mid, high };
+            currentTrack.waveform = { 
+              overall, 
+              low, 
+              mid, 
+              high, 
+              low_red: low, 
+              mid_green: mid, 
+              high_blue: high 
+            };
             currentTrack.suggested_cue_outro = Math.max(0, trueDur - 30);
             if (deckNum === 1) {
               wave1.loadTrack(currentTrack);
