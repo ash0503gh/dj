@@ -159,6 +159,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const aiModal = document.getElementById('ai-modal');
   const btnCloseAI = document.getElementById('btn-close-ai');
   const aiRecCard = document.getElementById('ai-rec-card');
+  const jevKeyInput = document.getElementById('jev-key-input');
+  const btnSaveJevKey = document.getElementById('btn-save-jev-key');
   const geminiKeyInput = document.getElementById('gemini-key-input');
   const btnSaveGeminiKey = document.getElementById('btn-save-gemini-key');
   const aiModelSelect = document.getElementById('ai-model-select');
@@ -179,14 +181,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
   let currentAIStrategy = null;
 
-  // Load stored Gemini key and model
+  // Load stored Jev key, Gemini key, and model
+  if (jevKeyInput) {
+    jevKeyInput.value = localStorage.getItem('jev_api_key') || '';
+  }
   if (geminiKeyInput) {
     geminiKeyInput.value = localStorage.getItem('gemini_api_key') || '';
   }
   if (aiModelSelect) {
-    aiModelSelect.value = localStorage.getItem('gemini_model') || 'gemini-1.5-flash';
+    aiModelSelect.value = localStorage.getItem('ai_dj_model') || 'jev-latest';
     aiModelSelect.addEventListener('change', () => {
-      localStorage.setItem('gemini_model', aiModelSelect.value);
+      localStorage.setItem('ai_dj_model', aiModelSelect.value);
+      fetchAIStrategy();
+    });
+  }
+  if (btnSaveJevKey && jevKeyInput) {
+    btnSaveJevKey.addEventListener('click', () => {
+      const keyVal = jevKeyInput.value.trim();
+      localStorage.setItem('jev_api_key', keyVal);
+      btnSaveJevKey.textContent = 'SAVED!';
+      setTimeout(() => { btnSaveJevKey.textContent = 'SAVE'; }, 1500);
       fetchAIStrategy();
     });
   }
@@ -194,14 +208,8 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSaveGeminiKey.addEventListener('click', () => {
       const keyVal = geminiKeyInput.value.trim();
       localStorage.setItem('gemini_api_key', keyVal);
-      btnSaveGeminiKey.textContent = '✓ SAVED';
-      btnSaveGeminiKey.style.background = '#059669';
-      btnSaveGeminiKey.style.borderColor = '#34d399';
-      setTimeout(() => {
-        btnSaveGeminiKey.textContent = 'SAVE';
-        btnSaveGeminiKey.style.background = '';
-        btnSaveGeminiKey.style.borderColor = '';
-      }, 2000);
+      btnSaveGeminiKey.textContent = 'SAVED!';
+      setTimeout(() => { btnSaveGeminiKey.textContent = 'SAVE'; }, 1500);
       fetchAIStrategy();
     });
   }
@@ -799,9 +807,12 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const key = geminiKeyInput ? geminiKeyInput.value.trim() : (localStorage.getItem('gemini_api_key') || '');
-    const model = aiModelSelect ? aiModelSelect.value : (localStorage.getItem('gemini_model') || 'gemini-1.5-flash');
-    const modelLabel = (model === 'local') ? 'Local Acoustic DSP' : (model === 'gemini-1.5-pro' ? 'Gemini 1.5 Pro' : 'Gemini 1.5 Flash');
+    const jevKey = jevKeyInput ? jevKeyInput.value.trim() : (localStorage.getItem('jev_api_key') || '');
+    const geminiKey = geminiKeyInput ? geminiKeyInput.value.trim() : (localStorage.getItem('gemini_api_key') || '');
+    const model = aiModelSelect ? aiModelSelect.value : (localStorage.getItem('ai_dj_model') || 'jev-latest');
+    const modelLabel = (model === 'local') ? 'Local Acoustic DSP' : 
+                       (model.startsWith('jev') ? 'TypeSafe Jev System One (<200ms)' : 
+                       (model === 'gemini-1.5-pro' ? 'Gemini 1.5 Pro' : 'Gemini 1.5 Flash'));
 
     if (btnRefreshAI) {
       btnRefreshAI.disabled = true;
@@ -819,7 +830,8 @@ document.addEventListener('DOMContentLoaded', () => {
       form.append('file_id_1', track1Data.file_id || track1Data.filename || 'deck_1_track');
       form.append('file_id_2', track2Data.file_id || track2Data.filename || 'deck_2_track');
       form.append('direction', transitionDirection);
-      if (key) form.append('gemini_api_key', key);
+      if (jevKey) form.append('jev_api_key', jevKey);
+      if (geminiKey) form.append('gemini_api_key', geminiKey);
       form.append('model', model);
 
       // Pass full metadata payload so local tracks analyze with 100% precision
@@ -859,8 +871,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } catch (e) {
       console.warn('AI strategy fetch error:', e);
-      if (aiRationaleText) {
-        aiRationaleText.innerHTML = `<span style="color:#ef4444; font-weight:700;">Notice:</span> ${e.message}. Using Local Acoustic Engine fallback.`;
+      if (btnRefreshAI) {
+        btnRefreshAI.innerHTML = '⚠️ Retry AI Strategy';
       }
     } finally {
       setTimeout(() => {
@@ -876,7 +888,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
     if (aiRecTechnique) aiRecTechnique.textContent = st.ai_headline;
-    if (aiRecConfidence) aiRecConfidence.textContent = `${Math.round(st.confidence * 100)}% MATCH`;
+    if (aiRecConfidence) {
+      if (st.blend_score !== undefined && st.blend_score !== null) {
+        aiRecConfidence.textContent = `${st.blend_score.toFixed(0)}% BLEND`;
+      } else {
+        aiRecConfidence.textContent = `${Math.round((st.confidence || 0.95) * 100)}% MATCH`;
+      }
+    }
     if (aiRecReason) aiRecReason.textContent = st.strategic_rationale;
 
     if (aiHeadlineBox) aiHeadlineBox.textContent = st.ai_headline;

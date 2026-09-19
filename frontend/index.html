@@ -561,21 +561,29 @@
           <button id="btn-close-ai" class="btn-close">&times;</button>
         </div>
         <div class="modal-content">
-          <!-- Gemini API Key & Model Config -->
+          <!-- Jev System One & Gemini API Key & Model Config -->
           <div class="ai-config-strip">
             <div class="ai-config-item">
-              <label class="ai-lbl">GEMINI API KEY (OPTIONAL):</label>
+              <label class="ai-lbl">⚡ JEV / TYPESAFE API KEY (RECOMMENDED &bull; &lt;200ms):</label>
               <div class="ai-input-wrap">
-                <input type="password" id="gemini-key-input" placeholder="AIzaSy... (Leave blank for Local Acoustic Engine)" autocomplete="off">
+                <input type="password" id="jev-key-input" placeholder="ts_live_... (TypeSafe Jev System One)" autocomplete="off">
+                <button id="btn-save-jev-key" class="btn btn-tiny">SAVE</button>
+              </div>
+            </div>
+            <div class="ai-config-item">
+              <label class="ai-lbl">GEMINI API KEY (OPTIONAL &bull; MULTI-SECOND LLM):</label>
+              <div class="ai-input-wrap">
+                <input type="password" id="gemini-key-input" placeholder="AIzaSy... (Gemini Full LLM)" autocomplete="off">
                 <button id="btn-save-gemini-key" class="btn btn-tiny">SAVE</button>
               </div>
             </div>
             <div class="ai-config-item">
               <label class="ai-lbl">AI ENGINE MODEL:</label>
               <select id="ai-model-select" class="track-select-dropdown">
-                <option value="gemini-1.5-flash">Gemini 1.5 Flash (Ultra Fast & Smart)</option>
-                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Musical Reasoning)</option>
-                <option value="local">Local Acoustic Spectral AI (100% Offline & Free)</option>
+                <option value="jev-latest" selected>⚡ Jev System One (Fast Real-Time Decision &bull; &lt;200ms)</option>
+                <option value="local">Local Physical Acoustic Engine (Offline &bull; 0ms)</option>
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash (Conversational &bull; ~2-3s)</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Reasoning &bull; ~4-6s)</option>
               </select>
             </div>
           </div>
@@ -640,9 +648,9 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=10.0"></script>
-  <script src="/js/jog_wheel.js?v=10.0"></script>
-  <script src="/js/waveform.js?v=10.0"></script>
-  <script src="/js/app.js?v=10.0"></script>
+  <script src="/js/audio_engine.js?v=10.1"></script>
+  <script src="/js/jog_wheel.js?v=10.1"></script>
+  <script src="/js/waveform.js?v=10.1"></script>
+  <script src="/js/app.js?v=10.1"></script>
 </body>
 </html>

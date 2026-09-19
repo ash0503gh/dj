@@ -212,7 +212,8 @@ async def get_ai_strategy_endpoint(
     file_id_2: str = Form(...),
     direction: str = Form("1_to_2"),
     gemini_api_key: Optional[str] = Form(None),
-    model: str = Form("gemini-1.5-flash"),
+    jev_api_key: Optional[str] = Form(None),
+    model: str = Form("jev-latest"),
     track_1_meta: Optional[str] = Form(None),
     track_2_meta: Optional[str] = Form(None)
 ):
@@ -311,6 +312,7 @@ async def get_ai_strategy_endpoint(
         info_in=info_in,
         direction=direction,
         gemini_api_key=gemini_api_key,
+        jev_api_key=jev_api_key,
         model_name=model
     )
     return JSONResponse(content={"status": "success", "strategy": strategy})
