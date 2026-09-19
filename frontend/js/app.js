@@ -710,9 +710,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!track1Data) loadTrackIntoDeck(1, data.track_1);
         if (!track2Data) loadTrackIntoDeck(2, data.track_2);
         transitionStatusBanner.textContent = 'CLUB SET 1 LOADED: LASERPACK (DECK 1) & OVERWORLD (DECK 2). READY TO PLAY!';
+      } else {
+        transitionStatusBanner.textContent = 'LOCAL-FIRST DJ: LOAD AUDIO BY CLICKING BROWSE OR DRAGGING TRACKS ONTO DECK 1 & 2';
       }
     } catch (e) {
       console.warn('Could not auto-load default tracks:', e);
+      transitionStatusBanner.textContent = 'LOCAL-FIRST DJ: LOAD AUDIO BY CLICKING BROWSE OR DRAGGING TRACKS ONTO DECK 1 & 2';
     }
   }
   loadInitialDefaultTracks();

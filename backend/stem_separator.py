@@ -6,10 +6,10 @@ Supports:
 """
 
 import os
-import torch
 import soundfile as sf
 import numpy as np
 import librosa
+import gc
 from typing import Dict, Any, Callable, Optional
 
 def separate_with_demucs(audio_path: str, output_dir: str, progress_callback: Optional[Callable[[float, str], None]] = None) -> Dict[str, str]:
@@ -36,6 +36,7 @@ def separate_with_demucs(audio_path: str, output_dir: str, progress_callback: Op
         progress_callback(0.1, "Initializing Demucs model...")
 
     try:
+        import torch
         from demucs.pretrained import get_model
         from demucs.apply import apply_model
         
@@ -136,6 +137,10 @@ def separate_fast_spectral(audio_path: str, output_dir: str, progress_callback: 
     sf.write(stem_files['vocals'], vocals.T, sr)
     sf.write(stem_files['other'], other.T, sr)
     
+    # Explicit memory cleanup
+    del y, y_harm, y_perc, bass, vocals, drums, other
+    gc.collect()
+
     if progress_callback:
         progress_callback(1.0, "Stems ready!")
         

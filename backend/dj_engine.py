@@ -12,6 +12,7 @@ import os
 import numpy as np
 import soundfile as sf
 import librosa
+import gc
 from typing import Dict, Any, Optional
 
 from .audio_analyzer import analyze_track, check_camelot_compatibility
@@ -610,6 +611,9 @@ def render_pro_transition(
     sf.write(output_path, master_mix.T, sr, subtype='PCM_16')
     
     total_dur = master_mix.shape[1] / sr
+    del master_mix
+    gc.collect()
+
     if progress_cb: progress_cb(1.0, "Mix complete!")
     
     return {

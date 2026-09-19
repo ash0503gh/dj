@@ -9,9 +9,20 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-# Large rendered output mixes (Keep directory structure with .gitkeep)
+# Audio files - Local-first architecture (no audio files stored in repo)
+uploads/*
+!uploads/.gitkeep
+!uploads/analysis_cache.json
+stems/*
+!stems/.gitkeep
 outputs/*
 !outputs/.gitkeep
+*.wav
+*.mp3
+*.flac
+*.ogg
+*.m4a
+*.aac
 
 # Temporary test profiles and scratch
 scratch/
@@ -30,3 +41,11 @@ Thumbs.db
 # Environment and secrets
 .env
 *.local
+
+# Test scripts and QA reports
+.agents/
+full_qa_matrix_results.json
+waveform_math_results.json
+run_full_qa_suite.py
+test_live_api.py
+test_waveform_math.js

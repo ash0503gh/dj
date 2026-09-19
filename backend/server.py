@@ -7,6 +7,7 @@ import os
 import uuid
 import json
 import shutil
+import gc
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -69,38 +70,25 @@ async def get_presets():
     load_cache_from_disk()
     available_tracks = []
     for fn, data in ANALYSIS_CACHE.items():
-        available_tracks.append({
-            "file_id": fn,
-            "title": data.get("title", fn),
-            "bpm": data["bpm"],
-            "camelot": data["camelot"],
-            "key": data["key"],
-            "duration": data["duration"]
-        })
+        if os.path.exists(os.path.join(UPLOAD_DIR, fn)):
+            available_tracks.append({
+                "file_id": fn,
+                "title": data.get("title", fn),
+                "bpm": data.get("bpm", 128.0),
+                "camelot": data.get("camelot", "--"),
+                "key": data.get("key", "--"),
+                "duration": data.get("duration", 180.0)
+            })
         
-    sets = [
-        {
+    sets = []
+    if os.path.exists(os.path.join(UPLOAD_DIR, "Laserpack.mp3")) and os.path.exists(os.path.join(UPLOAD_DIR, "Overworld.mp3")):
+        sets.append({
             "id": "club_set_1",
             "name": "⚡ Club Peak-Time: Laserpack → Overworld (129 → 132 BPM)",
             "deck_1": "Laserpack.mp3",
             "deck_2": "Overworld.mp3",
             "description": "High energy club house transition with phrase-locked bass drop."
-        },
-        {
-            "id": "club_set_2",
-            "name": "🔥 Tech Groove: Club Diver → Disco Medusae (140 → 115 BPM)",
-            "deck_1": "Club_Diver.mp3",
-            "deck_2": "Disco_Medusae.mp3",
-            "description": "Dynamic tempo ramp from fast driving techno to disco house."
-        },
-        {
-            "id": "club_set_3",
-            "name": "🎹 Deep & Melodic: Deep House → Techno (123 → 129 BPM)",
-            "deck_1": "demo_track_1_deep_house.wav",
-            "deck_2": "demo_track_2_techno.wav",
-            "description": "Harmonically tuned 4/4 electronic club transition."
-        }
-    ]
+        })
     return JSONResponse(content={"status": "success", "tracks": available_tracks, "sets": sets})
 
 @app.post("/api/load-preset")
@@ -147,6 +135,16 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         file_id = f"{deck}_{clean_name.replace(' ', '_')}"
         save_path = os.path.join(UPLOAD_DIR, file_id)
         
+        # Purge prior temporary files for this deck to keep disk usage lean
+        try:
+            for existing in os.listdir(UPLOAD_DIR):
+                if existing.startswith(f"{deck}_") and existing != file_id:
+                    p = os.path.join(UPLOAD_DIR, existing)
+                    if os.path.isfile(p):
+                        os.remove(p)
+        except Exception:
+            pass
+
         with open(save_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
@@ -158,7 +156,14 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         analysis["audio_url"] = f"/api/audio/{urllib.parse.quote(file_id)}"
         
         ANALYSIS_CACHE[file_id] = analysis
+        
+        # Keep cache lean (max 10 recent items)
+        if len(ANALYSIS_CACHE) > 10:
+            for k in list(ANALYSIS_CACHE.keys())[:-10]:
+                ANALYSIS_CACHE.pop(k, None)
+
         save_cache_to_disk()
+        gc.collect()
         return JSONResponse(content={"status": "success", "track": analysis})
     except HTTPException:
         raise
@@ -367,6 +372,7 @@ async def render_mix(
         )
         result["mix_url"] = f"/api/outputs/{mix_id}"
         result["direction"] = direction
+        gc.collect()
         return JSONResponse(content={"status": "success", "mix": result})
     except Exception as e:
         import traceback
@@ -390,6 +396,7 @@ async def separate_stems_endpoint(file_id: str = Form(...), mode: str = Form("fa
             stem: f"/api/stems/{os.path.basename(path)}" 
             for stem, path in stems.items()
         }
+        gc.collect()
         return JSONResponse(content={"status": "success", "stems": stem_urls})
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -446,21 +453,31 @@ async def get_stem(filename: str):
 
 @app.post("/api/generate-demo-tracks")
 async def generate_demo_tracks_endpoint():
-    """Returns the pre-cached real club tracks for instant loading."""
+    """Returns the pre-cached tracks if present on disk, otherwise signals empty state for local selection."""
     import urllib.parse
     load_cache_from_disk()
-    t1 = dict(ANALYSIS_CACHE.get("Laserpack.mp3", {}))
-    t1["deck"] = "deck_1"
-    t1["audio_url"] = f"/api/audio/{urllib.parse.quote('Laserpack.mp3')}"
+    t1 = ANALYSIS_CACHE.get("Laserpack.mp3")
+    t2 = ANALYSIS_CACHE.get("Overworld.mp3")
+    p1 = os.path.join(UPLOAD_DIR, "Laserpack.mp3")
+    p2 = os.path.join(UPLOAD_DIR, "Overworld.mp3")
     
-    t2 = dict(ANALYSIS_CACHE.get("Overworld.mp3", {}))
-    t2["deck"] = "deck_2"
-    t2["audio_url"] = f"/api/audio/{urllib.parse.quote('Overworld.mp3')}"
-    
+    if t1 and t2 and os.path.exists(p1) and os.path.exists(p2):
+        t1_out = dict(t1)
+        t1_out["deck"] = "deck_1"
+        t1_out["audio_url"] = f"/api/audio/{urllib.parse.quote('Laserpack.mp3')}"
+        
+        t2_out = dict(t2)
+        t2_out["deck"] = "deck_2"
+        t2_out["audio_url"] = f"/api/audio/{urllib.parse.quote('Overworld.mp3')}"
+        
+        return JSONResponse(content={
+            "status": "success",
+            "track_1": t1_out,
+            "track_2": t2_out
+        })
     return JSONResponse(content={
-        "status": "success",
-        "track_1": t1,
-        "track_2": t2
+        "status": "empty",
+        "message": "Local-first mode active. Select local tracks or drop audio files onto Deck 1 and Deck 2."
     })
 
 # Mount frontend files

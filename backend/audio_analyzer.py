@@ -7,6 +7,7 @@ import numpy as np
 import librosa
 import soundfile as sf
 import os
+import gc
 from typing import Dict, Any, List, Tuple
 
 CAMELOT_MAP = {
@@ -365,6 +366,10 @@ def analyze_track(file_path: str) -> Dict[str, Any]:
     # 5. True physical acoustic profile
     acoustic_data = extract_acoustic_profile(mono, sr, duration, cue_intro, cue_outro)
     
+    # Explicit memory cleanup
+    del y, mono
+    gc.collect()
+
     return {
         "filename": os.path.basename(file_path),
         "duration": round(duration, 2),
