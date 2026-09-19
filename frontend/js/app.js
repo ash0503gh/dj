@@ -732,15 +732,28 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/ai-status');
       const data = await res.json();
-      if (data.status === 'success' && data.jev_configured) {
-        if (jevKeyInput && !jevKeyInput.value) {
-          jevKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
+      if (data.status === 'success') {
+        if (data.jev_configured) {
+          if (jevKeyInput && !jevKeyInput.value) {
+            jevKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
+          }
+        }
+        if (data.gemini_configured) {
+          if (geminiKeyInput && !geminiKeyInput.value) {
+            geminiKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
+          }
         }
         if (aiSourceBadge) {
-          aiSourceBadge.textContent = '⚡ TypeSafe Jev System One Active (Render Env)';
+          if (data.jev_configured && data.gemini_configured) {
+            aiSourceBadge.textContent = '⚡ Jev (<200ms) & Gemini Active (Render Env)';
+          } else if (data.jev_configured) {
+            aiSourceBadge.textContent = '⚡ TypeSafe Jev System One Active (Render Env)';
+          } else if (data.gemini_configured) {
+            aiSourceBadge.textContent = '✨ Google Gemini AI Active (Render Env)';
+          }
         }
         if (aiModelSelect && !localStorage.getItem('ai_dj_model')) {
-          aiModelSelect.value = 'jev-latest';
+          aiModelSelect.value = data.jev_configured ? 'jev-latest' : (data.gemini_configured ? 'gemini-1.5-flash' : 'local');
         }
       }
     } catch (e) {
