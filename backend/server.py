@@ -106,36 +106,38 @@ async def get_presets():
 @app.post("/api/load-preset")
 async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
     """Instantly loads a pre-analyzed track into Deck 1 or Deck 2."""
+    import urllib.parse
     load_cache_from_disk()
-    if file_id in ANALYSIS_CACHE:
-        data = dict(ANALYSIS_CACHE[file_id])
-        if "acoustic_profile" not in data or not data.get("acoustic_profile"):
-            path = os.path.join(UPLOAD_DIR, file_id)
-            if os.path.exists(path):
-                data = analyze_track(path)
-                data["file_id"] = file_id
-                data["title"] = ANALYSIS_CACHE[file_id].get("title", file_id)
-                data["audio_url"] = f"/api/audio/{file_id}"
-                ANALYSIS_CACHE[file_id] = data
-                save_cache_to_disk()
+    target_id = file_id
+    if target_id not in ANALYSIS_CACHE:
+        unquoted = urllib.parse.unquote(file_id)
+        if unquoted in ANALYSIS_CACHE:
+            target_id = unquoted
+
+    if target_id in ANALYSIS_CACHE:
+        data = dict(ANALYSIS_CACHE[target_id])
         data["deck"] = deck
+        data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
         return JSONResponse(content={"status": "success", "track": data})
         
-    path = os.path.join(UPLOAD_DIR, file_id)
+    path = os.path.join(UPLOAD_DIR, target_id)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="Track not found")
+        path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(target_id))
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"Track {file_id} not found")
         
     an = analyze_track(path)
-    an["file_id"] = file_id
+    an["file_id"] = target_id
     an["deck"] = deck
-    an["audio_url"] = f"/api/audio/{file_id}"
-    ANALYSIS_CACHE[file_id] = an
+    an["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
+    ANALYSIS_CACHE[target_id] = an
     save_cache_to_disk()
     return JSONResponse(content={"status": "success", "track": an})
 
 @app.post("/api/upload")
 async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1")):
     """Uploads an audio file, analyzes BPM, Key, Beatgrid, and Waveform."""
+    import urllib.parse
     try:
         clean_name = os.path.basename(file.filename)
         ext = os.path.splitext(clean_name)[1].lower()
@@ -153,7 +155,7 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         analysis["file_id"] = file_id
         analysis["title"] = clean_name
         analysis["deck"] = deck
-        analysis["audio_url"] = f"/api/audio/{file_id}"
+        analysis["audio_url"] = f"/api/audio/{urllib.parse.quote(file_id)}"
         
         ANALYSIS_CACHE[file_id] = analysis
         save_cache_to_disk()
@@ -323,35 +325,68 @@ async def separate_stems_endpoint(file_id: str = Form(...), mode: str = Form("fa
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/audio/{filename}")
+@app.get("/api/audio/{filename:path}")
 async def get_audio(filename: str):
-    path = os.path.join(UPLOAD_DIR, filename)
+    import urllib.parse
+    decoded = urllib.parse.unquote(filename)
+    path = os.path.join(UPLOAD_DIR, decoded)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path, media_type="audio/mpeg" if filename.endswith(".mp3") else "audio/wav")
+        path = os.path.join(UPLOAD_DIR, filename)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"File not found: {decoded}")
+            
+    media = "audio/mpeg" if path.lower().endswith(".mp3") else "audio/wav"
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+        "Access-Control-Allow-Headers": "*",
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=86400"
+    }
+    return FileResponse(path, media_type=media, headers=headers)
 
-@app.get("/api/outputs/{filename}")
+@app.get("/api/outputs/{filename:path}")
 async def get_output(filename: str):
-    path = os.path.join(OUTPUT_DIR, filename)
+    import urllib.parse
+    decoded = urllib.parse.unquote(filename)
+    path = os.path.join(OUTPUT_DIR, decoded)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path, filename=filename, media_type="audio/wav")
+        path = os.path.join(OUTPUT_DIR, filename)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"Mix not found: {decoded}")
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": "bytes"
+    }
+    return FileResponse(path, filename=os.path.basename(path), media_type="audio/wav", headers=headers)
 
-@app.get("/api/stems/{filename}")
+@app.get("/api/stems/{filename:path}")
 async def get_stem(filename: str):
-    path = os.path.join(STEMS_DIR, filename)
+    import urllib.parse
+    decoded = urllib.parse.unquote(filename)
+    path = os.path.join(STEMS_DIR, decoded)
     if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail="File not found")
-    return FileResponse(path, media_type="audio/wav")
+        path = os.path.join(STEMS_DIR, filename)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"Stem not found: {decoded}")
+    headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Accept-Ranges": "bytes"
+    }
+    return FileResponse(path, media_type="audio/wav", headers=headers)
 
 @app.post("/api/generate-demo-tracks")
 async def generate_demo_tracks_endpoint():
     """Returns the pre-cached real club tracks for instant loading."""
+    import urllib.parse
+    load_cache_from_disk()
     t1 = dict(ANALYSIS_CACHE.get("Laserpack.mp3", {}))
     t1["deck"] = "deck_1"
+    t1["audio_url"] = f"/api/audio/{urllib.parse.quote('Laserpack.mp3')}"
     
     t2 = dict(ANALYSIS_CACHE.get("Overworld.mp3", {}))
     t2["deck"] = "deck_2"
+    t2["audio_url"] = f"/api/audio/{urllib.parse.quote('Overworld.mp3')}"
     
     return JSONResponse(content={
         "status": "success",

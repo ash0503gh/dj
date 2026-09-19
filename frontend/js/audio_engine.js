@@ -13,6 +13,14 @@ class DJDeckAudio {
     this.audio.crossOrigin = 'anonymous';
     this.audio.preload = 'auto';
     
+    this.audio.addEventListener('play', () => { this.isPlaying = true; });
+    this.audio.addEventListener('pause', () => { this.isPlaying = false; });
+    this.audio.addEventListener('ended', () => { this.isPlaying = false; });
+    this.audio.addEventListener('error', () => {
+      console.warn(`Deck ${this.deckNum} audio element error:`, this.audio.error);
+      this.isPlaying = false;
+    });
+    
     this.source = this.ctx.createMediaElementSource(this.audio);
     
     // 3-Band Equalizer Nodes
@@ -316,6 +324,11 @@ class DJDeckAudio {
   }
 
   loadTrack(url) {
+    if (url.startsWith('blob:') || url.startsWith('data:')) {
+      this.audio.removeAttribute('crossorigin');
+    } else {
+      this.audio.crossOrigin = 'anonymous';
+    }
     this.audio.src = url;
     this.audio.load();
     this.cuePosition = 0;
@@ -326,8 +339,23 @@ class DJDeckAudio {
     if (this.ctx.state === 'suspended') {
       this.ctx.resume();
     }
-    this.audio.play();
-    this.isPlaying = true;
+    if (!this.audio.src || this.audio.src === window.location.href) {
+      this.isPlaying = false;
+      return Promise.reject(new Error("No track loaded in deck"));
+    }
+    const p = this.audio.play();
+    if (p && typeof p.then === 'function') {
+      return p.then(() => {
+        this.isPlaying = true;
+      }).catch(err => {
+        this.isPlaying = false;
+        console.warn(`Deck ${this.deckNum} playback prevented:`, err);
+        throw err;
+      });
+    } else {
+      this.isPlaying = true;
+      return Promise.resolve();
+    }
   }
 
   pause() {

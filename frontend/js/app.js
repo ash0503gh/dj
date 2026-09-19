@@ -351,29 +351,152 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDragAndDrop(deck1Panel, 'deck_1');
   setupDragAndDrop(deck2Panel, 'deck_2');
 
-  // --- Upload Handler ---
+  // --- Upload Handler (Instant Client-Side Audio Loading + Background DSP Analysis) ---
   async function handleFileUpload(file, deck) {
+    if (!file) return;
+    const isDeck1 = (deck === 'deck_1');
+    const deckNum = isDeck1 ? 1 : 2;
+    const deckName = isDeck1 ? 'DECK 1' : 'DECK 2';
+    const displayName = file.name.length > 25 ? file.name.substring(0, 22) + '...' : file.name;
+
+    transitionStatusBanner.textContent = `LOADING ${displayName.toUpperCase()} INTO ${deckName}...`;
+
+    // 1. Instant client-side blob URL for 0ms latency playback
+    const blobUrl = URL.createObjectURL(file);
+    const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/_/g, ' ');
+
+    const initialTrack = {
+      title: cleanTitle,
+      filename: file.name,
+      file_id: `${deck}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
+      audio_url: blobUrl,
+      bpm: 128.0,
+      camelot: '8A',
+      key: 'A Minor',
+      duration: 180.0,
+      beat_times: [],
+      downbeat_times: [],
+      phrase_16_times: [],
+      phrase_8_times: [],
+      suggested_cue_intro: 0.0,
+      suggested_cue_outro: 120.0,
+      waveform: null,
+      acoustic_profile: {
+        intro_vocal_score: 0.05,
+        outro_vocal_score: 0.05,
+        intro_percussion: 'driving_4_4',
+        outro_percussion: 'driving_4_4'
+      }
+    };
+
+    // 2. Load immediately into Deck!
+    loadTrackIntoDeck(deckNum, initialTrack);
+    transitionStatusBanner.textContent = `${deckName}: ${displayName.toUpperCase()} LOADED & READY TO PLAY`;
+
+    // 3. Fast client-side decoding for true duration and initial RGB waveform
+    try {
+      const reader = new FileReader();
+      reader.onload = async (e) => {
+        try {
+          const arrayBuffer = e.target.result;
+          const audioBuffer = await engine.ctx.decodeAudioData(arrayBuffer.slice(0));
+          const trueDur = audioBuffer.duration;
+          
+          const numBins = 600;
+          const chData = audioBuffer.getChannelData(0);
+          const binSize = Math.max(1, Math.floor(chData.length / numBins));
+          const overall = [];
+          const low = [];
+          const mid = [];
+          const high = [];
+          for (let b = 0; b < numBins; b++) {
+            const start = b * binSize;
+            const end = Math.min(chData.length, start + binSize);
+            let peak = 0;
+            for (let i = start; i < end; i += 4) {
+              const v = Math.abs(chData[i]);
+              if (v > peak) peak = v;
+            }
+            const val = Math.min(1.0, Math.round(peak * 1.2 * 10000) / 10000);
+            overall.push(val);
+            low.push(Math.round(val * 0.9 * 10000) / 10000);
+            mid.push(Math.round(val * 0.7 * 10000) / 10000);
+            high.push(Math.round(val * 0.5 * 10000) / 10000);
+          }
+
+          const currentTrack = (deckNum === 1) ? track1Data : track2Data;
+          if (currentTrack && currentTrack.audio_url === blobUrl) {
+            currentTrack.duration = trueDur;
+            currentTrack.waveform = { overall, low, mid, high };
+            currentTrack.suggested_cue_outro = Math.max(0, trueDur - 30);
+            if (deckNum === 1) {
+              wave1.loadTrack(currentTrack);
+            } else {
+              wave2.loadTrack(currentTrack);
+            }
+          }
+        } catch (decErr) {
+          console.warn('Client-side audio decode error (will rely on server):', decErr);
+        }
+      };
+      reader.readAsArrayBuffer(file);
+    } catch (readErr) {
+      console.warn('File read error:', readErr);
+    }
+
+    // 4. Background server analysis for BPM, Camelot key, and AI acoustic profile
     const formData = new FormData();
     formData.append('file', file);
     formData.append('deck', deck);
 
-    const displayName = file.name.length > 25 ? file.name.substring(0, 22) + '...' : file.name;
-    transitionStatusBanner.textContent = `ANALYZING ${displayName.toUpperCase()} (BPM, KEYS, STEMS)...`;
-
     try {
       const res = await fetch('/api/upload', { method: 'POST', body: formData });
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
+      }
       const data = await res.json();
-      if (data.status === 'success') {
-        if (deck === 'deck_1') {
-          loadTrackIntoDeck(1, data.track);
-        } else {
-          loadTrackIntoDeck(2, data.track);
+      if (data.status === 'success' && data.track) {
+        const sTrack = data.track;
+        const currentTrack = (deckNum === 1) ? track1Data : track2Data;
+        if (currentTrack) {
+          currentTrack.bpm = sTrack.bpm || currentTrack.bpm;
+          currentTrack.camelot = sTrack.camelot || currentTrack.camelot;
+          currentTrack.key = sTrack.key || currentTrack.key;
+          currentTrack.duration = sTrack.duration || currentTrack.duration;
+          currentTrack.beat_times = sTrack.beat_times || currentTrack.beat_times;
+          currentTrack.downbeat_times = sTrack.downbeat_times || currentTrack.downbeat_times;
+          currentTrack.phrase_16_times = sTrack.phrase_16_times || currentTrack.phrase_16_times;
+          currentTrack.phrase_8_times = sTrack.phrase_8_times || currentTrack.phrase_8_times;
+          currentTrack.suggested_cue_intro = sTrack.suggested_cue_intro || currentTrack.suggested_cue_intro;
+          currentTrack.suggested_cue_outro = sTrack.suggested_cue_outro || currentTrack.suggested_cue_outro;
+          currentTrack.acoustic_profile = sTrack.acoustic_profile || currentTrack.acoustic_profile;
+          if (sTrack.waveform) {
+            currentTrack.waveform = sTrack.waveform;
+          }
+
+          if (deckNum === 1) {
+            d1Bpm.textContent = currentTrack.bpm.toFixed(2);
+            d1Key.textContent = `${currentTrack.camelot} (${currentTrack.key})`;
+            masterBpmEl.textContent = currentTrack.bpm.toFixed(2);
+            wave1.loadTrack(currentTrack);
+          } else {
+            d2Bpm.textContent = currentTrack.bpm.toFixed(2);
+            d2Key.textContent = `${currentTrack.camelot} (${currentTrack.key})`;
+            wave2.loadTrack(currentTrack);
+          }
+
+          updateHarmonicCompatibility();
+          updateAIRecCard();
+          if (track1Data && track2Data) {
+            btnExportMix.disabled = false;
+            fetchAIStrategy();
+          }
+          transitionStatusBanner.textContent = `${deckName}: ANALYSIS COMPLETE (${currentTrack.bpm.toFixed(1)} BPM, ${currentTrack.camelot})`;
         }
-        transitionStatusBanner.textContent = `${deck === 'deck_1' ? 'DECK 1' : 'DECK 2'}: ${displayName.toUpperCase()} LOADED & READY`;
       }
     } catch (err) {
-      console.error(err);
-      transitionStatusBanner.textContent = 'UPLOAD FAILED: ' + err.message;
+      console.warn('Server background analysis failed, local playback remains active:', err);
+      transitionStatusBanner.textContent = `${deckName}: READY FOR LIVE MIXING (LOCAL MODE)`;
     }
   }
 
@@ -386,11 +509,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const perc = ac.outro_percussion || ac.intro_percussion || 'driving_4_4';
     const phrases = (track.phrase_16_times && track.phrase_16_times.length) || (track.phrase_8_times && track.phrase_8_times.length) || 4;
 
+    const bpmStr = (track.bpm && !isNaN(track.bpm)) ? track.bpm.toFixed(2) : '--.--';
+    const keyStr = track.camelot ? `${track.camelot} (${track.key || ''})` : '--';
+
     if (deckNum === 1) {
       track1Data = track;
       d1Title.textContent = track.title || track.filename;
-      d1Bpm.textContent = track.bpm.toFixed(2);
-      d1Key.textContent = `${track.camelot} (${track.key})`;
+      d1Bpm.textContent = bpmStr;
+      d1Key.textContent = keyStr;
       if (d1VocalVal) {
         d1VocalVal.textContent = `${vocalPct}% (${vocalPct > 35 ? 'VOCALS' : (vocalPct > 15 ? 'MILD' : 'CLEAN')})`;
         d1VocalVal.className = `lcd-val lcd-vocal-val ${vocalPct > 35 ? 'heavy' : (vocalPct > 15 ? 'moderate' : 'clean')}`;
@@ -403,12 +529,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       engine.deck1.loadTrack(track.audio_url);
       wave1.loadTrack(track);
-      masterBpmEl.textContent = track.bpm.toFixed(2);
+      if (track.bpm && !isNaN(track.bpm)) {
+        masterBpmEl.textContent = track.bpm.toFixed(2);
+      }
     } else {
       track2Data = track;
       d2Title.textContent = track.title || track.filename;
-      d2Bpm.textContent = track.bpm.toFixed(2);
-      d2Key.textContent = `${track.camelot} (${track.key})`;
+      d2Bpm.textContent = bpmStr;
+      d2Key.textContent = keyStr;
       if (d2VocalVal) {
         d2VocalVal.textContent = `${vocalPct}% (${vocalPct > 35 ? 'VOCALS' : (vocalPct > 15 ? 'MILD' : 'CLEAN')})`;
         d2VocalVal.className = `lcd-val lcd-vocal-val ${vocalPct > 35 ? 'heavy' : (vocalPct > 15 ? 'moderate' : 'clean')}`;
@@ -444,18 +572,30 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   async function loadPresetTrack(fileId, deck) {
+    if (!fileId) return;
+    const isDeck1 = (deck === 'deck_1');
+    const deckName = isDeck1 ? 'DECK 1' : 'DECK 2';
+    transitionStatusBanner.textContent = `LOADING ${fileId} INTO ${deckName}...`;
+
     const form = new FormData();
     form.append('file_id', fileId);
     form.append('deck', deck);
 
     try {
       const res = await fetch('/api/load-preset', { method: 'POST', body: form });
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
+      }
       const data = await res.json();
-      if (data.status === 'success') {
-        loadTrackIntoDeck(deck === 'deck_1' ? 1 : 2, data.track);
+      if (data.status === 'success' && data.track) {
+        loadTrackIntoDeck(isDeck1 ? 1 : 2, data.track);
+        transitionStatusBanner.textContent = `${deckName}: ${data.track.title || fileId} LOADED & READY`;
+      } else {
+        transitionStatusBanner.textContent = `FAILED TO LOAD: ${data.detail || 'Unknown error'}`;
       }
     } catch (e) {
       console.error('Failed to load preset:', e);
+      transitionStatusBanner.textContent = `ERROR LOADING PRESET: ${e.message}`;
     }
   }
 
@@ -464,10 +604,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch('/api/presets');
       const data = await res.json();
       if (data.status === 'success' && data.tracks) {
-        const opts = ['<option value="">-- Choose Track --</option>'];
+        const opts = ['<option value="">-- Choose Preset Track --</option>'];
         data.tracks.forEach(t => {
           const titleClean = t.title.length > 35 ? t.title.substring(0, 32) + '...' : t.title;
-          opts.push(`<option value="${t.file_id}">${titleClean} (${t.bpm.toFixed(1)} BPM, ${t.camelot})</option>`);
+          const bpmClean = t.bpm ? t.bpm.toFixed(1) : '128.0';
+          opts.push(`<option value="${t.file_id}">${titleClean} (${bpmClean} BPM, ${t.camelot || '--'})</option>`);
         });
         const html = opts.join('');
         if (d1QuickSelect) d1QuickSelect.innerHTML = html;
@@ -478,6 +619,21 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
   loadAvailableTracksDropdown();
+
+  async function loadInitialDefaultTracks() {
+    try {
+      const res = await fetch('/api/generate-demo-tracks', { method: 'POST' });
+      const data = await res.json();
+      if (data.status === 'success' && data.track_1 && data.track_2) {
+        if (!track1Data) loadTrackIntoDeck(1, data.track_1);
+        if (!track2Data) loadTrackIntoDeck(2, data.track_2);
+        transitionStatusBanner.textContent = 'CLUB SET 1 LOADED: LASERPACK (DECK 1) & OVERWORLD (DECK 2). READY TO PLAY!';
+      }
+    } catch (e) {
+      console.warn('Could not auto-load default tracks:', e);
+    }
+  }
+  loadInitialDefaultTracks();
 
 
 
@@ -685,39 +841,76 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   // --- Transport Controls ---
-  d1BtnPlay.addEventListener('click', () => {
+  engine.deck1.audio.addEventListener('play', () => {
+    d1BtnPlay.classList.add('playing');
+    d1BtnPlay.textContent = '⏸ PAUSE';
+  });
+  engine.deck1.audio.addEventListener('pause', () => {
+    d1BtnPlay.classList.remove('playing');
+    d1BtnPlay.textContent = '▶ PLAY';
+  });
+  engine.deck2.audio.addEventListener('play', () => {
+    d2BtnPlay.classList.add('playing');
+    d2BtnPlay.textContent = '⏸ PAUSE';
+  });
+  engine.deck2.audio.addEventListener('pause', () => {
+    d2BtnPlay.classList.remove('playing');
+    d2BtnPlay.textContent = '▶ PLAY';
+  });
+
+  d1BtnPlay.addEventListener('click', async () => {
     unlockAudio();
     if (engine.deck1.isPlaying) {
       engine.deck1.pause();
       d1BtnPlay.classList.remove('playing');
       d1BtnPlay.textContent = '▶ PLAY';
     } else {
+      if (!engine.deck1.audio.src || engine.deck1.audio.src === window.location.href) {
+        transitionStatusBanner.textContent = 'DECK 1: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
+        return;
+      }
       if (isDeck1SyncLocked && engine.deck2.isPlaying && track1Data && track2Data) {
         const m = getDeckPhase(track2Data, engine.deck2.audio.currentTime);
         const s = getDeckPhase(track1Data, engine.deck1.audio.currentTime);
         engine.deck1.audio.currentTime = s.currentBeat + (m.phase * s.beatDuration);
       }
-      engine.deck1.play();
-      d1BtnPlay.classList.add('playing');
-      d1BtnPlay.textContent = '⏸ PAUSE';
+      try {
+        await engine.deck1.play();
+        d1BtnPlay.classList.add('playing');
+        d1BtnPlay.textContent = '⏸ PAUSE';
+      } catch (err) {
+        d1BtnPlay.classList.remove('playing');
+        d1BtnPlay.textContent = '▶ PLAY';
+        transitionStatusBanner.textContent = 'DECK 1 PLAYBACK ERROR: ' + (err.message || 'Check audio source');
+      }
     }
   });
 
-  d2BtnPlay.addEventListener('click', () => {
+  d2BtnPlay.addEventListener('click', async () => {
     unlockAudio();
     if (engine.deck2.isPlaying) {
       engine.deck2.pause();
       d2BtnPlay.classList.remove('playing');
       d2BtnPlay.textContent = '▶ PLAY';
     } else {
+      if (!engine.deck2.audio.src || engine.deck2.audio.src === window.location.href) {
+        transitionStatusBanner.textContent = 'DECK 2: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
+        return;
+      }
       if (isDeck2SyncLocked && engine.deck1.isPlaying && track1Data && track2Data) {
         const m = getDeckPhase(track1Data, engine.deck1.audio.currentTime);
         const s = getDeckPhase(track2Data, engine.deck2.audio.currentTime);
         engine.deck2.audio.currentTime = s.currentBeat + (m.phase * s.beatDuration);
       }
-      engine.deck2.play();
-      d2BtnPlay.classList.add('playing');
-      d2BtnPlay.textContent = '⏸ PAUSE';
+      try {
+        await engine.deck2.play();
+        d2BtnPlay.classList.add('playing');
+        d2BtnPlay.textContent = '⏸ PAUSE';
+      } catch (err) {
+        d2BtnPlay.classList.remove('playing');
+        d2BtnPlay.textContent = '▶ PLAY';
+        transitionStatusBanner.textContent = 'DECK 2 PLAYBACK ERROR: ' + (err.message || 'Check audio source');
+      }
     }
   });
 
