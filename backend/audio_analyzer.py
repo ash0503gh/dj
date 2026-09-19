@@ -295,9 +295,15 @@ def analyze_track(file_path: str) -> Dict[str, Any]:
     """
     Full professional track analysis (optimized for low-latency cloud execution).
     """
-    y, sr = librosa.load(file_path, sr=22050, mono=True)
+    try:
+        duration = float(librosa.get_duration(path=file_path))
+    except Exception:
+        duration = 180.0
+        
+    # Cloud-optimized: Fast loading at 16kHz capped at 90s to prevent Render 512MB OOM crashes
+    analysis_dur = min(90.0, duration) if duration > 0 else 90.0
+    y, sr = librosa.load(file_path, sr=16000, mono=True, duration=analysis_dur)
     mono = y
-    duration = float(librosa.get_duration(y=mono, sr=sr))
     
     tempo, beat_frames = librosa.beat.beat_track(y=mono, sr=sr, units='frames', tightness=100)
     bpm = float(tempo[0] if isinstance(tempo, (np.ndarray, list)) else tempo)

@@ -365,6 +365,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const blobUrl = URL.createObjectURL(file);
     const cleanTitle = file.name.replace(/\.[^/.]+$/, '').replace(/_/g, ' ');
 
+    const initialWave = (deckNum === 1 ? wave1 : wave2).synthesizeWaveform(180.0, 128.0);
+    const spbInit = 60.0 / 128.0;
+    const initialBeats = [];
+    const initialDownbeats = [];
+    const initialPhrases = [];
+    for (let b = 0; b < Math.floor(180.0 / spbInit); b++) {
+      const bt = Math.round(b * spbInit * 1000) / 1000;
+      initialBeats.push(bt);
+      if (b % 4 === 0) initialDownbeats.push(bt);
+      if (b % 64 === 0) initialPhrases.push(bt);
+    }
+
     const initialTrack = {
       title: cleanTitle,
       filename: file.name,
@@ -374,13 +386,13 @@ document.addEventListener('DOMContentLoaded', () => {
       camelot: '8A',
       key: 'A Minor',
       duration: 180.0,
-      beat_times: [],
-      downbeat_times: [],
-      phrase_16_times: [],
-      phrase_8_times: [],
+      beat_times: initialBeats,
+      downbeat_times: initialDownbeats,
+      phrase_16_times: initialPhrases,
+      phrase_8_times: initialPhrases,
       suggested_cue_intro: 0.0,
-      suggested_cue_outro: 120.0,
-      waveform: null,
+      suggested_cue_outro: 150.0,
+      waveform: initialWave,
       acoustic_profile: {
         intro_vocal_score: 0.05,
         outro_vocal_score: 0.05,
@@ -389,16 +401,51 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     };
 
-    // 2. Load immediately into Deck!
+    // 2. Load immediately into Deck & Waveform!
     loadTrackIntoDeck(deckNum, initialTrack);
-    transitionStatusBanner.textContent = `${deckName}: ${displayName.toUpperCase()} LOADED & READY TO PLAY`;
+    transitionStatusBanner.textContent = `${deckName}: ${cleanTitle.toUpperCase()} LOADED & READY TO PLAY`;
 
-    // 3. Fast client-side decoding for true duration and initial RGB waveform
+    // 2b. Instant duration from audio element metadata (fires in ~10ms)
+    const targetAudio = (deckNum === 1) ? engine.deck1.audio : engine.deck2.audio;
+    const onMeta = () => {
+      if (targetAudio.duration && !isNaN(targetAudio.duration) && isFinite(targetAudio.duration)) {
+        const trueDur = targetAudio.duration;
+        const cur = (deckNum === 1) ? track1Data : track2Data;
+        if (cur && cur.audio_url === blobUrl) {
+          cur.duration = trueDur;
+          cur.suggested_cue_outro = Math.max(0, trueDur - 30);
+          const curSpb = 60.0 / (cur.bpm || 128.0);
+          cur.beat_times = [];
+          cur.downbeat_times = [];
+          cur.phrase_16_times = [];
+          for (let b = 0; b < Math.floor(trueDur / curSpb); b++) {
+            const bt = Math.round(b * curSpb * 1000) / 1000;
+            cur.beat_times.push(bt);
+            if (b % 4 === 0) cur.downbeat_times.push(bt);
+            if (b % 64 === 0) cur.phrase_16_times.push(bt);
+          }
+          if (deckNum === 1) {
+            wave1.loadTrack(cur);
+            d1Time.textContent = `00:00.00 / ${formatTime(trueDur)}`;
+          } else {
+            wave2.loadTrack(cur);
+            d2Time.textContent = `00:00.00 / ${formatTime(trueDur)}`;
+          }
+          updateTransitionOverlay();
+        }
+      }
+    };
+    targetAudio.addEventListener('loadedmetadata', onMeta, { once: true });
+
+    // 3. Fast client-side decoding for true duration and high-res RGB waveform
     try {
       const reader = new FileReader();
       reader.onload = async (e) => {
         try {
           const arrayBuffer = e.target.result;
+          if (engine.ctx.state === 'suspended') {
+            await engine.ctx.resume();
+          }
           const audioBuffer = await engine.ctx.decodeAudioData(arrayBuffer.slice(0));
           const trueDur = audioBuffer.duration;
           
@@ -436,7 +483,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
         } catch (decErr) {
-          console.warn('Client-side audio decode error (will rely on server):', decErr);
+          console.warn('Client-side audio decode error (using acoustic synthesizer):', decErr);
         }
       };
       reader.readAsArrayBuffer(file);
