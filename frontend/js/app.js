@@ -861,41 +861,98 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- Transition Overlay Marker on Waveform ---
   function updateTransitionOverlay() {
     if (!track1Data || !track2Data) {
-      transitionOverlay.classList.add('hidden');
+      if (transitionOverlay) transitionOverlay.classList.add('hidden');
+      wave1.setTransitionZone(0, 0);
+      wave2.setTransitionZone(0, 0);
       return;
     }
-    transitionOverlay.classList.remove('hidden');
     const isDir1to2 = (transitionDirection === '1_to_2');
     const outTrack = isDir1to2 ? track1Data : track2Data;
-    const dur = outTrack.duration;
+    const dur = outTrack.duration || 180;
     const outroStart = outTrack.suggested_cue_outro || Math.max(0, dur - 30);
     const beatsTotal = selectedBars * 4;
-    const transSec = beatsTotal * (60.0 / outTrack.bpm);
-    
-    const leftPct = (outroStart / dur) * 100;
-    const widthPct = Math.min(100 - leftPct, (transSec / dur) * 100);
+    const transSec = beatsTotal * (60.0 / (outTrack.bpm || 128));
 
-    transitionOverlay.style.left = `${leftPct}%`;
-    transitionOverlay.style.width = `${widthPct}%`;
+    // Update canvas transition zone on both waveforms
+    wave1.setTransitionZone(outroStart, transSec, isDir1to2);
+    wave2.setTransitionZone(outroStart, transSec, !isDir1to2);
+
+    if (transitionOverlay) {
+      if (wave1.mode === 'overview') {
+        transitionOverlay.classList.remove('hidden');
+        const leftPct = (outroStart / dur) * 100;
+        const widthPct = Math.min(100 - leftPct, (transSec / dur) * 100);
+        transitionOverlay.style.left = `${leftPct}%`;
+        transitionOverlay.style.width = `${widthPct}%`;
+      } else {
+        // In scrolling mode, HTML overlay follows outgoing deck position
+        const outDeck = isDir1to2 ? engine.deck1 : engine.deck2;
+        const visibleDur = wave1.getVisibleDuration();
+        const curTime = outDeck.audio.currentTime || 0;
+        // 50% is the center playhead
+        const leftPct = 50 + ((outroStart - curTime) / visibleDur) * 100;
+        const widthPct = (transSec / visibleDur) * 100;
+
+        if (leftPct + widthPct < -10 || leftPct > 110) {
+          transitionOverlay.classList.add('hidden');
+        } else {
+          transitionOverlay.classList.remove('hidden');
+          transitionOverlay.style.left = `${leftPct}%`;
+          transitionOverlay.style.width = `${widthPct}%`;
+        }
+      }
+    }
   }
 
   // --- Zoom Controls ---
   btnZoomIn.addEventListener('click', () => {
+    if (wave1.mode === 'overview') {
+      wave1.mode = 'scroll';
+      wave2.mode = 'scroll';
+    }
     zoomLevel = Math.min(4.0, +(zoomLevel + 0.5).toFixed(1));
     wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
     wave1.zoom = zoomLevel;
     wave2.zoom = zoomLevel;
     wave1.draw();
     wave2.draw();
+    updateTransitionOverlay();
   });
+
   btnZoomOut.addEventListener('click', () => {
-    zoomLevel = Math.max(1.0, +(zoomLevel - 0.5).toFixed(1));
-    wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
-    wave1.zoom = zoomLevel;
-    wave2.zoom = zoomLevel;
+    if (zoomLevel <= 0.5) {
+      wave1.mode = 'overview';
+      wave2.mode = 'overview';
+      wfZoomLevel.textContent = 'FULL';
+    } else {
+      zoomLevel = Math.max(0.5, +(zoomLevel - 0.5).toFixed(1));
+      wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
+      wave1.zoom = zoomLevel;
+      wave2.zoom = zoomLevel;
+    }
     wave1.draw();
     wave2.draw();
+    updateTransitionOverlay();
   });
+
+  if (wfZoomLevel) {
+    wfZoomLevel.style.cursor = 'pointer';
+    wfZoomLevel.title = 'Click to toggle SCROLL / FULL OVERVIEW';
+    wfZoomLevel.addEventListener('click', () => {
+      if (wave1.mode === 'scroll') {
+        wave1.mode = 'overview';
+        wave2.mode = 'overview';
+        wfZoomLevel.textContent = 'FULL';
+      } else {
+        wave1.mode = 'scroll';
+        wave2.mode = 'scroll';
+        wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
+      }
+      wave1.draw();
+      wave2.draw();
+      updateTransitionOverlay();
+    });
+  }
 
   // --- Transport Controls ---
   engine.deck1.audio.addEventListener('play', () => {
@@ -2109,6 +2166,9 @@ document.addEventListener('DOMContentLoaded', () => {
       jog2.updatePlayback(dt, track2Data.bpm, engine.deck2.isPlaying);
       wave2.setTime(engine.deck2.audio.currentTime);
       d2Time.textContent = `${formatTime(engine.deck2.audio.currentTime)} / ${formatTime(track2Data.duration)}`;
+    }
+    if (track1Data && track2Data) {
+      updateTransitionOverlay();
     }
 
     // VU Meters
