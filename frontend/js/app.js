@@ -681,6 +681,15 @@ document.addEventListener('DOMContentLoaded', () => {
         ? 'Both Deck 1 & Deck 2' 
         : (!track1Data ? 'Deck 1' : 'Deck 2');
 
+      if (btnRefreshAI) {
+        btnRefreshAI.innerHTML = `<span>⚠️ Load ${missing} First</span>`;
+        btnRefreshAI.style.borderColor = '#f59e0b';
+        setTimeout(() => {
+          btnRefreshAI.innerHTML = '🔄 Re-Analyze with AI';
+          btnRefreshAI.style.borderColor = '';
+        }, 2200);
+      }
+
       if (aiHeadlineBox) {
         aiHeadlineBox.textContent = `⚡ READY // AWAITING AUDIO (${missing.toUpperCase()})`;
       }
@@ -707,13 +716,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const key = geminiKeyInput ? geminiKeyInput.value.trim() : (localStorage.getItem('gemini_api_key') || '');
     const model = aiModelSelect ? aiModelSelect.value : (localStorage.getItem('gemini_model') || 'gemini-1.5-flash');
+    const modelLabel = (model === 'local') ? 'Local Acoustic DSP' : (model === 'gemini-1.5-pro' ? 'Gemini 1.5 Pro' : 'Gemini 1.5 Flash');
 
     if (btnRefreshAI) {
       btnRefreshAI.disabled = true;
-      btnRefreshAI.innerHTML = `<span>🌀 Analyzing with ${model}...</span>`;
+      btnRefreshAI.innerHTML = `<span>🌀 Analyzing with ${modelLabel}...</span>`;
     }
     if (aiHeadlineBox) {
-      aiHeadlineBox.textContent = '🔍 Analyzing Audio Acoustic Formants & Keys...';
+      aiHeadlineBox.textContent = `🔍 Analyzing Audio Acoustic Formants & Keys (${modelLabel})...`;
     }
     if (aiRationaleText) {
       aiRationaleText.textContent = `Querying AI engine with vocal formants, percussion density, and Camelot harmonic keys...`;
@@ -721,17 +731,44 @@ document.addEventListener('DOMContentLoaded', () => {
 
     try {
       const form = new FormData();
-      form.append('file_id_1', track1Data.file_id);
-      form.append('file_id_2', track2Data.file_id);
+      form.append('file_id_1', track1Data.file_id || track1Data.filename || 'deck_1_track');
+      form.append('file_id_2', track2Data.file_id || track2Data.filename || 'deck_2_track');
       form.append('direction', transitionDirection);
       if (key) form.append('gemini_api_key', key);
       form.append('model', model);
+
+      // Pass full metadata payload so local tracks analyze with 100% precision
+      form.append('track_1_meta', JSON.stringify({
+        title: track1Data.title || track1Data.filename,
+        bpm: track1Data.bpm || 128.0,
+        camelot: track1Data.camelot || '8A',
+        key: track1Data.key || 'A Minor',
+        duration: track1Data.duration || 180.0,
+        suggested_cue_intro: track1Data.suggested_cue_intro || 0.0,
+        suggested_cue_outro: track1Data.suggested_cue_outro || 120.0,
+        phrase_16_times: track1Data.phrase_16_times || [],
+        acoustic_profile: track1Data.acoustic_profile || {}
+      }));
+      form.append('track_2_meta', JSON.stringify({
+        title: track2Data.title || track2Data.filename,
+        bpm: track2Data.bpm || 128.0,
+        camelot: track2Data.camelot || '8A',
+        key: track2Data.key || 'A Minor',
+        duration: track2Data.duration || 180.0,
+        suggested_cue_intro: track2Data.suggested_cue_intro || 0.0,
+        suggested_cue_outro: track2Data.suggested_cue_outro || 120.0,
+        phrase_16_times: track2Data.phrase_16_times || [],
+        acoustic_profile: track2Data.acoustic_profile || {}
+      }));
 
       const res = await fetch('/api/ai-strategy', { method: 'POST', body: form });
       const data = await res.json();
       if (data.status === 'success' && data.strategy) {
         currentAIStrategy = data.strategy;
         renderAIStrategy(data.strategy);
+        if (btnRefreshAI) {
+          btnRefreshAI.innerHTML = '✅ Strategy Updated!';
+        }
       } else {
         throw new Error(data.detail || 'Failed to generate AI strategy');
       }
@@ -741,21 +778,41 @@ document.addEventListener('DOMContentLoaded', () => {
         aiRationaleText.innerHTML = `<span style="color:#ef4444; font-weight:700;">Notice:</span> ${e.message}. Using Local Acoustic Engine fallback.`;
       }
     } finally {
-      if (btnRefreshAI) {
-        btnRefreshAI.disabled = false;
-        btnRefreshAI.innerHTML = '🔄 Re-Analyze with AI';
-      }
+      setTimeout(() => {
+        if (btnRefreshAI) {
+          btnRefreshAI.disabled = false;
+          btnRefreshAI.innerHTML = '🔄 Re-Analyze with AI';
+        }
+      }, 1500);
     }
   }
 
   function renderAIStrategy(st) {
+    const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+
     if (aiRecTechnique) aiRecTechnique.textContent = st.ai_headline;
     if (aiRecConfidence) aiRecConfidence.textContent = `${Math.round(st.confidence * 100)}% MATCH`;
     if (aiRecReason) aiRecReason.textContent = st.strategic_rationale;
 
     if (aiHeadlineBox) aiHeadlineBox.textContent = st.ai_headline;
-    if (aiRationaleText) aiRationaleText.textContent = st.strategic_rationale;
-    if (aiSourceBadge) aiSourceBadge.textContent = st.engine_source || 'AI Engine';
+    
+    if (aiRationaleText) {
+      if (st.gemini_error) {
+        aiRationaleText.innerHTML = `
+          <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; color: #fbbf24; font-size: 11px;">
+            ⚠️ <strong>Gemini Notice:</strong> ${st.gemini_error}. Strategy calculated using Local Physical Acoustic Engine.
+          </div>
+          <div>${st.strategic_rationale}</div>
+        `;
+      } else {
+        aiRationaleText.textContent = st.strategic_rationale;
+      }
+    }
+
+    if (aiSourceBadge) {
+      aiSourceBadge.textContent = `${st.engine_source || 'AI Engine'} • ${timeStr}`;
+    }
+
     if (aiMetricTech) aiMetricTech.textContent = st.recommended_technique.replace('_', ' ').toUpperCase();
     if (aiMetricBars) aiMetricBars.textContent = `${st.recommended_bars} BARS`;
     if (aiMetricPitch) {

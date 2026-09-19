@@ -11,7 +11,7 @@ import os
 import json
 import urllib.request
 import urllib.error
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 import numpy as np
 
 from .audio_analyzer import check_camelot_compatibility
@@ -22,7 +22,7 @@ def get_gemini_api_key(provided_key: Optional[str] = None) -> Optional[str]:
         return provided_key.strip()
     return os.environ.get("GEMINI_API_KEY", "").strip() or None
 
-def call_gemini_api(prompt: str, api_key: str, model_name: str = "gemini-1.5-flash") -> Optional[Dict[str, Any]]:
+def call_gemini_api(prompt: str, api_key: str, model_name: str = "gemini-1.5-flash") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Calls Google Gemini API via HTTPS REST endpoint."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
@@ -40,13 +40,22 @@ def call_gemini_api(prompt: str, api_key: str, model_name: str = "gemini-1.5-fla
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     
     try:
-        with urllib.request.urlopen(req, timeout=8.0) as resp:
+        with urllib.request.urlopen(req, timeout=10.0) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             text = data["candidates"][0]["content"]["parts"][0]["text"]
-            return json.loads(text)
+            return json.loads(text), None
+    except urllib.error.HTTPError as he:
+        try:
+            err_body = he.read().decode("utf-8")
+            err_json = json.loads(err_body)
+            msg = err_json.get("error", {}).get("message", str(he))
+        except Exception:
+            msg = str(he)
+        print(f"Gemini API HTTPError: {msg}")
+        return None, msg
     except Exception as e:
         print(f"Gemini API call failed ({e}). Falling back to Local Acoustic Engine.")
-        return None
+        return None, str(e)
 
 def generate_local_acoustic_strategy(
     info_out: Dict[str, Any],
@@ -239,7 +248,7 @@ def generate_ai_dj_strategy(
     """
     resolved_key = get_gemini_api_key(gemini_api_key)
     
-    if resolved_key:
+    if resolved_key and model_name and model_name.lower() != "local":
         deck_out_num = "1" if direction == "1_to_2" else "2"
         deck_in_num = "2" if direction == "1_to_2" else "1"
         
@@ -293,7 +302,7 @@ Return valid JSON with these exact fields:
   "vocal_clash_risk": "SAFE" | "MODERATE" | "HIGH"
 }}
 """
-        gemini_result = call_gemini_api(prompt, resolved_key, model_name=model_name)
+        gemini_result, gemini_err = call_gemini_api(prompt, resolved_key, model_name=model_name)
         if gemini_result and isinstance(gemini_result, dict) and "recommended_technique" in gemini_result:
             gemini_result["engine_source"] = f"Google Gemini AI ({model_name})"
             gemini_result["direction"] = direction
@@ -304,6 +313,11 @@ Return valid JSON with these exact fields:
             )
             gemini_result["delta_bpm"] = round(abs(float(info_out.get('bpm', 128)) - float(info_in.get('bpm', 128))), 1)
             return gemini_result
+            
+        local_strat = generate_local_acoustic_strategy(info_out, info_in, direction=direction)
+        local_strat["gemini_error"] = gemini_err or "Gemini API call failed"
+        local_strat["engine_source"] = f"Local Physical Acoustic Engine (Gemini fallback)"
+        return local_strat
             
     # Fallback to local acoustic engine
     return generate_local_acoustic_strategy(info_out, info_in, direction=direction)

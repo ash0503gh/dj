@@ -207,25 +207,94 @@ async def get_ai_strategy_endpoint(
     file_id_2: str = Form(...),
     direction: str = Form("1_to_2"),
     gemini_api_key: Optional[str] = Form(None),
-    model: str = Form("gemini-1.5-flash")
+    model: str = Form("gemini-1.5-flash"),
+    track_1_meta: Optional[str] = Form(None),
+    track_2_meta: Optional[str] = Form(None)
 ):
     """Deep AI DJ Co-Pilot Strategy using Gemini LLM or Local Acoustic Engine."""
-    track_1_path = os.path.join(UPLOAD_DIR, file_id_1)
-    track_2_path = os.path.join(UPLOAD_DIR, file_id_2)
-    if not os.path.exists(track_1_path) or not os.path.exists(track_2_path):
-        raise HTTPException(status_code=404, detail="Tracks not found")
+    import urllib.parse
+    fid1 = urllib.parse.unquote(file_id_1)
+    fid2 = urllib.parse.unquote(file_id_2)
 
-    an1 = ANALYSIS_CACHE.get(file_id_1)
-    if not an1 or "acoustic_profile" not in an1:
-        an1 = analyze_track(track_1_path)
-        an1["file_id"] = file_id_1
-        ANALYSIS_CACHE[file_id_1] = an1
+    # 1. Resolve Track 1 Profile
+    an1 = ANALYSIS_CACHE.get(fid1) or ANALYSIS_CACHE.get(file_id_1)
+    if not an1:
+        p1 = os.path.join(UPLOAD_DIR, fid1)
+        if not os.path.exists(p1):
+            p1 = os.path.join(UPLOAD_DIR, file_id_1)
+        if os.path.exists(p1):
+            try:
+                an1 = analyze_track(p1)
+                an1["file_id"] = fid1
+                ANALYSIS_CACHE[fid1] = an1
+            except Exception as e:
+                print(f"Error analyzing {p1}: {e}")
+                an1 = None
 
-    an2 = ANALYSIS_CACHE.get(file_id_2)
-    if not an2 or "acoustic_profile" not in an2:
-        an2 = analyze_track(track_2_path)
-        an2["file_id"] = file_id_2
-        ANALYSIS_CACHE[file_id_2] = an2
+    if not an1 and track_1_meta:
+        try:
+            an1 = json.loads(track_1_meta)
+        except Exception:
+            an1 = None
+
+    if not an1:
+        an1 = {
+            "file_id": fid1,
+            "title": fid1.replace(".mp3", "").replace(".wav", "").replace("_", " "),
+            "bpm": 128.0,
+            "camelot": "8A",
+            "key": "A Minor",
+            "duration": 180.0,
+            "suggested_cue_intro": 0.0,
+            "suggested_cue_outro": 120.0,
+            "phrase_16_times": [0.0, 30.0, 60.0, 90.0, 120.0],
+            "acoustic_profile": {
+                "intro_vocal_score": 0.1,
+                "outro_vocal_score": 0.1,
+                "intro_percussion": "driving_4_4",
+                "outro_percussion": "driving_4_4"
+            }
+        }
+
+    # 2. Resolve Track 2 Profile
+    an2 = ANALYSIS_CACHE.get(fid2) or ANALYSIS_CACHE.get(file_id_2)
+    if not an2:
+        p2 = os.path.join(UPLOAD_DIR, fid2)
+        if not os.path.exists(p2):
+            p2 = os.path.join(UPLOAD_DIR, file_id_2)
+        if os.path.exists(p2):
+            try:
+                an2 = analyze_track(p2)
+                an2["file_id"] = fid2
+                ANALYSIS_CACHE[fid2] = an2
+            except Exception as e:
+                print(f"Error analyzing {p2}: {e}")
+                an2 = None
+
+    if not an2 and track_2_meta:
+        try:
+            an2 = json.loads(track_2_meta)
+        except Exception:
+            an2 = None
+
+    if not an2:
+        an2 = {
+            "file_id": fid2,
+            "title": fid2.replace(".mp3", "").replace(".wav", "").replace("_", " "),
+            "bpm": 128.0,
+            "camelot": "8A",
+            "key": "A Minor",
+            "duration": 180.0,
+            "suggested_cue_intro": 0.0,
+            "suggested_cue_outro": 120.0,
+            "phrase_16_times": [0.0, 30.0, 60.0, 90.0, 120.0],
+            "acoustic_profile": {
+                "intro_vocal_score": 0.1,
+                "outro_vocal_score": 0.1,
+                "intro_percussion": "driving_4_4",
+                "outro_percussion": "driving_4_4"
+            }
+        }
 
     if direction == "2_to_1":
         info_out, info_in = an2, an1
