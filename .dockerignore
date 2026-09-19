@@ -1,0 +1,11 @@
+venv/
+.venv/
+outputs/*
+!outputs/.gitkeep
+__pycache__/
+*.py[cod]
+.git/
+.gitignore
+.DS_Store
+*.md
+test_screenshots.py

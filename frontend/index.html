@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PULSE PRO // Professional DJ Console</title>
+  <link rel="stylesheet" href="/css/style.css?v=8.0">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="dj-console">
+    <!-- Top Bar -->
+    <header class="top-nav">
+      <div class="brand">
+        <div class="brand-logo">
+          <span class="dot"></span>
+          <span class="brand-name">PULSE<span class="accent">PRO</span></span>
+        </div>
+        <span class="badge">CDJ-3000 NEXUS EMULATOR</span>
+      </div>
+
+      <div class="global-master-info">
+        <div class="info-block">
+          <span class="label">MASTER CLOCK</span>
+          <span id="master-bpm" class="val glow-cyan">129.20</span>
+          <span class="unit">BPM</span>
+        </div>
+        <div class="info-block">
+          <span class="label">HARMONIC KEY MATCH</span>
+          <span id="camelot-status" class="val-pill">READY</span>
+        </div>
+      </div>
+
+      <div class="top-actions">
+        <button id="btn-ai-copilot" class="btn btn-ai-glow">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h1a7 7 0 0 1 7 7h1a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v1a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-1H2a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h1a7 7 0 0 1 7-7h1V5.73c-.6-.34-1-.99-1-1.73a2 2 0 0 1 2-2M7.5 13A2.5 2.5 0 0 0 5 15.5 2.5 2.5 0 0 0 7.5 18a2.5 2.5 0 0 0 2.5-2.5A2.5 2.5 0 0 0 7.5 13m9 0a2.5 2.5 0 0 0-2.5 2.5 2.5 2.5 0 0 0 2.5 2.5 2.5 2.5 0 0 0 2.5-2.5 2.5 2.5 0 0 0-2.5-2.5"/></svg>
+          AI Co-Pilot ✨
+        </button>
+        <button id="btn-shortcuts" class="btn btn-secondary">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>
+          Shortcuts [?]
+        </button>
+        <button id="btn-export-mix" class="btn btn-primary" disabled>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+          Export Master Mix (.WAV)
+        </button>
+      </div>
+    </header>
+
+    <!-- Master Waveform Zone (Dual Stacked Running Visualizer) -->
+    <section class="master-waveform-panel">
+      <div class="waveform-header">
+        <div class="wf-legend">
+          <span id="wf-tag-deck-1" class="legend-tag tag-deck-1">DECK 1 (OUTGOING)</span>
+          <span id="wf-tag-deck-2" class="legend-tag tag-deck-2">DECK 2 (INCOMING)</span>
+          <span class="legend-tag tag-transition">TRANSITION DROP WINDOW</span>
+        </div>
+        <!-- Real-Time Pioneer CDJ Phase-Lock Loop (PLL) Meter HUD -->
+        <div id="phase-meter-hud" class="phase-meter-hud" title="Live closed-loop phase-locked beat alignment">
+          <span class="phase-lbl">BEAT SYNC PLL:</span>
+          <div class="phase-bar-track">
+            <div id="phase-cursor" class="phase-cursor locked"></div>
+          </div>
+          <span id="phase-status" class="phase-status">±0.0 ms (LOCKED)</span>
+        </div>
+        <div class="wf-controls">
+          <span id="wf-zoom-level" class="zoom-tag">1.0x</span>
+          <button id="btn-zoom-in" class="btn-icon">+</button>
+          <button id="btn-zoom-out" class="btn-icon">-</button>
+        </div>
+      </div>
+      <div class="waveform-canvas-container">
+        <canvas id="canvas-wave-deck1" height="90"></canvas>
+        <div class="waveform-divider">
+          <div id="playhead-line" class="playhead"></div>
+          <div id="transition-zone-overlay" class="trans-overlay hidden">
+            <span class="trans-label">TRANSITION: 16 BARS</span>
+            <div class="drop-line"><span class="drop-label">THE DROP (BASS SWAP)</span></div>
+          </div>
+        </div>
+        <canvas id="canvas-wave-deck2" height="90"></canvas>
+      </div>
+    </section>
+
+    <!-- Main Deck & Mixer Grid -->
+    <main class="console-body">
+      <!-- DECK 1 (LEFT) -->
+      <section class="deck-panel deck-1" id="deck-1-panel">
+        <div class="deck-top">
+          <div class="deck-badge">DECK 1</div>
+          <div class="track-meta">
+            <div id="d1-title" class="track-title">NO TRACK LOADED</div>
+            <div id="d1-time" class="track-time">00:00.00 / 00:00.00</div>
+          </div>
+          <div class="upload-wrapper">
+            <button type="button" id="d1-btn-upload" class="btn-upload">📁 UPLOAD TRACK 1</button>
+            <input type="file" id="d1-file-input" accept="audio/*" style="display: none;">
+          </div>
+        </div>
+
+        <!-- LCD Screen -->
+        <div class="lcd-screen">
+          <div class="lcd-row">
+            <div class="lcd-item">
+              <span class="lcd-label">BPM</span>
+              <span id="d1-bpm" class="lcd-val glow-cyan">--.--</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">CAMELOT</span>
+              <span id="d1-key" class="lcd-val glow-cyan">--</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">PITCH</span>
+              <span id="d1-pitch-val" class="lcd-val">0.0%</span>
+            </div>
+          </div>
+          <!-- Live Acoustic DSP Perception Telemetry -->
+          <div class="lcd-row lcd-telemetry-row">
+            <div class="lcd-item">
+              <span class="lcd-label">VOCALS</span>
+              <span id="d1-vocal-val" class="lcd-val lcd-vocal-val glow-cyan">--%</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">ACOUSTIC DYNAMICS</span>
+              <span id="d1-dynamic-val" class="lcd-val lcd-dynamic-val">READY</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">PHRASES</span>
+              <span id="d1-phrase-val" class="lcd-val">--</span>
+            </div>
+          </div>
+          <div class="beat-bar-grid" id="d1-beat-grid">
+            <span class="beat-dot"></span><span class="beat-dot"></span>
+            <span class="beat-dot"></span><span class="beat-dot"></span>
+          </div>
+        </div>
+
+        <!-- Jog Wheel & Pitch Section -->
+        <div class="deck-interaction-row">
+          <div class="jog-wheel-container">
+            <canvas id="jog-deck-1" width="230" height="230"></canvas>
+            <div class="jog-center">
+              <div class="jog-cue-marker"></div>
+              <span class="jog-deck-num">1</span>
+            </div>
+          </div>
+
+          <div class="tempo-slider-wrap">
+            <span class="tempo-label">+</span>
+            <input type="range" id="d1-tempo-fader" min="-16" max="16" step="0.1" value="0" orient="vertical">
+            <span class="tempo-label">-</span>
+            <span class="tempo-name">TEMPO</span>
+          </div>
+        </div>
+
+        <!-- Quick Track Selector for Deck 1 -->
+        <div class="deck-quick-select">
+          <label class="select-lbl">SELECT LOCAL TRACK:</label>
+          <select id="d1-quick-select" class="track-select-dropdown">
+            <option value="">-- Choose Track --</option>
+            <option value="Laserpack.mp3">Laserpack.mp3 (129 BPM, 8A)</option>
+            <option value="Overworld.mp3">Overworld.mp3 (132 BPM, 5A)</option>
+            <option value="Club_Diver.mp3">Club Diver.mp3 (140 BPM, 7A)</option>
+            <option value="Disco_Medusae.mp3">Disco Medusae.mp3 (115 BPM, 11B)</option>
+            <option value="demo_track_1_deep_house.wav">Deep Tech House (123 BPM, 8A)</option>
+            <option value="demo_track_2_techno.wav">Peak-Time Techno (129 BPM, 12A)</option>
+          </select>
+        </div>
+
+
+        <!-- Deck Transport Controls -->
+        <div class="transport-strip">
+          <button id="d1-btn-cue" class="btn-transport btn-cue">CUE</button>
+          <button id="d1-btn-play" class="btn-transport btn-play">▶ PLAY</button>
+          <button id="d1-btn-sync" class="btn-transport btn-sync">SYNC</button>
+        </div>
+      </section>
+
+      <!-- CENTER MIXER & TRANSITION ENGINE -->
+      <section class="center-mixer">
+        <div class="mixer-header">
+          <span>PRO DJ 4-CHANNEL MIXER</span>
+        </div>
+
+        <!-- EQ & Filters Grid -->
+        <div class="mixer-channels-grid">
+          <!-- Channel 1 Strip -->
+          <div class="channel-strip">
+            <div class="knob-group">
+              <span class="knob-label">HI</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob" id="d1-eq-hi" min="-24" max="6" value="0"></div>
+              <button class="btn-kill" data-target="d1-eq-hi">KILL</button>
+            </div>
+            <div class="knob-group">
+              <span class="knob-label">MID</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob" id="d1-eq-mid" min="-24" max="6" value="0"></div>
+              <button class="btn-kill" data-target="d1-eq-mid">KILL</button>
+            </div>
+            <div class="knob-group">
+              <span class="knob-label">LOW</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob" id="d1-eq-low" min="-24" max="6" value="0"></div>
+              <button class="btn-kill" data-target="d1-eq-low">KILL</button>
+            </div>
+            <div class="knob-group color-fx">
+              <span class="knob-label">COLOR FX</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob fx-knob" id="d1-filter" min="-50" max="50" value="0"></div>
+              <span class="sub-label">HPF / LPF</span>
+            </div>
+          </div>
+
+          <!-- Master VU Meters -->
+          <div class="master-meter-strip">
+            <div class="vu-meter" id="vu-meter-left">
+              <div class="vu-bar red"></div><div class="vu-bar amber"></div>
+              <div class="vu-bar green"></div><div class="vu-bar green"></div>
+              <div class="vu-bar green"></div><div class="vu-bar green"></div>
+            </div>
+            <div class="vu-meter" id="vu-meter-right">
+              <div class="vu-bar red"></div><div class="vu-bar amber"></div>
+              <div class="vu-bar green"></div><div class="vu-bar green"></div>
+              <div class="vu-bar green"></div><div class="vu-bar green"></div>
+            </div>
+          </div>
+
+          <!-- Channel 2 Strip -->
+          <div class="channel-strip">
+            <div class="knob-group">
+              <span class="knob-label">HI</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob" id="d2-eq-hi" min="-24" max="6" value="0"></div>
+              <button class="btn-kill" data-target="d2-eq-hi">KILL</button>
+            </div>
+            <div class="knob-group">
+              <span class="knob-label">MID</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob" id="d2-eq-mid" min="-24" max="6" value="0"></div>
+              <button class="btn-kill" data-target="d2-eq-mid">KILL</button>
+            </div>
+            <div class="knob-group">
+              <span class="knob-label">LOW</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob" id="d2-eq-low" min="-24" max="6" value="0"></div>
+              <button class="btn-kill" data-target="d2-eq-low">KILL</button>
+            </div>
+            <div class="knob-group color-fx">
+              <span class="knob-label">COLOR FX</span>
+              <div class="knob-wrap"><input type="range" class="rotary-knob fx-knob" id="d2-filter" min="-50" max="50" value="0"></div>
+              <span class="sub-label">HPF / LPF</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Vertical Channel Volume Faders -->
+        <div class="fader-row">
+          <div class="v-fader-col">
+            <input type="range" id="d1-vol-fader" class="v-fader" min="0" max="100" value="100" orient="vertical">
+            <span class="fader-tag">CH 1</span>
+          </div>
+          
+          <!-- CENTER PRO TRANSITION TRIGGER CONSOLE -->
+          <div class="pro-transition-box">
+            <div class="box-title">PRO TRANSITION ENGINE</div>
+
+            <!-- AI Live Recommendation Badge (Click to open AI Co-Pilot) -->
+            <div id="ai-rec-card" class="ai-rec-card" title="Click to open AI DJ Co-Pilot Strategy">
+              <div class="ai-rec-header">
+                <span class="ai-badge">🤖 AI LIVE DJ BRAIN</span>
+                <span id="ai-rec-confidence" class="ai-confidence">96% MATCH</span>
+                <span class="ai-view-btn">STRATEGY ✨</span>
+              </div>
+              <div id="ai-rec-technique" class="ai-rec-technique">💥 16-Bar Bass Swap & Filter Sweep</div>
+              <div id="ai-rec-reason" class="ai-rec-reason">Compatible tempos & harmonic resonance. Best for 16-bar Linkwitz-Riley low-end swap.</div>
+            </div>
+
+            <div class="transition-options">
+              <!-- Transition Direction Selector (Bidirectional Mixing) -->
+              <div class="opt-row direction-row">
+                <span class="opt-label">MIX FLOW</span>
+                <div class="pill-selector direction-selector" id="direction-selector">
+                  <button class="pill active dir-pill" data-dir="1_to_2" id="dir-pill-1-2">
+                    <span class="dir-deck-1-tag">D1</span>
+                    <span class="dir-arrow">➔</span>
+                    <span class="dir-deck-2-tag">D2</span>
+                  </button>
+                  <button class="pill dir-pill" data-dir="2_to_1" id="dir-pill-2-1">
+                    <span class="dir-deck-2-tag">D2</span>
+                    <span class="dir-arrow">➔</span>
+                    <span class="dir-deck-1-tag">D1</span>
+                  </button>
+                </div>
+                <button id="btn-swap-dir" class="btn-swap-icon" title="Swap Direction (Hotkey: Tab)">⇄ SWAP</button>
+              </div>
+
+              <!-- Technique Selector -->
+              <div class="opt-row tech-row">
+                <span class="opt-label">TECHNIQUE</span>
+                <div class="pill-selector tech-selector" id="technique-selector">
+                  <button class="pill active" data-tech="auto">🤖 AI AUTO</button>
+                  <button class="pill" data-tech="bass_swap">💥 BASS SWAP</button>
+                  <button class="pill" data-tech="echo_freeze">❄️ ECHO FREEZE</button>
+                  <button class="pill" data-tech="loop_roll">🌀 LOOP ROLL</button>
+                  <button class="pill" data-tech="vinyl_brake">⚡ BRAKE</button>
+                  <button class="pill" data-tech="spinback">💫 SPINBACK</button>
+                  <button class="pill" data-tech="noise_riser">📈 RISER</button>
+                  <button class="pill" data-tech="festival_drop">🎆 FESTIVAL</button>
+                </div>
+              </div>
+
+              <div class="opt-row">
+                <span class="opt-label">LENGTH</span>
+                <div class="pill-selector" id="bars-selector">
+                  <button class="pill" data-bars="8">8 BARS</button>
+                  <button class="pill active" data-bars="16">16 BARS</button>
+                  <button class="pill" data-bars="32">32 BARS</button>
+                </div>
+              </div>
+
+              <div class="opt-toggles">
+                <label class="toggle-control">
+                  <input type="checkbox" id="toggle-tempo-ramp" checked>
+                  <span class="switch"></span>
+                  <span class="toggle-text">Smooth Tempo Ramp</span>
+                </label>
+                <label class="toggle-control">
+                  <input type="checkbox" id="toggle-harmonic" checked>
+                  <span class="switch"></span>
+                  <span class="toggle-text">Camelot Key Lock (±1)</span>
+                </label>
+                <label class="toggle-control">
+                  <input type="checkbox" id="toggle-vocal-duck" checked>
+                  <span class="switch"></span>
+                  <span class="toggle-text">Smart Vocal Ducking</span>
+                </label>
+                <label class="toggle-control">
+                  <input type="checkbox" id="toggle-phrase-lock" checked>
+                  <span class="switch"></span>
+                  <span class="toggle-text">16-Bar Phrase Lock</span>
+                </label>
+                <label class="toggle-control">
+                  <input type="checkbox" id="toggle-neural-stems">
+                  <span class="switch"></span>
+                  <span class="toggle-text">Neural Stems (Demucs)</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- PHRASE COUNTDOWN HUD (Pioneer DJ Style) -->
+            <div id="phrase-countdown-hud" class="phrase-countdown-hud hidden">
+              <div class="phrase-hud-bar">
+                <span class="phrase-hud-label">PHRASE DROP COUNTDOWN</span>
+                <span id="phrase-hud-counter" class="phrase-hud-counter">BAR 12.3 / 16</span>
+              </div>
+              <div class="phrase-hud-meter">
+                <div id="phrase-hud-progress" class="phrase-hud-progress"></div>
+              </div>
+            </div>
+
+            <!-- THE BIG TRANSITION BUTTON -->
+            <button id="btn-trigger-transition" class="btn-pro-mix">
+              <div class="glow-ring"></div>
+              <span class="mix-btn-title">TRIGGER PRO TRANSITION</span>
+              <span id="transition-state-sub" class="mix-btn-sub">AUTO 4/4 PHASE & BASS SWAP</span>
+            </button>
+
+            <!-- Status Indicator -->
+            <div id="transition-status-banner" class="status-banner">
+              READY FOR PERFORMANCE
+            </div>
+          </div>
+
+          <div class="v-fader-col">
+            <input type="range" id="d2-vol-fader" class="v-fader" min="0" max="100" value="100" orient="vertical">
+            <span class="fader-tag">CH 2</span>
+          </div>
+        </div>
+
+        <!-- Crossfader Section -->
+        <div class="crossfader-section">
+          <div class="cf-labels">
+            <span>A (DECK 1)</span>
+            <span>CROSSFADER</span>
+            <span>B (DECK 2)</span>
+          </div>
+          <div class="crossfader-track">
+            <input type="range" id="crossfader" min="0" max="100" value="0">
+          </div>
+        </div>
+      </section>
+
+      <!-- DECK 2 (RIGHT) -->
+      <section class="deck-panel deck-2" id="deck-2-panel">
+        <div class="deck-top">
+          <div class="deck-badge">DECK 2</div>
+          <div class="track-meta">
+            <div id="d2-title" class="track-title">NO TRACK LOADED</div>
+            <div id="d2-time" class="track-time">00:00.00 / 00:00.00</div>
+          </div>
+          <div class="upload-wrapper">
+            <button type="button" id="d2-btn-upload" class="btn-upload">📁 UPLOAD TRACK 2</button>
+            <input type="file" id="d2-file-input" accept="audio/*" style="display: none;">
+          </div>
+        </div>
+
+        <!-- LCD Screen -->
+        <div class="lcd-screen">
+          <div class="lcd-row">
+            <div class="lcd-item">
+              <span class="lcd-label">BPM</span>
+              <span id="d2-bpm" class="lcd-val glow-orange">--.--</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">CAMELOT</span>
+              <span id="d2-key" class="lcd-val glow-orange">--</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">PITCH</span>
+              <span id="d2-pitch-val" class="lcd-val">0.0%</span>
+            </div>
+          </div>
+          <!-- Live Acoustic DSP Perception Telemetry -->
+          <div class="lcd-row lcd-telemetry-row">
+            <div class="lcd-item">
+              <span class="lcd-label">VOCALS</span>
+              <span id="d2-vocal-val" class="lcd-val lcd-vocal-val glow-orange">--%</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">ACOUSTIC DYNAMICS</span>
+              <span id="d2-dynamic-val" class="lcd-val lcd-dynamic-val">READY</span>
+            </div>
+            <div class="lcd-item">
+              <span class="lcd-label">PHRASES</span>
+              <span id="d2-phrase-val" class="lcd-val">--</span>
+            </div>
+          </div>
+          <div class="beat-bar-grid" id="d2-beat-grid">
+            <span class="beat-dot"></span><span class="beat-dot"></span>
+            <span class="beat-dot"></span><span class="beat-dot"></span>
+          </div>
+        </div>
+
+        <!-- Jog Wheel & Pitch Section -->
+        <div class="deck-interaction-row">
+          <div class="jog-wheel-container">
+            <canvas id="jog-deck-2" width="230" height="230"></canvas>
+            <div class="jog-center">
+              <div class="jog-cue-marker"></div>
+              <span class="jog-deck-num">2</span>
+            </div>
+          </div>
+
+          <div class="tempo-slider-wrap">
+            <span class="tempo-label">+</span>
+            <input type="range" id="d2-tempo-fader" min="-16" max="16" step="0.1" value="0" orient="vertical">
+            <span class="tempo-label">-</span>
+            <span class="tempo-name">TEMPO</span>
+          </div>
+        </div>
+
+        <!-- Quick Track Selector for Deck 2 -->
+        <div class="deck-quick-select">
+          <label class="select-lbl">SELECT LOCAL TRACK:</label>
+          <select id="d2-quick-select" class="track-select-dropdown">
+            <option value="">-- Choose Track --</option>
+            <option value="Overworld.mp3">Overworld.mp3 (132 BPM, 5A)</option>
+            <option value="Laserpack.mp3">Laserpack.mp3 (129 BPM, 8A)</option>
+            <option value="Disco_Medusae.mp3">Disco Medusae.mp3 (115 BPM, 11B)</option>
+            <option value="Club_Diver.mp3">Club Diver.mp3 (140 BPM, 7A)</option>
+            <option value="demo_track_2_techno.wav">Peak-Time Techno (129 BPM, 12A)</option>
+            <option value="demo_track_1_deep_house.wav">Deep Tech House (123 BPM, 8A)</option>
+          </select>
+        </div>
+
+
+        <!-- Deck Transport Controls -->
+        <div class="transport-strip">
+          <button id="d2-btn-cue" class="btn-transport btn-cue">CUE</button>
+          <button id="d2-btn-play" class="btn-transport btn-play">▶ PLAY</button>
+          <button id="d2-btn-sync" class="btn-transport btn-sync">SYNC</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Transition Monitor & Mix Download Modal -->
+    <div id="mix-modal" class="modal-overlay hidden">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>MASTER DJ TRANSITION RENDERED</h3>
+          <button id="btn-close-modal" class="btn-close">&times;</button>
+        </div>
+        <div class="modal-content">
+          <div class="mix-stats-grid" id="modal-stats-grid"></div>
+          <div class="player-container">
+            <audio id="modal-audio-player" controls></audio>
+          </div>
+          <div class="modal-actions">
+            <a id="modal-download-link" class="btn btn-primary" download="Master_DJ_Mix.wav">Download Studio 24-bit WAV</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Keyboard Shortcuts Cheatsheet Modal -->
+    <div id="shortcuts-modal" class="modal-overlay hidden">
+      <div class="modal-card shortcuts-card">
+        <div class="modal-header">
+          <div class="shortcuts-title-wrap">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="#00e5ff"><path d="M20 5H4c-1.1 0-1.99.9-1.99 2L2 17c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V7c0-1.1-.9-2-2-2zm-9 3h2v2h-2V8zm0 3h2v2h-2v-2zM8 8h2v2H8V8zm0 3h2v2H8v-2zm-1 2H5v-2h2v2zm0-3H5V8h2v2zm9 7H8v-2h8v2zm0-4h-2v-2h2v2zm0-3h-2V8h2v2zm3 3h-2v-2h2v2zm0-3h-2V8h2v2z"/></svg>
+            <h3>PULSE PRO // KEYBOARD SHORTCUTS</h3>
+          </div>
+          <button id="btn-close-shortcuts" class="btn-close">&times;</button>
+        </div>
+        <div class="modal-content">
+          <div class="shortcuts-grid">
+            <div class="shortcut-group deck-1-group">
+              <div class="shortcut-group-title glow-cyan">DECK 1 (LEFT HAND)</div>
+              <div class="sc-row"><kbd>Q</kbd> <span>Play / Pause</span></div>
+              <div class="sc-row"><kbd>W</kbd> <span>CUE / Stutter</span></div>
+              <div class="sc-row"><kbd>S</kbd> <span>Master BPM SYNC</span></div>
+              <div class="sc-row"><kbd>A</kbd> <span>Low Bass Kill</span></div>
+              <div class="sc-row"><kbd>C</kbd> <span>Mid EQ Kill</span></div>
+              <div class="sc-row"><kbd>Z</kbd> <span>High EQ Kill</span></div>
+              <div class="sc-row"><div class="kbd-pair"><kbd>E</kbd><kbd>R</kbd></div> <span>Pitch Nudge (- / +)</span></div>
+            </div>
+
+            <div class="shortcut-group mixer-group">
+              <div class="shortcut-group-title glow-gold">MIXER & ENGINE (CENTER)</div>
+              <div class="sc-row"><kbd class="kbd-space">SPACE</kbd> <span class="highlight">Trigger Pro Transition</span></div>
+              <div class="sc-row"><kbd>TAB</kbd> <span class="highlight">Swap Flow (1➔2 / 2➔1)</span></div>
+              <div class="sc-row"><div class="kbd-pair"><kbd>←</kbd><kbd>↓</kbd><kbd>→</kbd></div> <span>Crossfader (Left/Mid/Right)</span></div>
+              <div class="sc-row"><div class="kbd-pair"><kbd>+</kbd><kbd>-</kbd></div> <span>Waveform Zoom (In / Out)</span></div>
+              <div class="sc-row"><kbd>X</kbd> <span>Export Studio Mix (.WAV)</span></div>
+              <div class="sc-row"><kbd>?</kbd> or <kbd>H</kbd> <span>Toggle Shortcuts HUD</span></div>
+              <div class="sc-row"><kbd>ESC</kbd> <span>Close Modals / Overlays</span></div>
+            </div>
+
+            <div class="shortcut-group deck-2-group">
+              <div class="shortcut-group-title glow-orange">DECK 2 (RIGHT HAND)</div>
+              <div class="sc-row"><kbd>P</kbd> <span>Play / Pause</span></div>
+              <div class="sc-row"><kbd>O</kbd> <span>CUE / Stutter</span></div>
+              <div class="sc-row"><kbd>L</kbd> <span>Master BPM SYNC</span></div>
+              <div class="sc-row"><kbd>K</kbd> <span>Low Bass Kill</span></div>
+              <div class="sc-row"><kbd>,</kbd> <span>Mid EQ Kill</span></div>
+              <div class="sc-row"><kbd>M</kbd> <span>High EQ Kill</span></div>
+              <div class="sc-row"><div class="kbd-pair"><kbd>U</kbd><kbd>I</kbd></div> <span>Pitch Nudge (- / +)</span></div>
+            </div>
+          </div>
+          <div class="shortcuts-tip">
+            <span class="tip-badge">PRO-TIP</span>
+            <span>Press <kbd>Space</kbd> for automatic beat-locked phrase drop, and <kbd>Tab</kbd> to instantaneously flip the mix flow direction!</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI DJ Co-Pilot Strategy Modal -->
+    <div id="ai-modal" class="modal-overlay hidden">
+      <div class="modal-card ai-modal-card">
+        <div class="modal-header">
+          <div class="ai-title-wrap">
+            <span class="ai-sparkle">✨</span>
+            <h3>AI DJ CO-PILOT // STRATEGY & ENGINE SETTINGS</h3>
+          </div>
+          <button id="btn-close-ai" class="btn-close">&times;</button>
+        </div>
+        <div class="modal-content">
+          <!-- Gemini API Key & Model Config -->
+          <div class="ai-config-strip">
+            <div class="ai-config-item">
+              <label class="ai-lbl">GEMINI API KEY (OPTIONAL):</label>
+              <div class="ai-input-wrap">
+                <input type="password" id="gemini-key-input" placeholder="AIzaSy... (Leave blank for Local Acoustic Engine)" autocomplete="off">
+                <button id="btn-save-gemini-key" class="btn btn-tiny">SAVE</button>
+              </div>
+            </div>
+            <div class="ai-config-item">
+              <label class="ai-lbl">AI ENGINE MODEL:</label>
+              <select id="ai-model-select" class="track-select-dropdown">
+                <option value="gemini-1.5-flash">Gemini 1.5 Flash (Ultra Fast & Smart)</option>
+                <option value="gemini-1.5-pro">Gemini 1.5 Pro (Deep Musical Reasoning)</option>
+                <option value="local">Local Acoustic Spectral AI (100% Offline & Free)</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Live Strategy Sheet -->
+          <div class="ai-strategy-sheet" id="ai-strategy-sheet">
+            <div class="ai-strategy-header">
+              <div class="ai-flow-badge" id="ai-flow-badge">DECK 1 ➔ DECK 2</div>
+              <span class="ai-source-badge" id="ai-source-badge">Local Physical Acoustic Engine</span>
+            </div>
+            
+            <div class="ai-headline-box" id="ai-headline-box">
+              💥 16-Bar Bass Swap & Filter Sweep
+            </div>
+            
+            <p class="ai-rationale-text" id="ai-rationale-text">
+              Loading track acoustic analysis...
+            </p>
+
+            <div class="ai-metrics-grid">
+              <div class="metric-card">
+                <span class="m-lbl">RECOMMENDED TECHNIQUE</span>
+                <span class="m-val glow-cyan" id="ai-metric-tech">BASS SWAP</span>
+              </div>
+              <div class="metric-card">
+                <span class="m-lbl">OPTIMAL BARS</span>
+                <span class="m-val glow-gold" id="ai-metric-bars">16 BARS</span>
+              </div>
+              <div class="metric-card">
+                <span class="m-lbl">HARMONIC PITCH</span>
+                <span class="m-val" id="ai-metric-pitch">0 Semitones</span>
+              </div>
+              <div class="metric-card">
+                <span class="m-lbl">VOCAL COLLISION RISK</span>
+                <span class="m-val" id="ai-metric-vocal-risk">SAFE</span>
+              </div>
+            </div>
+
+            <div class="tactical-steps-card">
+              <div class="t-title">TACTICAL DJ PERFORMANCE PLAN:</div>
+              <ul class="tactical-steps-list" id="ai-tactical-steps">
+                <li>Load tracks into Deck 1 and Deck 2 to generate tactical performance plan.</li>
+              </ul>
+            </div>
+
+            <div class="ai-pro-tip-box" id="ai-pro-tip-box">
+              <span class="tip-badge">AI PRO-TIP</span>
+              <span id="ai-pro-tip-text">Sync beats on Deck 1 before triggering the transition drop.</span>
+            </div>
+          </div>
+
+          <div class="modal-actions ai-modal-actions">
+            <button id="btn-refresh-ai" class="btn btn-secondary">
+              🔄 Re-Analyze with AI
+            </button>
+            <button id="btn-apply-ai-strategy" class="btn btn-primary">
+              ⚡ Apply AI Strategy to Console
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/js/audio_engine.js?v=8.0"></script>
+  <script src="/js/jog_wheel.js?v=8.0"></script>
+  <script src="/js/waveform.js?v=8.0"></script>
+  <script src="/js/app.js?v=8.0"></script>
+</body>
+</html>

@@ -1,0 +1,32 @@
+# Python virtual environment
+venv/
+ENV/
+env/
+.venv/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Large rendered output mixes (Keep directory structure with .gitkeep)
+outputs/*
+!outputs/.gitkeep
+
+# Temporary test profiles and scratch
+scratch/
+
+# Operating System & IDE files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+.vscode/
+.idea/
+
+# Environment and secrets
+.env
+*.local

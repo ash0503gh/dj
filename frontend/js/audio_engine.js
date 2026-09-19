@@ -1,0 +1,777 @@
+/**
+ * audio_engine.js - Web Audio API High-Performance DJ Mixer Graph
+ * Powers real-time interactive decks, 3-band EQs, Color FX sweeps, VU meters, and crossfader.
+ */
+
+class DJDeckAudio {
+  constructor(ctx, deckNum, destination) {
+    this.ctx = ctx;
+    this.deckNum = deckNum;
+    this.destination = destination;
+    
+    this.audio = new Audio();
+    this.audio.crossOrigin = 'anonymous';
+    this.audio.preload = 'auto';
+    
+    this.source = this.ctx.createMediaElementSource(this.audio);
+    
+    // 3-Band Equalizer Nodes
+    this.eqLow = this.ctx.createBiquadFilter();
+    this.eqLow.type = 'lowshelf';
+    this.eqLow.frequency.value = 250;
+    this.eqLow.gain.value = 0;
+
+    this.eqMid = this.ctx.createBiquadFilter();
+    this.eqMid.type = 'peaking';
+    this.eqMid.frequency.value = 1000;
+    this.eqMid.Q.value = 0.7;
+    this.eqMid.gain.value = 0;
+
+    this.eqHigh = this.ctx.createBiquadFilter();
+    this.eqHigh.type = 'highshelf';
+    this.eqHigh.frequency.value = 2500;
+    this.eqHigh.gain.value = 0;
+
+    // Color FX / Filter (HPF / LPF)
+    this.filterLPF = this.ctx.createBiquadFilter();
+    this.filterLPF.type = 'lowpass';
+    this.filterLPF.frequency.value = 20000;
+
+    this.filterHPF = this.ctx.createBiquadFilter();
+    this.filterHPF.type = 'highpass';
+    this.filterHPF.frequency.value = 20;
+
+    // Channel Gain Fader
+    this.faderGain = this.ctx.createGain();
+    this.faderGain.gain.value = 1.0;
+
+    // Echo / Delay Freeze FX loop (Pioneer DJM-900NXS2 Echo Emulation)
+    this.echoSend = this.ctx.createGain();
+    this.echoSend.gain.value = 1.0;
+
+    this.delayInputGate = this.ctx.createGain();
+    this.delayInputGate.gain.value = 1.0;
+
+    this.delayNode = this.ctx.createDelay(3.0);
+    this.delayNode.delayTime.value = 0.375; // 3/4 beat default
+
+    this.delayFeedback = this.ctx.createGain();
+    this.delayFeedback.gain.value = 0.0;
+
+    this.delayFilter = this.ctx.createBiquadFilter();
+    this.delayFilter.type = 'bandpass';
+    this.delayFilter.frequency.value = 1600;
+    this.delayFilter.Q.value = 0.8;
+
+    this.delayWetGain = this.ctx.createGain();
+    this.delayWetGain.gain.value = 0.0;
+
+    // Crossfader contribution gain
+    this.cfGain = this.ctx.createGain();
+    this.cfGain.gain.value = (deckNum === 1) ? 1.0 : 0.0;
+
+    // Analyser for VU Meter
+    this.analyser = this.ctx.createAnalyser();
+    this.analyser.fftSize = 64;
+
+    // Real-Time Neural/Spectral 4-Band Parallel Stem Crossover Isolator Network
+    this.stems = {
+      vocals: true,
+      drums: true,
+      bass: true,
+      other: true
+    };
+
+    // 1. Direct Master Pristine Path (Active when all 4 stems are on)
+    this.masterDirectGain = this.ctx.createGain();
+    this.masterDirectGain.gain.value = 1.0;
+
+    // 2. Parallel Stems Sum Bus (Active when any stem is muted or soloed)
+    this.stemsSumGain = this.ctx.createGain();
+    this.stemsSumGain.gain.value = 0.0;
+
+    // --- STEM 1: BASS (Cascaded 24dB/oct LPF @ 220Hz + 65Hz Punch) ---
+    this.bassLPF1 = this.ctx.createBiquadFilter();
+    this.bassLPF1.type = 'lowpass';
+    this.bassLPF1.frequency.value = 220;
+    this.bassLPF1.Q.value = 0.707;
+
+    this.bassLPF2 = this.ctx.createBiquadFilter();
+    this.bassLPF2.type = 'lowpass';
+    this.bassLPF2.frequency.value = 220;
+    this.bassLPF2.Q.value = 0.707;
+
+    this.bassSubPunch = this.ctx.createBiquadFilter();
+    this.bassSubPunch.type = 'peaking';
+    this.bassSubPunch.frequency.value = 65;
+    this.bassSubPunch.Q.value = 1.0;
+    this.bassSubPunch.gain.value = 2.0;
+
+    this.stemGainBass = this.ctx.createGain();
+    this.stemGainBass.gain.value = 1.0;
+
+    // --- STEM 2: VOCALS (Cascaded 24dB/oct Bandpass 260Hz - 4.5kHz + Formants) ---
+    this.vocalHPF1 = this.ctx.createBiquadFilter();
+    this.vocalHPF1.type = 'highpass';
+    this.vocalHPF1.frequency.value = 260;
+    this.vocalHPF1.Q.value = 0.707;
+
+    this.vocalHPF2 = this.ctx.createBiquadFilter();
+    this.vocalHPF2.type = 'highpass';
+    this.vocalHPF2.frequency.value = 260;
+    this.vocalHPF2.Q.value = 0.707;
+
+    this.vocalLPF1 = this.ctx.createBiquadFilter();
+    this.vocalLPF1.type = 'lowpass';
+    this.vocalLPF1.frequency.value = 4500;
+    this.vocalLPF1.Q.value = 0.707;
+
+    this.vocalLPF2 = this.ctx.createBiquadFilter();
+    this.vocalLPF2.type = 'lowpass';
+    this.vocalLPF2.frequency.value = 4500;
+    this.vocalLPF2.Q.value = 0.707;
+
+    this.vocalKickNotch = this.ctx.createBiquadFilter();
+    this.vocalKickNotch.type = 'notch';
+    this.vocalKickNotch.frequency.value = 100;
+    this.vocalKickNotch.Q.value = 2.0;
+
+    this.vocalFormant1 = this.ctx.createBiquadFilter();
+    this.vocalFormant1.type = 'peaking';
+    this.vocalFormant1.frequency.value = 950;
+    this.vocalFormant1.Q.value = 1.1;
+    this.vocalFormant1.gain.value = 3.5;
+
+    this.vocalFormant2 = this.ctx.createBiquadFilter();
+    this.vocalFormant2.type = 'peaking';
+    this.vocalFormant2.frequency.value = 2800;
+    this.vocalFormant2.Q.value = 1.3;
+    this.vocalFormant2.gain.value = 4.0;
+
+    this.stemGainVocals = this.ctx.createGain();
+    this.stemGainVocals.gain.value = 1.0;
+
+    // --- STEM 3: DRUMS (Kick Transient, Snare Snap, Hi-Hat Sizzle with Vocal Rejection) ---
+    this.drumHPF = this.ctx.createBiquadFilter();
+    this.drumHPF.type = 'highpass';
+    this.drumHPF.frequency.value = 45;
+    this.drumHPF.Q.value = 0.707;
+
+    this.drumKickPunch = this.ctx.createBiquadFilter();
+    this.drumKickPunch.type = 'peaking';
+    this.drumKickPunch.frequency.value = 75;
+    this.drumKickPunch.Q.value = 1.4;
+    this.drumKickPunch.gain.value = 4.0;
+
+    this.drumSnareCrack = this.ctx.createBiquadFilter();
+    this.drumSnareCrack.type = 'peaking';
+    this.drumSnareCrack.frequency.value = 2200;
+    this.drumSnareCrack.Q.value = 1.2;
+    this.drumSnareCrack.gain.value = 3.0;
+
+    this.drumHiHats = this.ctx.createBiquadFilter();
+    this.drumHiHats.type = 'highshelf';
+    this.drumHiHats.frequency.value = 6500;
+    this.drumHiHats.gain.value = 3.5;
+
+    this.drumVocalCut = this.ctx.createBiquadFilter();
+    this.drumVocalCut.type = 'peaking';
+    this.drumVocalCut.frequency.value = 1100;
+    this.drumVocalCut.Q.value = 1.0;
+    this.drumVocalCut.gain.value = -18.0;
+
+    this.stemGainDrums = this.ctx.createGain();
+    this.stemGainDrums.gain.value = 1.0;
+
+    // --- STEM 4: OTHER (Melodic Synths, Pads, Guitars, Ambient Air) ---
+    this.otherHPF = this.ctx.createBiquadFilter();
+    this.otherHPF.type = 'highpass';
+    this.otherHPF.frequency.value = 300;
+    this.otherHPF.Q.value = 0.707;
+
+    this.otherVocalDip = this.ctx.createBiquadFilter();
+    this.otherVocalDip.type = 'peaking';
+    this.otherVocalDip.frequency.value = 1300;
+    this.otherVocalDip.Q.value = 0.9;
+    this.otherVocalDip.gain.value = -12.0;
+
+    this.otherAir = this.ctx.createBiquadFilter();
+    this.otherAir.type = 'highshelf';
+    this.otherAir.frequency.value = 4000;
+    this.otherAir.gain.value = 3.5;
+
+    this.stemGainOther = this.ctx.createGain();
+    this.stemGainOther.gain.value = 1.0;
+
+    // Connect audio signal chain:
+    // Source -> EQLow -> EQMid -> EQHigh
+    this.source.connect(this.eqLow);
+    this.eqLow.connect(this.eqMid);
+    this.eqMid.connect(this.eqHigh);
+
+    // 1. Pristine Direct Bypass Path:
+    this.eqHigh.connect(this.masterDirectGain);
+    this.masterDirectGain.connect(this.filterLPF);
+
+    // 2. Parallel Stems Path:
+    // Bass Branch:
+    this.eqHigh.connect(this.bassLPF1);
+    this.bassLPF1.connect(this.bassLPF2);
+    this.bassLPF2.connect(this.bassSubPunch);
+    this.bassSubPunch.connect(this.stemGainBass);
+    this.stemGainBass.connect(this.stemsSumGain);
+
+    // Vocal Branch:
+    this.eqHigh.connect(this.vocalHPF1);
+    this.vocalHPF1.connect(this.vocalHPF2);
+    this.vocalHPF2.connect(this.vocalLPF1);
+    this.vocalLPF1.connect(this.vocalLPF2);
+    this.vocalLPF2.connect(this.vocalKickNotch);
+    this.vocalKickNotch.connect(this.vocalFormant1);
+    this.vocalFormant1.connect(this.vocalFormant2);
+    this.vocalFormant2.connect(this.stemGainVocals);
+    this.stemGainVocals.connect(this.stemsSumGain);
+
+    // Drums Branch:
+    this.eqHigh.connect(this.drumHPF);
+    this.drumHPF.connect(this.drumKickPunch);
+    this.drumKickPunch.connect(this.drumSnareCrack);
+    this.drumSnareCrack.connect(this.drumHiHats);
+    this.drumHiHats.connect(this.drumVocalCut);
+    this.drumVocalCut.connect(this.stemGainDrums);
+    this.stemGainDrums.connect(this.stemsSumGain);
+
+    // Other Branch:
+    this.eqHigh.connect(this.otherHPF);
+    this.otherHPF.connect(this.otherVocalDip);
+    this.otherVocalDip.connect(this.otherAir);
+    this.otherAir.connect(this.stemGainOther);
+    this.stemGainOther.connect(this.stemsSumGain);
+
+    // Stems Sum -> Color Filters -> Channel Fader
+    this.stemsSumGain.connect(this.filterLPF);
+    this.filterLPF.connect(this.filterHPF);
+    this.filterHPF.connect(this.faderGain);
+
+    // Dry path: faderGain -> echoSend -> cfGain -> analyser -> destination
+    this.faderGain.connect(this.echoSend);
+    this.echoSend.connect(this.cfGain);
+    this.cfGain.connect(this.analyser);
+    this.analyser.connect(this.destination);
+
+    // Wet Echo path: faderGain -> delayInputGate -> delayNode
+    // Feedback loop: delayNode -> delayFilter -> delayFeedback -> delayNode
+    // Wet output: delayFilter -> delayWetGain -> destination (Bypasses crossfader!)
+    this.faderGain.connect(this.delayInputGate);
+    this.delayInputGate.connect(this.delayNode);
+    this.delayNode.connect(this.delayFilter);
+    this.delayFilter.connect(this.delayFeedback);
+    this.delayFeedback.connect(this.delayNode);
+    this.delayFilter.connect(this.delayWetGain);
+    this.delayWetGain.connect(this.destination);
+
+    this.isPlaying = false;
+    this.cuePosition = 0;
+  }
+
+  triggerEchoFreeze(bpm = 128.0, tailSec = 4.5) {
+    const now = this.ctx.currentTime;
+    const spb = 60.0 / bpm;
+    // Set 3/4 beat delay time
+    this.delayNode.delayTime.setValueAtTime(spb * 0.75, now);
+
+    // Immediately open wet output to master bus
+    this.delayWetGain.gain.cancelScheduledValues(now);
+    this.delayWetGain.gain.setValueAtTime(0.85, now);
+    this.delayWetGain.gain.exponentialRampToValueAtTime(0.001, now + tailSec);
+
+    // Engage feedback and smooth exponential decay
+    this.delayFeedback.gain.cancelScheduledValues(now);
+    this.delayFeedback.gain.setValueAtTime(0.74, now);
+    this.delayFeedback.gain.exponentialRampToValueAtTime(0.001, now + tailSec);
+
+    // Close input gate immediately (15ms anti-click) so NO NEW AUDIO enters the delay loop
+    this.delayInputGate.gain.cancelScheduledValues(now);
+    this.delayInputGate.gain.setValueAtTime(1.0, now);
+    this.delayInputGate.gain.linearRampToValueAtTime(0.0, now + 0.015);
+
+    // Mute dry path cleanly (15ms anti-click ramp)
+    this.echoSend.gain.cancelScheduledValues(now);
+    this.echoSend.gain.setValueAtTime(1.0, now);
+    this.echoSend.gain.linearRampToValueAtTime(0.0, now + 0.015);
+
+    // Pause the incoming track after 25ms so vocal track stops immediately
+    setTimeout(() => {
+      this.pause();
+    }, 25);
+
+    // Reset loop after tail decays
+    setTimeout(() => {
+      const resetNow = this.ctx.currentTime;
+      this.delayWetGain.gain.setValueAtTime(0.0, resetNow);
+      this.delayFeedback.gain.setValueAtTime(0.0, resetNow);
+      this.delayInputGate.gain.setValueAtTime(1.0, resetNow);
+      this.echoSend.gain.setValueAtTime(1.0, resetNow);
+    }, (tailSec + 0.5) * 1000);
+  }
+
+  loadTrack(url) {
+    this.audio.src = url;
+    this.audio.load();
+    this.cuePosition = 0;
+    this.isPlaying = false;
+  }
+
+  play() {
+    if (this.ctx.state === 'suspended') {
+      this.ctx.resume();
+    }
+    this.audio.play();
+    this.isPlaying = true;
+  }
+
+  pause() {
+    this.audio.pause();
+    this.isPlaying = false;
+  }
+
+  setCue() {
+    this.pause();
+    this.audio.currentTime = this.cuePosition;
+  }
+
+  setPlaybackRate(rate) {
+    this.audio.playbackRate = Math.max(0.5, Math.min(2.0, rate));
+  }
+
+  triggerSpinback(durationSec = 1.2, onComplete = null) {
+    const originalRate = this.audio.playbackRate;
+    const now = this.ctx.currentTime;
+    
+    // Ramping filter up to simulate needle drag & vinyl friction
+    this.filterHPF.frequency.cancelScheduledValues(now);
+    this.filterHPF.frequency.setValueAtTime(20, now);
+    this.filterHPF.frequency.exponentialRampToValueAtTime(3200, now + durationSec * 0.85);
+
+    // Fade out volume sharply near the end of the backspin
+    this.faderGain.gain.cancelScheduledValues(now);
+    this.faderGain.gain.setValueAtTime(1.0, now);
+    this.faderGain.gain.setValueAtTime(1.0, now + durationSec * 0.7);
+    this.faderGain.gain.linearRampToValueAtTime(0.001, now + durationSec);
+
+    const startTime = performance.now();
+    const interval = setInterval(() => {
+      const elapsed = (performance.now() - startTime) / 1000;
+      if (elapsed >= durationSec) {
+        clearInterval(interval);
+        this.pause();
+        this.faderGain.gain.setValueAtTime(1.0, this.ctx.currentTime);
+        this.filterHPF.frequency.setValueAtTime(20, this.ctx.currentTime);
+        this.setPlaybackRate(originalRate);
+        if (onComplete) onComplete();
+      } else {
+        const p = elapsed / durationSec;
+        const scrubRate = Math.max(0.15, 1.8 * Math.cos(p * Math.PI * 0.5));
+        this.setPlaybackRate(scrubRate);
+      }
+    }, 40);
+  }
+
+  duckMids(targetDb = -8.0, durationSec = 0.05) {
+    this.eqMid.gain.setTargetAtTime(targetDb, this.ctx.currentTime, durationSec);
+  }
+
+  unduckMids(durationSec = 0.3) {
+    this.eqMid.gain.setTargetAtTime(0.0, this.ctx.currentTime, durationSec);
+  }
+
+  setEQLow(dB) {
+    this.eqLow.gain.setTargetAtTime(dB, this.ctx.currentTime, 0.015);
+  }
+
+  setEQMid(dB) {
+    this.eqMid.gain.setTargetAtTime(dB, this.ctx.currentTime, 0.015);
+  }
+
+  setEQHigh(dB) {
+    this.eqHigh.gain.setTargetAtTime(dB, this.ctx.currentTime, 0.015);
+  }
+
+  setColorFilter(val) {
+    // val ranges from -50 (full LPF) to +50 (full HPF), 0 = neutral
+    const now = this.ctx.currentTime;
+    if (val < 0) {
+      // Low-pass filter active
+      const norm = Math.abs(val) / 50.0;
+      const cutoff = 20000 * Math.pow(0.01, norm); // 20000Hz down to 200Hz
+      this.filterLPF.frequency.setTargetAtTime(cutoff, now, 0.02);
+      this.filterHPF.frequency.setTargetAtTime(20, now, 0.02);
+    } else if (val > 0) {
+      // High-pass filter active
+      const norm = val / 50.0;
+      const cutoff = 20 * Math.pow(150, norm); // 20Hz up to 3000Hz
+      this.filterHPF.frequency.setTargetAtTime(cutoff, now, 0.02);
+      this.filterLPF.frequency.setTargetAtTime(20000, now, 0.02);
+    } else {
+      this.filterLPF.frequency.setTargetAtTime(20000, now, 0.02);
+      this.filterHPF.frequency.setTargetAtTime(20, now, 0.02);
+    }
+  }
+
+  // --- Real-Time Neural / Spectral Stem Isolation Engine ---
+  setStem(stemName, isActive) {
+    if (this.stems.hasOwnProperty(stemName)) {
+      this.stems[stemName] = !!isActive;
+      this.updateStemFilters();
+    }
+  }
+
+  toggleStem(stemName) {
+    if (this.stems.hasOwnProperty(stemName)) {
+      this.stems[stemName] = !this.stems[stemName];
+      this.updateStemFilters();
+      return this.stems[stemName];
+    }
+    return true;
+  }
+
+  soloStem(stemName) {
+    Object.keys(this.stems).forEach(k => {
+      this.stems[k] = (k === stemName);
+    });
+    this.updateStemFilters();
+  }
+
+  resetStems() {
+    Object.keys(this.stems).forEach(k => {
+      this.stems[k] = true;
+    });
+    this.updateStemFilters();
+  }
+
+  updateStemFilters() {
+    const now = this.ctx.currentTime;
+    const { vocals, drums, bass, other } = this.stems;
+    const activeCount = (vocals ? 1 : 0) + (drums ? 1 : 0) + (bass ? 1 : 0) + (other ? 1 : 0);
+
+    // Case 1: All active (100% transparent bit-perfect direct studio audio)
+    if (activeCount === 4) {
+      this.masterDirectGain.gain.setTargetAtTime(1.0, now, 0.015);
+      this.stemsSumGain.gain.setTargetAtTime(0.0, now, 0.015);
+      this.stemGainVocals.gain.setTargetAtTime(1.0, now, 0.015);
+      this.stemGainDrums.gain.setTargetAtTime(1.0, now, 0.015);
+      this.stemGainBass.gain.setTargetAtTime(1.0, now, 0.015);
+      this.stemGainOther.gain.setTargetAtTime(1.0, now, 0.015);
+      return;
+    }
+
+    // Case 2: All muted
+    if (activeCount === 0) {
+      this.masterDirectGain.gain.setTargetAtTime(0.0, now, 0.015);
+      this.stemsSumGain.gain.setTargetAtTime(0.0, now, 0.015);
+      return;
+    }
+
+    // Smoothly crossfade from Direct Path to Stems Matrix
+    this.masterDirectGain.gain.setTargetAtTime(0.0, now, 0.015);
+    this.stemsSumGain.gain.setTargetAtTime(1.0, now, 0.015);
+
+    // Case 3: Solo Mode (Exactly 1 active stem)
+    if (activeCount === 1) {
+      // In solo mode, apply optimal acoustic isolation & clarity gain boost
+      this.stemGainVocals.gain.setTargetAtTime(vocals ? 1.40 : 0.0001, now, 0.015);
+      this.stemGainDrums.gain.setTargetAtTime(drums ? 1.25 : 0.0001, now, 0.015);
+      this.stemGainBass.gain.setTargetAtTime(bass ? 1.30 : 0.0001, now, 0.015);
+      this.stemGainOther.gain.setTargetAtTime(other ? 1.20 : 0.0001, now, 0.015);
+      return;
+    }
+
+    // Case 4: Mute / Multi-stem Mode (2 or 3 active stems)
+    this.stemGainVocals.gain.setTargetAtTime(vocals ? 1.0 : 0.0001, now, 0.015);
+    this.stemGainDrums.gain.setTargetAtTime(drums ? 1.0 : 0.0001, now, 0.015);
+    this.stemGainBass.gain.setTargetAtTime(bass ? 1.0 : 0.0001, now, 0.015);
+    this.stemGainOther.gain.setTargetAtTime(other ? 1.0 : 0.0001, now, 0.015);
+  }
+
+  setVolume(pct) {
+    this.faderGain.gain.setTargetAtTime(pct / 100.0, this.ctx.currentTime, 0.02);
+  }
+
+  getVULevel() {
+    const data = new Uint8Array(this.analyser.frequencyBinCount);
+    this.analyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      sum += data[i];
+    }
+    return sum / (data.length * 255);
+  }
+
+  // --- SUBTLE ECHO WASH (adds wet delay over dry without pausing the deck) ---
+  engageSubtleEcho(bpm = 128.0, wetLevel = 0.35) {
+    const now = this.ctx.currentTime;
+    const spb = 60.0 / bpm;
+    this.delayNode.delayTime.setValueAtTime(spb * 0.75, now);
+    this.delayFeedback.gain.cancelScheduledValues(now);
+    this.delayFeedback.gain.setValueAtTime(0.45, now);
+    this.delayWetGain.gain.cancelScheduledValues(now);
+    this.delayWetGain.gain.setValueAtTime(0.0, now);
+    this.delayWetGain.gain.linearRampToValueAtTime(wetLevel, now + 0.8);
+    this._echoEngaged = true;
+  }
+
+  disengageSubtleEcho(fadeSec = 2.5) {
+    const now = this.ctx.currentTime;
+    this.delayWetGain.gain.cancelScheduledValues(now);
+    this.delayWetGain.gain.setValueAtTime(this.delayWetGain.gain.value, now);
+    this.delayWetGain.gain.exponentialRampToValueAtTime(0.001, now + fadeSec);
+    this.delayFeedback.gain.cancelScheduledValues(now);
+    this.delayFeedback.gain.setValueAtTime(this.delayFeedback.gain.value, now);
+    this.delayFeedback.gain.exponentialRampToValueAtTime(0.001, now + fadeSec);
+    this._echoEngaged = false;
+    setTimeout(() => {
+      const resetNow = this.ctx.currentTime;
+      this.delayWetGain.gain.setValueAtTime(0.0, resetNow);
+      this.delayFeedback.gain.setValueAtTime(0.0, resetNow);
+      this.delayInputGate.gain.setValueAtTime(1.0, resetNow);
+      this.echoSend.gain.setValueAtTime(1.0, resetNow);
+    }, (fadeSec + 0.5) * 1000);
+  }
+
+  // --- LOOP ROLL: Accelerating stutter via audio seeking with anti-click gain envelope ---
+  triggerLoopRoll(bpm = 128.0, totalBars = 4, onComplete = null) {
+    const spb = 60.0 / bpm;
+    const totalSec = totalBars * 4 * spb;
+    const anchor = this.audio.currentTime;
+    const startPerf = performance.now();
+    this._loopRollActive = true;
+
+    const rollFrame = () => {
+      if (!this._loopRollActive) return;
+      const elapsed = (performance.now() - startPerf) / 1000;
+      if (elapsed >= totalSec) {
+        this._loopRollActive = false;
+        const ct = this.ctx.currentTime;
+        this.faderGain.gain.cancelScheduledValues(ct);
+        this.faderGain.gain.setValueAtTime(1.0, ct);
+        if (onComplete) onComplete();
+        return;
+      }
+
+      const progress = elapsed / totalSec;
+      let divBeats;
+      if (progress < 0.25) divBeats = 4;
+      else if (progress < 0.45) divBeats = 2;
+      else if (progress < 0.65) divBeats = 1;
+      else if (progress < 0.80) divBeats = 0.5;
+      else divBeats = 0.25;
+
+      const loopLen = divBeats * spb;
+      if (this.audio.currentTime > anchor + loopLen) {
+        const ct = this.ctx.currentTime;
+        this.faderGain.gain.setValueAtTime(this.faderGain.gain.value, ct);
+        this.faderGain.gain.linearRampToValueAtTime(0.001, ct + 0.004);
+        this.audio.currentTime = anchor;
+        this.faderGain.gain.setValueAtTime(0.001, ct + 0.005);
+        this.faderGain.gain.linearRampToValueAtTime(1.0, ct + 0.009);
+      }
+
+      requestAnimationFrame(rollFrame);
+    };
+
+    // Also apply HPF sweep for tension riser feel
+    const now = this.ctx.currentTime;
+    this.filterHPF.frequency.cancelScheduledValues(now);
+    this.filterHPF.frequency.setValueAtTime(20, now);
+    this.filterHPF.frequency.exponentialRampToValueAtTime(2500, now + totalSec);
+
+    requestAnimationFrame(rollFrame);
+  }
+
+  cancelLoopRoll() {
+    this._loopRollActive = false;
+    const now = this.ctx.currentTime;
+    this.faderGain.gain.cancelScheduledValues(now);
+    this.faderGain.gain.setValueAtTime(1.0, now);
+    this.filterHPF.frequency.cancelScheduledValues(now);
+    this.filterHPF.frequency.setValueAtTime(20, now);
+  }
+
+  // --- PRE-DROP SILENCE GAP: Momentary gain cut for anticipation ---
+  triggerPreDropGap(durationSec = 0.3) {
+    const now = this.ctx.currentTime;
+    this.faderGain.gain.cancelScheduledValues(now);
+    this.faderGain.gain.setValueAtTime(1.0, now);
+    this.faderGain.gain.linearRampToValueAtTime(0.001, now + 0.008);
+    this.faderGain.gain.setValueAtTime(0.001, now + durationSec - 0.008);
+    this.faderGain.gain.linearRampToValueAtTime(1.0, now + durationSec);
+  }
+
+  // --- RESET ALL FX TO NEUTRAL ---
+  resetAllFX() {
+    const now = this.ctx.currentTime;
+    this.filterLPF.frequency.cancelScheduledValues(now);
+    this.filterLPF.frequency.setValueAtTime(20000, now);
+    this.filterHPF.frequency.cancelScheduledValues(now);
+    this.filterHPF.frequency.setValueAtTime(20, now);
+    this.faderGain.gain.cancelScheduledValues(now);
+    this.faderGain.gain.setValueAtTime(1.0, now);
+    this.delayWetGain.gain.cancelScheduledValues(now);
+    this.delayWetGain.gain.setValueAtTime(0.0, now);
+    this.delayFeedback.gain.cancelScheduledValues(now);
+    this.delayFeedback.gain.setValueAtTime(0.0, now);
+    this.delayInputGate.gain.setValueAtTime(1.0, now);
+    this.echoSend.gain.setValueAtTime(1.0, now);
+    this._loopRollActive = false;
+    this._echoEngaged = false;
+  }
+}
+
+class DJAudioEngine {
+  constructor() {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    this.ctx = new AudioCtx();
+
+    this.masterGain = this.ctx.createGain();
+    this.masterGain.gain.value = 1.0;
+    this.masterGain.connect(this.ctx.destination);
+
+    this.deck1 = new DJDeckAudio(this.ctx, 1, this.masterGain);
+    this.deck2 = new DJDeckAudio(this.ctx, 2, this.masterGain);
+  }
+
+  setCrossfader(val, curve = 'club') {
+    // val from 0 (all Deck 1) to 100 (all Deck 2)
+    const t = Math.max(0, Math.min(100, val)) / 100.0;
+    const now = this.ctx.currentTime;
+    
+    let gain1, gain2;
+    if (curve === 'club') {
+      // Pioneer DJM Club Curve: preserves full loudness across center blend
+      gain1 = Math.min(1.0, Math.SQRT2 * Math.cos(t * 0.5 * Math.PI));
+      gain2 = Math.min(1.0, Math.SQRT2 * Math.sin(t * 0.5 * Math.PI));
+    } else {
+      // Standard Equal-power crossfade curve
+      gain1 = Math.cos(t * 0.5 * Math.PI);
+      gain2 = Math.sin(t * 0.5 * Math.PI);
+    }
+    this.deck1.cfGain.gain.setTargetAtTime(gain1, now, 0.015);
+    this.deck2.cfGain.gain.setTargetAtTime(gain2, now, 0.015);
+  }
+
+  triggerNoiseRiser(bpm = 128.0, bars = 4, onComplete = null) {
+    const spb = 60.0 / bpm;
+    const totalSec = bars * 4 * spb;
+    const now = this.ctx.currentTime;
+    
+    // Create white noise buffer
+    const bufferSize = Math.floor(this.ctx.sampleRate * totalSec);
+    const noiseBuffer = this.ctx.createBuffer(2, bufferSize, this.ctx.sampleRate);
+    for (let ch = 0; ch < 2; ch++) {
+      const data = noiseBuffer.getChannelData(ch);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = (Math.random() * 2 - 1) * 0.35;
+      }
+    }
+
+    const noiseSrc = this.ctx.createBufferSource();
+    noiseSrc.buffer = noiseBuffer;
+
+    // HPF Filter sweep from 150Hz to 8500Hz
+    const filter = this.ctx.createBiquadFilter();
+    filter.type = 'highpass';
+    filter.frequency.setValueAtTime(150, now);
+    filter.frequency.exponentialRampToValueAtTime(8500, now + totalSec - spb);
+
+    // Rhythmic pump gain (ducking on downbeats)
+    const pumpGain = this.ctx.createGain();
+    pumpGain.gain.setValueAtTime(0.3, now);
+    const totalBeats = bars * 4;
+    for (let b = 0; b < totalBeats - 1; b++) {
+      const beatStart = now + b * spb;
+      pumpGain.gain.setValueAtTime(0.25, beatStart);
+      pumpGain.gain.linearRampToValueAtTime(0.95, beatStart + spb * 0.85);
+    }
+    // Drop silence on the very last beat
+    pumpGain.gain.setValueAtTime(0.0, now + totalSec - spb);
+
+    // Master volume swell
+    const riserGain = this.ctx.createGain();
+    riserGain.gain.setValueAtTime(0.1, now);
+    riserGain.gain.exponentialRampToValueAtTime(0.85, now + totalSec - spb);
+    riserGain.gain.setValueAtTime(0.0, now + totalSec - spb);
+
+    noiseSrc.connect(filter);
+    filter.connect(pumpGain);
+    pumpGain.connect(riserGain);
+    riserGain.connect(this.masterGain);
+
+    noiseSrc.start(now);
+    noiseSrc.stop(now + totalSec);
+
+    setTimeout(() => {
+      if (onComplete) onComplete();
+    }, totalSec * 1000);
+  }
+
+  // --- DROP IMPACT: Sub-bass boom + crash splash on the 1 ---
+  triggerDropImpact(bpm = 128.0) {
+    const now = this.ctx.currentTime;
+    const sr = this.ctx.sampleRate;
+
+    // Sub-bass boom: pitch-swept sine 70Hz → 35Hz
+    const boomDur = 0.8;
+    const boomLen = Math.floor(sr * boomDur);
+    const boomBuf = this.ctx.createBuffer(2, boomLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = boomBuf.getChannelData(ch);
+      let phaseAcc = 0;
+      for (let i = 0; i < boomLen; i++) {
+        const t = i / sr;
+        const freq = 70.0 * Math.exp(-t * 8.0) + 35.0;
+        phaseAcc += (2 * Math.PI * freq) / sr;
+        d[i] = Math.sin(phaseAcc) * Math.exp(-t * 4.0) * 0.4;
+      }
+    }
+    const boomSrc = this.ctx.createBufferSource();
+    boomSrc.buffer = boomBuf;
+    const boomLPF = this.ctx.createBiquadFilter();
+    boomLPF.type = 'lowpass';
+    boomLPF.frequency.value = 120;
+    const boomGain = this.ctx.createGain();
+    boomGain.gain.setValueAtTime(0.45, now);
+    boomGain.gain.exponentialRampToValueAtTime(0.001, now + boomDur);
+    boomSrc.connect(boomLPF);
+    boomLPF.connect(boomGain);
+    boomGain.connect(this.masterGain);
+    boomSrc.start(now);
+    boomSrc.stop(now + boomDur);
+
+    // High-frequency crash / reverb splash
+    const crashDur = 1.5;
+    const crashLen = Math.floor(sr * crashDur);
+    const crashBuf = this.ctx.createBuffer(2, crashLen, sr);
+    for (let ch = 0; ch < 2; ch++) {
+      const d = crashBuf.getChannelData(ch);
+      for (let i = 0; i < crashLen; i++) {
+        const t = i / sr;
+        d[i] = (Math.random() * 2 - 1) * Math.exp(-t * 3.5) * 0.12;
+      }
+    }
+    const crashSrc = this.ctx.createBufferSource();
+    crashSrc.buffer = crashBuf;
+    const crashHPF = this.ctx.createBiquadFilter();
+    crashHPF.type = 'highpass';
+    crashHPF.frequency.value = 5000;
+    const crashGain = this.ctx.createGain();
+    crashGain.gain.setValueAtTime(0.20, now);
+    crashGain.gain.exponentialRampToValueAtTime(0.001, now + crashDur);
+    crashSrc.connect(crashHPF);
+    crashHPF.connect(crashGain);
+    crashGain.connect(this.masterGain);
+    crashSrc.start(now);
+    crashSrc.stop(now + crashDur);
+  }
+}
+
+window.DJAudioEngine = DJAudioEngine;
