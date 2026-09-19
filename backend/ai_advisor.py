@@ -166,7 +166,14 @@ def call_jev_system_one(
         },
         "blend_rating": {
             "type": "score",
-            "instructions": "Rate overall mix blend smoothness and musical compatibility on a scale from 1 to 100."
+            "instructions": "Rate overall mix blend smoothness and musical compatibility.",
+            "criteria": [
+                "Severe key clash or chaotic collision.",
+                "Rough clash requiring heavy EQ cuts.",
+                "Average mix requiring volume adjustments.",
+                "Smooth harmonic blend with natural handoff.",
+                "Flawless imperceptible blend."
+            ]
         }
     }
 
@@ -193,23 +200,28 @@ def call_jev_system_one(
             answers = data.get("answers", data)
             
             tech_obj = answers.get("technique", {})
-            tech_val = tech_obj.get("value", "bass_swap") if isinstance(tech_obj, dict) else str(tech_obj)
+            tech_val = tech_obj.get("choice") or tech_obj.get("value") or "bass_swap"
             tech_conf = float(tech_obj.get("confidence", 0.95)) if isinstance(tech_obj, dict) and tech_obj.get("confidence") is not None else 0.95
             
             bars_obj = answers.get("transition_bars", {})
-            raw_bars = bars_obj.get("value", 16) if isinstance(bars_obj, dict) else bars_obj
+            raw_bars = bars_obj.get("choice") or bars_obj.get("value") or 16
             try:
                 bars_val = int(raw_bars)
             except Exception:
                 bars_val = 16
             
             duck_obj = answers.get("vocal_ducking", {})
-            duck_val = bool(duck_obj.get("value", False) if isinstance(duck_obj, dict) else duck_obj)
+            noul_val = duck_obj.get("noul")
+            if noul_val is not None:
+                duck_val = bool(float(noul_val) >= 0.5)
+            else:
+                duck_val = bool(duck_obj.get("value", False))
             
             score_obj = answers.get("blend_rating", {})
-            raw_score = score_obj.get("value", 88.0) if isinstance(score_obj, dict) else score_obj
+            raw_score = score_obj.get("score") if score_obj.get("score") is not None else score_obj.get("value", 3.2)
             try:
-                score_val = float(raw_score)
+                # Scale from 0-4 to 1-100 percentage
+                score_val = round(max(1.0, min(100.0, (float(raw_score) / 4.0) * 100.0)), 1)
             except Exception:
                 score_val = 88.0
 

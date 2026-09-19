@@ -728,6 +728,27 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   loadInitialDefaultTracks();
 
+  async function checkServerAIStatus() {
+    try {
+      const res = await fetch('/api/ai-status');
+      const data = await res.json();
+      if (data.status === 'success' && data.jev_configured) {
+        if (jevKeyInput && !jevKeyInput.value) {
+          jevKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
+        }
+        if (aiSourceBadge) {
+          aiSourceBadge.textContent = '⚡ TypeSafe Jev System One Active (Render Env)';
+        }
+        if (aiModelSelect && !localStorage.getItem('ai_dj_model')) {
+          aiModelSelect.value = 'jev-latest';
+        }
+      }
+    } catch (e) {
+      console.warn('Could not check server AI status:', e);
+    }
+  }
+  checkServerAIStatus();
+
 
 
   // --- Harmonic Compatibility & AI Live Recommendation ---

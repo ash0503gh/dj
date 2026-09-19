@@ -206,6 +206,19 @@ async def get_ai_recommendation(file_id_1: str, file_id_2: str, direction: str =
         rec = ai_analyze_and_recommend_transition(an1, an2)
     return JSONResponse(content={"status": "success", "recommendation": rec})
 
+@app.get("/api/ai-status")
+async def get_ai_status():
+    """Checks whether AI providers (Jev System One or Gemini) are configured via server environment."""
+    from .ai_advisor import get_jev_api_key, get_gemini_api_key
+    has_jev = bool(get_jev_api_key())
+    has_gemini = bool(get_gemini_api_key())
+    return JSONResponse(content={
+        "status": "success",
+        "jev_configured": has_jev,
+        "gemini_configured": has_gemini,
+        "active_engine": "jev" if has_jev else ("gemini" if has_gemini else "local")
+    })
+
 @app.post("/api/ai-strategy")
 async def get_ai_strategy_endpoint(
     file_id_1: str = Form(...),
