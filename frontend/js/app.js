@@ -318,7 +318,9 @@ document.addEventListener('DOMContentLoaded', () => {
         'loop_roll': '🌀 STUTTER LOOP ROLL RISER',
         'vinyl_brake': '⚡ TURNTABLE BRAKE & DROP',
         'spinback': '💫 VINYL SPINBACK & DROP',
-        'noise_riser': '📈 WHITE NOISE RISER & DROP'
+        'noise_riser': '📈 WHITE NOISE RISER & DROP',
+        'festival_drop': '🎆 FESTIVAL BUILD & DROP',
+        'hard_cut': '✂️ HARD CUT (BEAT 1 SNAP)'
       };
       transitionStateSub.textContent = names[selectedTechnique] || selectedTechnique.toUpperCase();
     }
@@ -1805,8 +1807,44 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // TECHNIQUE 7: HARD CUT (INSTANT DOWNBEAT SNAP)
+    if (effectiveTech === 'hard_cut') {
+      setTimeout(() => {
+        clearInterval(hudInterval);
+        phraseHud.classList.add('hidden');
+        transitionStatusBanner.textContent = `✂️ HARD CUT: INSTANT 0ms SNAP TO ${inDeckName}!`;
+
+        // Instantly mute / pause and reset outgoing deck
+        outDeck.pause();
+        outBtnPlay.classList.remove('playing');
+        outBtnPlay.textContent = '▶ PLAY';
+        resetDeckEQs(outDeckNum);
+        outDeck.resetAllFX();
+        outFilter.value = 0;
+        outDeck.setColorFilter(0);
+
+        // Snap crossfader to target
+        crossfader.value = targetCf;
+        engine.setCrossfader(targetCf, 'club');
+
+        // Incoming deck starts on the 1 with full punch
+        resetDeckEQs(inDeckNum);
+        const introCue = getTrackIntroCue(inTrack);
+        inDeck.audio.currentTime = introCue;
+
+        // Sub drop impact boom on beat 1 for punch
+        engine.triggerDropImpact(inTrack.bpm);
+        inDeck.play();
+        inBtnPlay.classList.add('playing');
+        inBtnPlay.textContent = '⏸ PAUSE';
+
+        finishTransition(renderPromise);
+      }, waitMs);
+      return;
+    }
+
     // ===================================================================
-    // TECHNIQUE 7 (DEFAULT): PRO SEAMLESS BLEND
+    // TECHNIQUE 8 (DEFAULT): PRO SEAMLESS BLEND
     // Research-backed imperceptible transition using multi-layer automation:
     //  - Quintic Smootherstep curves (6t^5 - 15t^4 + 10t^3) for zero-jerk EQ motion
     //  - Hi-first-in / Hi-last-out EQ management (hi-hats maintain rhythmic continuity)

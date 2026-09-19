@@ -94,7 +94,21 @@ def ai_analyze_and_recommend_transition(info_1: Dict[str, Any], info_2: Dict[str
             }
         }
 
-    # Priority 3: Wide tempo difference (> 10 BPM)
+    # Priority 3: Extreme tempo difference (> 18 BPM) -> Hard Cut on the 1
+    if delta_bpm > 18.0:
+        return {
+            "recommended_technique": "hard_cut",
+            "technique_name": "✂️ Hard Cut on Beat 1 (Instant Snap)",
+            "confidence": 0.96,
+            "reasoning": f"Extreme tempo disparity (Δ{delta_bpm:.1f} BPM: {bpm_1:.1f} → {bpm_2:.1f} BPM). Blending across this speed gap creates rhythmic trainwrecks. Instant 0ms Hard Cut locked to Beat 1 resets the groove with dynamic surprise.",
+            "recommended_bars": 8,
+            "acoustic_analysis": {
+                "delta_bpm": round(delta_bpm, 1),
+                "tempo_friction": "EXTREME"
+            }
+        }
+
+    # Priority 3B: Wide tempo difference (> 10 BPM)
     if delta_bpm > 10.0:
         return {
             "recommended_technique": "echo_freeze",
@@ -442,6 +456,37 @@ def render_pro_transition(
 
         master_mix = np.hstack([s1_pre_build, s1_build_chunk, s2_with_boom])
         mix_start_sec = max(0, cue_1_sec - (build_samples / sr))
+        mix_swap_sec = cue_1_sec
+        mix_end_sec = cue_1_sec + 4.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 6B: HARD CUT (INSTANT DOWNBEAT SNAP)
+    # -------------------------------------------------------------
+    elif selected_technique == "hard_cut":
+        if progress_cb: progress_cb(0.40, "Executing instantaneous 0ms downbeat cut...")
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample].copy()
+
+        # 5ms anti-click micro de-click fade out
+        fade_len = min(int(0.005 * sr), s1_pre.shape[1])
+        if fade_len > 0:
+            s1_pre[:, -fade_len:] *= np.linspace(1.0, 0.0, fade_len)
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:].copy()
+        if fade_len > 0 and s2_play.shape[1] >= fade_len:
+            s2_play[:, :fade_len] *= np.linspace(0.0, 1.0, fade_len)
+
+        # Subtle sub drop boom on the 1 for punch
+        t_boom = np.linspace(0, 0.5, int(0.5 * sr), endpoint=False)
+        boom_freq = 65.0 * np.exp(-t_boom * 16.0) + 30.0
+        boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 6.0) * 0.35
+        boom_stereo = np.vstack([boom, boom])
+        b_len = min(boom_stereo.shape[1], s2_play.shape[1])
+        s2_play[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre, s2_play])
+        mix_start_sec = max(0, cue_1_sec - 1.0)
         mix_swap_sec = cue_1_sec
         mix_end_sec = cue_1_sec + 4.0
 
