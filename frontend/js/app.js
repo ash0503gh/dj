@@ -590,9 +590,64 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // ═══════════════════════════════════════════════════
+  // PRO DJ HOT CUES: Automatic 4-Point Detection
+  // ═══════════════════════════════════════════════════
+  function computeTrackHotCues(track) {
+    if (!track) return { cue_1: 0, cue_2: 30, cue_3: 60, cue_4: 120 };
+    const dur = track.duration || 180;
+    const bpm = track.bpm || 128;
+    const spb = 60.0 / Math.max(60, bpm);
+
+    // Cue 1 (INTRO): First downbeat (or suggested_cue_intro or 0)
+    let cue1 = (track.suggested_cue_intro !== undefined && track.suggested_cue_intro >= 0)
+      ? track.suggested_cue_intro
+      : (track.downbeat_times && track.downbeat_times.length > 0 ? track.downbeat_times[0] : 0.0);
+
+    // Cue 2 (VERSE / BREAKDOWN): Melodic breakdown entrance (phrase 2)
+    let cue2 = Math.min(dur * 0.45, Math.max(cue1 + 16 * 4 * spb, cue1 + 25));
+    if (track.phrase_16_times && track.phrase_16_times.length > 1) {
+      cue2 = track.phrase_16_times[1];
+    }
+
+    // Cue 3 (MAIN DROP): Peak energy drop after breakdown (phrase 3 or mid)
+    let cue3 = Math.min(dur * 0.70, Math.max(cue2 + 16 * 4 * spb, dur * 0.48));
+    if (track.phrase_16_times && track.phrase_16_times.length > 2) {
+      cue3 = track.phrase_16_times[2];
+    }
+
+    // Cue 4 (OUTRO): Start of outro beats (~16 bars before track end)
+    let cue4 = Math.max(cue3 + 15, dur - (16 * 4 * spb));
+    if (track.suggested_cue_outro && track.suggested_cue_outro > cue3) {
+      cue4 = track.suggested_cue_outro;
+    } else if (track.phrase_16_times && track.phrase_16_times.length > 3) {
+      const lastPhrase = track.phrase_16_times[track.phrase_16_times.length - 1];
+      if (lastPhrase > dur * 0.65) cue4 = lastPhrase;
+    }
+
+    return {
+      cue_1: Math.round(cue1 * 100) / 100,
+      cue_2: Math.round(cue2 * 100) / 100,
+      cue_3: Math.round(cue3 * 100) / 100,
+      cue_4: Math.round(cue4 * 100) / 100,
+    };
+  }
+
   // --- Load Track Into Deck ---
   function loadTrackIntoDeck(deckNum, track) {
     resetDeckEQs(deckNum);
+    track.hot_cues = computeTrackHotCues(track);
+
+    // Update Hot Cue buttons title/tooltip with exact timestamps
+    const cueLabels = ['INTRO', 'VERSE', 'MAIN DROP', 'OUTRO'];
+    [1, 2, 3, 4].forEach(cNum => {
+      const btn = document.getElementById(`d${deckNum}-cue-${cNum}`);
+      if (btn) {
+        const sec = track.hot_cues[`cue_${cNum}`];
+        btn.title = `Snap to Cue ${cNum}: ${cueLabels[cNum - 1]} (${formatTime(sec)})`;
+      }
+    });
+
     const ac = track.acoustic_profile || {};
     const outroVocal = ac.outro_vocal_score !== undefined ? ac.outro_vocal_score : (ac.intro_vocal_score || 0.0);
     const vocalPct = Math.round(outroVocal * 100);
@@ -818,6 +873,7 @@ document.addEventListener('DOMContentLoaded', () => {
       key: trackData.key || 'Unknown',
       duration: trackData.duration || 180.0,
       current_position: deck.audio.currentTime || 0.0,
+      hot_cues: trackData.hot_cues || computeTrackHotCues(trackData),
     };
 
     // Extract spectral energy from pre-computed waveform bins
@@ -1001,6 +1057,42 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       requestAnimationFrame(brakeFrame);
     }
+
+    // 4-Stem Isolation Mashup
+    if (fx.stem_mashup && p >= fx.stem_mashup.switch_at && !fxState.stemsSwitched) {
+      fxState.stemsSwitched = true;
+      if (fx.stem_mashup.outgoing_mute === 'bass_first') {
+        outDeck.setStemLevels({ bass: 0.001, vocals: 1.0, drums: 1.0, other: 1.0 }, 0.08);
+      } else if (fx.stem_mashup.outgoing_mute === 'vocals_first') {
+        outDeck.setStemLevels({ vocals: 0.001, bass: 1.0, drums: 1.0, other: 1.0 }, 0.08);
+      }
+
+      if (fx.stem_mashup.incoming_focus === 'drums_first') {
+        inDeck.setStemLevels({ drums: 1.0, bass: 0.001, vocals: 0.001, other: 0.001 }, 0.08);
+      } else if (fx.stem_mashup.incoming_focus === 'vocals_first') {
+        inDeck.setStemLevels({ vocals: 1.0, drums: 0.001, bass: 0.001, other: 0.001 }, 0.08);
+      } else if (fx.stem_mashup.incoming_focus === 'bass_and_drums') {
+        inDeck.setStemLevels({ drums: 1.0, bass: 1.0, vocals: 0.001, other: 0.001 }, 0.08);
+      }
+    }
+
+    // Resonant LFO Flanger Sweep
+    if (fx.flanger && p >= fx.flanger.start_at && !fxState.flangerEngaged) {
+      fxState.flangerEngaged = true;
+      outDeck.engageFlanger(fx.flanger.speed, fx.flanger.depth, 0.55, fx.flanger.wet);
+    }
+
+    // Beat-Synced Masher Stutter
+    if (fx.beat_masher && p >= fx.beat_masher.start_at && !fxState.beatMasherStarted) {
+      fxState.beatMasherStarted = true;
+      outDeck.triggerBeatMasher(bpm, fx.beat_masher.division, fx.beat_masher.bars);
+    }
+
+    // Turntable Pitch Bend
+    if (fx.pitch_bend && p >= fx.pitch_bend.start_at && !fxState.pitchBendStarted) {
+      fxState.pitchBendStarted = true;
+      outDeck.triggerPitchBend(fx.pitch_bend.semitones, 2.0, fx.pitch_bend.style);
+    }
   }
 
   // ═══════════════════════════════════════════════════
@@ -1050,8 +1142,14 @@ document.addEventListener('DOMContentLoaded', () => {
     inDeck.setPlaybackRate(syncRate);
     if (inPitchVal) inPitchVal.textContent = `${((syncRate - 1) * 100).toFixed(1)}%`;
 
-    const introCue = inTrack.suggested_cue_intro || 0;
-    inDeck.audio.currentTime = introCue;
+    // CUE SNAPPING: Snap cleanly on Beat 1 of chosen Hot Cue with ZERO jog spin/drag
+    const targetCueTime = (bp.meta && bp.meta.chosen_cue_time !== undefined && bp.meta.chosen_cue_time !== null)
+      ? bp.meta.chosen_cue_time
+      : (inTrack.suggested_cue_intro || 0);
+
+    inDeck.audio.currentTime = targetCueTime;
+    const inWave = (inDeckNum === 1) ? wave1 : wave2;
+    if (inWave) inWave.setTime(targetCueTime);
     isTransitionPhaseLocked = true;
 
     inDeck.play();
@@ -1067,7 +1165,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const blockLabels = {
       bass_swap: '🔊 BASS SWAP', echo_wash: '🔁 ECHO WASH', hpf_sweep: '📡 HPF SWEEP',
       loop_roll: '🌀 LOOP ROLL', noise_riser: '📈 NOISE RISER', vinyl_brake: '⚡ VINYL BRAKE',
-      predrop_gap: '⏸ PRE-DROP GAP', drop_impact: '💥 DROP IMPACT', vocal_ducking: '🎤 VOCAL DUCK'
+      predrop_gap: '⏸ PRE-DROP GAP', drop_impact: '💥 DROP IMPACT', vocal_ducking: '🎤 VOCAL DUCK',
+      stem_mashup: '🎛️ STEM MASH', flanger: '🌀 FLANGER', beat_masher: '⚡ MASHER', pitch_bend: '💿 PITCH BEND'
     };
     const activeLabel = bp.meta.active_blocks
       .map(b => blockLabels[b] || b.toUpperCase())
@@ -1092,20 +1191,28 @@ document.addEventListener('DOMContentLoaded', () => {
       // HPF sweep on outgoing
       const hpfHz = interpolateKeyframes(bp.keyframes.outgoing_hpf_hz, p);
       outDeck.filterHPF.frequency.setValueAtTime(Math.max(20, hpfHz), outDeck.ctx.currentTime);
-      // Map to UI filter slider (0-50 range where 50 = 20kHz HPF)
       if (outFilter) {
         const filterVal = Math.floor(Math.min(50, (hpfHz / 4000) * 50));
         outFilter.value = filterVal;
       }
 
-      // Crossfader
-      const cfVal = isDir1to2
-        ? interpolateKeyframes(bp.keyframes.crossfader, p)
-        : (100 - interpolateKeyframes(bp.keyframes.crossfader, p));
+      // Crossfader: LOCKED PERMANENTLY AT 50% CENTER
       if (typeof crossfader !== 'undefined') {
-        crossfader.value = Math.round(cfVal);
+        crossfader.value = 50;
       }
-      engine.setCrossfader(cfVal, 'club');
+      engine.setCrossfader(50, 'club');
+
+      // Independent Vertical Channel Volume Faders
+      const inFaderNorm = interpolateKeyframes(bp.keyframes.incoming_fader, p);
+      const outFaderNorm = interpolateKeyframes(bp.keyframes.outgoing_fader, p);
+
+      inDeck.setVolume(inFaderNorm * 100);
+      outDeck.setVolume(outFaderNorm * 100);
+
+      const inFaderEl = (inDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+      const outFaderEl = (outDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+      if (inFaderEl) inFaderEl.value = Math.round(inFaderNorm * 100);
+      if (outFaderEl) outFaderEl.value = Math.round(outFaderNorm * 100);
 
       // PLL phase lock
       if (typeof applyPhaseLockLoop === 'function') {
@@ -1122,8 +1229,9 @@ document.addEventListener('DOMContentLoaded', () => {
       // ─── Live HUD ───
       const currentBar = Math.floor(p * bars) + 1;
       const pctDone = Math.round(p * 100);
+      const cueName = (bp.meta && bp.meta.cue_target_name) ? bp.meta.cue_target_name : 'INTRO';
       if (transitionStatusBanner) {
-        transitionStatusBanner.textContent = `⚡ JEV BLUEPRINT: ${activeLabel} (BAR ${currentBar}/${bars} • ${pctDone}%)`;
+        transitionStatusBanner.textContent = `⚡ JEV MIX: ${activeLabel} ➔ ${cueName} (BAR ${currentBar}/${bars} • ${pctDone}%)`;
       }
 
       // ─── Completion or continue ───
@@ -1149,6 +1257,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (fxState.echoEngaged) outDeck.disengageSubtleEcho(2.0);
     if (fxState.vocalDucked) outDeck.unduckMids();
     if (fxState.loopRollStarted) outDeck.cancelLoopRoll();
+    if (fxState.flangerEngaged) outDeck.disengageFlanger(1.0);
+    if (fxState.beatMasherStarted) outDeck.cancelBeatMasher();
+    if (fxState.pitchBendStarted) outDeck.resetPitchBend();
     fxState.vinylBrakeStarted = false;
 
     // Reset EQs
@@ -1160,16 +1271,29 @@ document.addEventListener('DOMContentLoaded', () => {
     outDeck.setColorFilter(0);
     outDeck.filterHPF.frequency.setValueAtTime(20, outDeck.ctx.currentTime);
 
-    // Stop outgoing deck
+    // Stop outgoing deck & zero its channel fader
     outDeck.pause();
+    outDeck.setVolume(0);
+    const outFaderEl = (outDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+    if (outFaderEl) outFaderEl.value = 0;
+
     if (outBtnPlay) {
       outBtnPlay.classList.remove('playing');
       outBtnPlay.textContent = '▶ PLAY';
     }
 
+    // Ensure live incoming deck has 100% volume
+    inDeck.setVolume(100);
+    const inFaderEl = (inDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+    if (inFaderEl) inFaderEl.value = 100;
+
     // Reset incoming to natural rate
     inDeck.setPlaybackRate(1.0);
     if (inPitchVal) inPitchVal.textContent = '0.0%';
+
+    // Keep crossfader centered at 50%
+    if (typeof crossfader !== 'undefined') crossfader.value = 50;
+    engine.setCrossfader(50, 'club');
 
     // Hide abort/manual buttons
     const btnAbort = document.getElementById('btn-abort-transition');
@@ -1180,7 +1304,6 @@ document.addEventListener('DOMContentLoaded', () => {
     isTransitionPhaseLocked = false;
 
     // Reuse existing finishTransition for direction flip and modal
-    // We pass a resolved promise since blueprint transitions don't do server rendering
     finishTransition(Promise.resolve({ status: 'blueprint_complete' }));
   }
 
@@ -1207,12 +1330,25 @@ document.addEventListener('DOMContentLoaded', () => {
     try { engine.deck2.cancelLoopRoll(); } catch(e) {}
     try { engine.deck1.disengageSubtleEcho(0.5); } catch(e) {}
     try { engine.deck2.disengageSubtleEcho(0.5); } catch(e) {}
+    try { engine.deck1.disengageFlanger(0.5); } catch(e) {}
+    try { engine.deck2.disengageFlanger(0.5); } catch(e) {}
+    try { engine.deck1.cancelBeatMasher(); } catch(e) {}
+    try { engine.deck2.cancelBeatMasher(); } catch(e) {}
+    try { engine.deck1.resetPitchBend(); } catch(e) {}
+    try { engine.deck2.resetPitchBend(); } catch(e) {}
+    try { engine.deck1.resetStems(); } catch(e) {}
+    try { engine.deck2.resetStems(); } catch(e) {}
     engine.deck1.setPlaybackRate(1.0);
     engine.deck2.setPlaybackRate(1.0);
 
-    // Pause incoming deck that was launched during transition; keep outgoing deck live
-    const incomingDeck = (transitionDirection === '1_to_2') ? engine.deck2 : engine.deck1;
-    const incomingBtn = (transitionDirection === '1_to_2') ? document.getElementById('d2-btn-play') : document.getElementById('d1-btn-play');
+    // Crossfader remains at 50%
+    if (typeof crossfader !== 'undefined') crossfader.value = 50;
+    engine.setCrossfader(50, 'club');
+
+    // Pause incoming deck that was launched during transition; keep outgoing deck live at 100%
+    const isDir1to2 = (transitionDirection === '1_to_2');
+    const incomingDeck = isDir1to2 ? engine.deck2 : engine.deck1;
+    const incomingBtn = isDir1to2 ? document.getElementById('d2-btn-play') : document.getElementById('d1-btn-play');
     if (incomingDeck) {
       incomingDeck.pause();
     }
@@ -1221,10 +1357,13 @@ document.addEventListener('DOMContentLoaded', () => {
       incomingBtn.textContent = '▶ PLAY';
     }
 
-    // Reset crossfader back to outgoing deck (0 for Deck 1, 100 for Deck 2)
-    const preXf = (transitionDirection === '1_to_2') ? 0 : 100;
-    if (typeof crossfader !== 'undefined') crossfader.value = preXf;
-    engine.setCrossfader(preXf, 'club');
+    // Restore volume faders
+    const outFaderEl = isDir1to2 ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+    const inFaderEl = isDir1to2 ? document.getElementById('d2-vol-fader') : document.getElementById('d1-vol-fader');
+    if (outFaderEl) outFaderEl.value = 100;
+    if (inFaderEl) inFaderEl.value = 100;
+    engine.deck1.setVolume(100);
+    engine.deck2.setVolume(100);
 
     // Reset filter sliders
     const f1 = document.getElementById('d1-filter');
@@ -1235,7 +1374,7 @@ document.addEventListener('DOMContentLoaded', () => {
     isTransitioning = false;
     isTransitionPhaseLocked = false;
     if (btnTriggerTransition) btnTriggerTransition.classList.remove('in-transition');
-    transitionStatusBanner.textContent = '🛑 TRANSITION ABORTED — Full rollback to original deck.';
+    transitionStatusBanner.textContent = '🛑 TRANSITION ABORTED — Full rollback to original playing deck.';
 
     // Hide buttons
     const btnAbort = document.getElementById('btn-abort-transition');
@@ -1930,6 +2069,41 @@ document.addEventListener('DOMContentLoaded', () => {
       btn.classList.add('active');
       selectedBars = parseInt(btn.dataset.bars, 10);
       updateTransitionOverlay();
+    });
+  });
+
+  // ─── Pro DJ Hot Cue Performance Pads (Deck 1 & Deck 2) ───
+  [1, 2].forEach(deckNum => {
+    [1, 2, 3, 4].forEach(cueNum => {
+      const btn = document.getElementById(`d${deckNum}-cue-${cueNum}`);
+      if (btn) {
+        btn.addEventListener('click', () => {
+          const trackData = (deckNum === 1) ? track1Data : track2Data;
+          const deck = (deckNum === 1) ? engine.deck1 : engine.deck2;
+          const wave = (deckNum === 1) ? wave1 : wave2;
+          if (!trackData) {
+            transitionStatusBanner.textContent = `DECK ${deckNum}: PLEASE LOAD A TRACK FIRST`;
+            return;
+          }
+
+          if (!trackData.hot_cues) {
+            trackData.hot_cues = computeTrackHotCues(trackData);
+          }
+
+          const cueKey = `cue_${cueNum}`;
+          const targetTime = trackData.hot_cues[cueKey];
+          if (targetTime !== undefined && targetTime !== null) {
+            deck.audio.currentTime = targetTime;
+            if (wave) wave.setTime(targetTime);
+
+            btn.classList.add('active');
+            setTimeout(() => btn.classList.remove('active'), 250);
+
+            const cueLabels = ['INTRO', 'VERSE', 'MAIN DROP', 'OUTRO'];
+            transitionStatusBanner.textContent = `DECK ${deckNum}: SNAPPED TO CUE ${cueNum} [${cueLabels[cueNum - 1]}] (${formatTime(targetTime)})`;
+          }
+        });
+      }
     });
   });
 

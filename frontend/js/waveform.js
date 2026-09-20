@@ -577,40 +577,49 @@ class RGBWaveform {
       }
     }
 
-    // --- 6. Cue Markers (Green IN, Red OUT) ---
-    if (this.trackData.suggested_cue_intro !== undefined) {
-      const t = this.trackData.suggested_cue_intro;
-      const x = timeToX(t);
-      if (x >= -10 && x <= w + 10) {
-        ctx.fillStyle = '#10b981';
-        ctx.fillRect(x - 2, 14, 4, 14);
-        ctx.beginPath();
-        ctx.moveTo(x - 6, 14);
-        ctx.lineTo(x + 6, 14);
-        ctx.lineTo(x, 22);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 8px sans-serif';
-        ctx.fillText('IN', x + 4, 23);
-      }
-    }
+    // --- 6. Hot Cues (1: INTRO, 2: VERSE, 3: DROP, 4: OUTRO) ---
+    const cueDefs = [
+      { key: 'cue_1', label: '1 INTRO', color: '#10b981' },
+      { key: 'cue_2', label: '2 VERSE', color: '#0ea5e9' },
+      { key: 'cue_3', label: '3 DROP',  color: '#ec4899' },
+      { key: 'cue_4', label: '4 OUTRO', color: '#f97316' }
+    ];
 
-    if (this.trackData.suggested_cue_outro !== undefined) {
-      const t = this.trackData.suggested_cue_outro;
-      const x = timeToX(t);
-      if (x >= -10 && x <= w + 10) {
-        ctx.fillStyle = '#ef4444';
-        ctx.fillRect(x - 2, mainH - 16, 4, 16);
-        ctx.beginPath();
-        ctx.moveTo(x - 6, mainH);
-        ctx.lineTo(x + 6, mainH);
-        ctx.lineTo(x, mainH - 8);
-        ctx.fill();
-        ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 8px sans-serif';
-        ctx.fillText('OUT', x + 4, mainH - 4);
+    const hotCues = this.trackData.hot_cues || {
+      cue_1: (this.trackData.suggested_cue_intro !== undefined) ? this.trackData.suggested_cue_intro : 0,
+      cue_2: (this.trackData.suggested_cue_verse !== undefined) ? this.trackData.suggested_cue_verse : ((this.trackData.duration || 180) * 0.25),
+      cue_3: (this.trackData.suggested_cue_drop !== undefined) ? this.trackData.suggested_cue_drop : ((this.trackData.duration || 180) * 0.50),
+      cue_4: (this.trackData.suggested_cue_outro !== undefined) ? this.trackData.suggested_cue_outro : Math.max(0, (this.trackData.duration || 180) - 30)
+    };
+
+    cueDefs.forEach(cd => {
+      const t = hotCues[cd.key];
+      if (t !== undefined && t !== null) {
+        const x = timeToX(t);
+        if (x >= -20 && x <= w + 20) {
+          ctx.strokeStyle = cd.color;
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.moveTo(x, 14);
+          ctx.lineTo(x, mainH);
+          ctx.stroke();
+
+          ctx.fillStyle = cd.color;
+          ctx.beginPath();
+          ctx.moveTo(x - 5, 14);
+          ctx.lineTo(x + 5, 14);
+          ctx.lineTo(x, 21);
+          ctx.fill();
+
+          ctx.fillStyle = cd.color;
+          ctx.fillRect(x + 2, 14, 42, 11);
+          ctx.fillStyle = '#000000';
+          ctx.font = 'bold 8px -apple-system, sans-serif';
+          ctx.textAlign = 'left';
+          ctx.fillText(cd.label, x + 4, 22);
+        }
       }
-    }
+    });
 
     // --- 7. VirtualDJ Center Playhead Needle ---
     if (isScrolling) {
@@ -714,17 +723,21 @@ class RGBWaveform {
       }
     }
 
-    // Cue dots on mini overview
-    if (this.trackData.suggested_cue_intro !== undefined) {
-      const inX = (this.trackData.suggested_cue_intro / dur) * w;
-      ctx.fillStyle = '#10b981';
-      ctx.fillRect(inX - 1.5, overviewY + 1, 3, overviewH - 2);
-    }
-    if (this.trackData.suggested_cue_outro !== undefined) {
-      const outX = (this.trackData.suggested_cue_outro / dur) * w;
-      ctx.fillStyle = '#ef4444';
-      ctx.fillRect(outX - 1.5, overviewY + 1, 3, overviewH - 2);
-    }
+    // Hot Cue markers on mini overview
+    const overviewCues = this.trackData.hot_cues || {
+      cue_1: (this.trackData.suggested_cue_intro !== undefined) ? this.trackData.suggested_cue_intro : 0,
+      cue_2: (this.trackData.suggested_cue_verse !== undefined) ? this.trackData.suggested_cue_verse : (dur * 0.25),
+      cue_3: (this.trackData.suggested_cue_drop !== undefined) ? this.trackData.suggested_cue_drop : (dur * 0.50),
+      cue_4: (this.trackData.suggested_cue_outro !== undefined) ? this.trackData.suggested_cue_outro : Math.max(0, dur - 30)
+    };
+    const cueColors = { cue_1: '#10b981', cue_2: '#0ea5e9', cue_3: '#ec4899', cue_4: '#f97316' };
+    Object.entries(overviewCues).forEach(([k, t]) => {
+      if (t !== undefined && t !== null) {
+        const cx = (t / dur) * w;
+        ctx.fillStyle = cueColors[k] || '#10b981';
+        ctx.fillRect(cx - 1.5, overviewY + 1, 3, overviewH - 2);
+      }
+    });
 
     // Visible window illuminated bracket in scrolling mode
     if (this.mode === 'scroll') {

@@ -74,6 +74,22 @@ class DJDeckAudio {
     this.delayWetGain = this.ctx.createGain();
     this.delayWetGain.gain.value = 0.0;
 
+    // Resonant LFO Flanger FX
+    this.flangerDelay = this.ctx.createDelay(0.02);
+    this.flangerDelay.delayTime.value = 0.003;
+    this.flangerFeedback = this.ctx.createGain();
+    this.flangerFeedback.gain.value = 0.0;
+    this.flangerLFO = this.ctx.createOscillator();
+    this.flangerLFO.type = 'sine';
+    this.flangerLFO.frequency.value = 0.35;
+    this.flangerLFOGain = this.ctx.createGain();
+    this.flangerLFOGain.gain.value = 0.002;
+    this.flangerLFO.connect(this.flangerLFOGain);
+    this.flangerLFOGain.connect(this.flangerDelay.delayTime);
+    try { this.flangerLFO.start(); } catch (e) {}
+    this.flangerWetGain = this.ctx.createGain();
+    this.flangerWetGain.gain.value = 0.0;
+
     // Crossfader contribution gain
     this.cfGain = this.ctx.createGain();
     this.cfGain.gain.value = (deckNum === 1) ? 1.0 : 0.0;
@@ -277,6 +293,13 @@ class DJDeckAudio {
     this.delayFeedback.connect(this.delayNode);
     this.delayFilter.connect(this.delayWetGain);
     this.delayWetGain.connect(this.destination);
+
+    // Flanger loop & wet routing
+    this.faderGain.connect(this.flangerDelay);
+    this.flangerDelay.connect(this.flangerFeedback);
+    this.flangerFeedback.connect(this.flangerDelay);
+    this.flangerDelay.connect(this.flangerWetGain);
+    this.flangerWetGain.connect(this.cfGain);
 
     this.isPlaying = false;
     this.cuePosition = 0;
@@ -635,6 +658,129 @@ class DJDeckAudio {
     this.faderGain.gain.linearRampToValueAtTime(1.0, now + durationSec);
   }
 
+  // --- RESONANT LFO FLANGER FX ---
+  engageFlanger(speed = 'medium', depth = 0.6, feedback = 0.5, wet = 0.4) {
+    const now = this.ctx.currentTime;
+    const rateHz = (speed === 'fast') ? 1.0 : ((speed === 'slow') ? 0.12 : 0.4);
+    this.flangerLFO.frequency.setValueAtTime(rateHz, now);
+    this.flangerLFOGain.gain.setValueAtTime(0.001 + (depth * 0.002), now);
+    this.flangerFeedback.gain.cancelScheduledValues(now);
+    this.flangerFeedback.gain.linearRampToValueAtTime(Math.min(0.85, feedback * 0.8), now + 0.3);
+    this.flangerWetGain.gain.cancelScheduledValues(now);
+    this.flangerWetGain.gain.linearRampToValueAtTime(wet, now + 0.3);
+    this._flangerEngaged = true;
+  }
+
+  disengageFlanger(fadeSec = 1.0) {
+    const now = this.ctx.currentTime;
+    this.flangerWetGain.gain.cancelScheduledValues(now);
+    this.flangerWetGain.gain.linearRampToValueAtTime(0.001, now + fadeSec);
+    this.flangerFeedback.gain.cancelScheduledValues(now);
+    this.flangerFeedback.gain.linearRampToValueAtTime(0.0, now + fadeSec);
+    this._flangerEngaged = false;
+  }
+
+  // --- BEAT-SYNCED MASHER / STUTTER ---
+  triggerBeatMasher(bpm = 128.0, division = '1/16', totalBars = 2, onComplete = null) {
+    const spb = 60.0 / bpm;
+    const divBeats = (division === '1/32') ? 0.125 : ((division === '1/16') ? 0.25 : ((division === '1/8') ? 0.5 : 1.0));
+    const sliceSec = divBeats * spb;
+    const totalSec = totalBars * 4 * spb;
+    const anchor = this.audio.currentTime;
+    const startPerf = performance.now();
+    this._beatMasherActive = true;
+
+    const masherFrame = () => {
+      if (!this._beatMasherActive) return;
+      const elapsed = (performance.now() - startPerf) / 1000;
+      if (elapsed >= totalSec) {
+        this._beatMasherActive = false;
+        const ct = this.ctx.currentTime;
+        this.faderGain.gain.cancelScheduledValues(ct);
+        this.faderGain.gain.setValueAtTime(1.0, ct);
+        if (onComplete) onComplete();
+        return;
+      }
+
+      if (this.audio.currentTime > anchor + sliceSec) {
+        const ct = this.ctx.currentTime;
+        this.faderGain.gain.setValueAtTime(this.faderGain.gain.value, ct);
+        this.faderGain.gain.linearRampToValueAtTime(0.001, ct + 0.003);
+        this.audio.currentTime = anchor;
+        this.faderGain.gain.setValueAtTime(0.001, ct + 0.004);
+        this.faderGain.gain.linearRampToValueAtTime(1.0, ct + 0.008);
+      }
+      requestAnimationFrame(masherFrame);
+    };
+    requestAnimationFrame(masherFrame);
+  }
+
+  cancelBeatMasher() {
+    this._beatMasherActive = false;
+  }
+
+  // --- TURNTABLE PITCH BEND ---
+  triggerPitchBend(semitones = -4, durationSec = 2.0, style = 'turntable_slowdown', onComplete = null) {
+    const startRate = this.audio.playbackRate;
+    const startPerf = performance.now();
+    this._pitchBendActive = true;
+
+    const targetMult = Math.pow(2, semitones / 12);
+    const targetRate = (style === 'turntable_slowdown') ? 0.05 : Math.max(0.2, startRate * targetMult);
+
+    const bendFrame = () => {
+      if (!this._pitchBendActive) return;
+      const elapsed = (performance.now() - startPerf) / 1000;
+      const progress = Math.min(1.0, elapsed / durationSec);
+
+      const ease = progress * progress * (3 - 2 * progress);
+      this.audio.playbackRate = startRate + (targetRate - startRate) * ease;
+
+      if (progress < 1.0) {
+        requestAnimationFrame(bendFrame);
+      } else {
+        this._pitchBendActive = false;
+        if (onComplete) onComplete();
+      }
+    };
+    requestAnimationFrame(bendFrame);
+  }
+
+  resetPitchBend() {
+    this._pitchBendActive = false;
+    this.audio.playbackRate = 1.0;
+  }
+
+  // --- SMOOTH STEM LEVEL AUTOMATION ---
+  setStemLevels(stemMap, rampSec = 0.1) {
+    const now = this.ctx.currentTime;
+    if (stemMap.vocals !== undefined) {
+      this.stemGainVocals.gain.cancelScheduledValues(now);
+      this.stemGainVocals.gain.setTargetAtTime(Math.max(0.0001, stemMap.vocals), now, rampSec);
+      this.stems.vocals = stemMap.vocals > 0.1;
+    }
+    if (stemMap.drums !== undefined) {
+      this.stemGainDrums.gain.cancelScheduledValues(now);
+      this.stemGainDrums.gain.setTargetAtTime(Math.max(0.0001, stemMap.drums), now, rampSec);
+      this.stems.drums = stemMap.drums > 0.1;
+    }
+    if (stemMap.bass !== undefined) {
+      this.stemGainBass.gain.cancelScheduledValues(now);
+      this.stemGainBass.gain.setTargetAtTime(Math.max(0.0001, stemMap.bass), now, rampSec);
+      this.stems.bass = stemMap.bass > 0.1;
+    }
+    if (stemMap.other !== undefined) {
+      this.stemGainOther.gain.cancelScheduledValues(now);
+      this.stemGainOther.gain.setTargetAtTime(Math.max(0.0001, stemMap.other), now, rampSec);
+      this.stems.other = stemMap.other > 0.1;
+    }
+    const isCustom = Object.values(stemMap).some(v => v !== undefined && v < 0.95);
+    if (isCustom) {
+      this.masterDirectGain.gain.setTargetAtTime(0.0, now, 0.02);
+      this.stemsSumGain.gain.setTargetAtTime(1.0, now, 0.02);
+    }
+  }
+
   // --- RESET ALL FX TO NEUTRAL ---
   resetAllFX() {
     const now = this.ctx.currentTime;
@@ -650,8 +796,17 @@ class DJDeckAudio {
     this.delayFeedback.gain.setValueAtTime(0.0, now);
     this.delayInputGate.gain.setValueAtTime(1.0, now);
     this.echoSend.gain.setValueAtTime(1.0, now);
+    this.flangerWetGain.gain.cancelScheduledValues(now);
+    this.flangerWetGain.gain.setValueAtTime(0.0, now);
+    this.flangerFeedback.gain.cancelScheduledValues(now);
+    this.flangerFeedback.gain.setValueAtTime(0.0, now);
     this._loopRollActive = false;
     this._echoEngaged = false;
+    this._flangerEngaged = false;
+    this._beatMasherActive = false;
+    this._pitchBendActive = false;
+    this.audio.playbackRate = 1.0;
+    this.resetStems();
   }
 }
 

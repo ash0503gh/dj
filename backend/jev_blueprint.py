@@ -5,8 +5,12 @@ Runs a 3-4 call decision pipeline against TypeSafe Jev System One,
 producing a complete TransitionBlueprint JSON with keyframe arrays
 that the frontend executor reads directly.
 
-Each call batches multiple questions in parallel against the same state.
-Total pipeline latency: ~300-500ms for 28-32 decisions.
+Key Enhancements:
+- Crossfader locked permanently at 50% (channel fader-only mixing)
+- Automatic Hot Cue targeting (Cue 1 Intro, Cue 2 Breakdown, Cue 3 Drop, Cue 4 Outro)
+- 4-Stem isolation mashup (drums, bass, vocals, melody)
+- Turntable pitch bends (vinyl slowdown, rising pitch ramp, tape stop)
+- Flanger & Beat-masher DSP modulation
 """
 
 import json
@@ -161,6 +165,7 @@ def run_jev_pipeline(
             "transient_density": round(float(profile_in.get("transient_density", 0.5)), 3),
             "energy_trajectory": profile_in.get("energy_trajectory", "building"),
             "duration_sec": float(profile_in.get("duration", 180.0)),
+            "hot_cues": profile_in.get("hot_cues", {})
         },
         "mix_context": {
             "bpm_delta": delta_bpm,
@@ -179,72 +184,70 @@ def run_jev_pipeline(
     call_count = 0
 
     # ═══════════════════════════════════════════════════════
-    # CALL 1: Building Block Selection (12 batched questions)
+    # CALL 1: Building Block & Hot Cue Selection (16 batched questions)
     # ═══════════════════════════════════════════════════════
     q1 = {
+        "cue_target": {
+            "type": "choice",
+            "instructions": "Which structural Hot Cue of the incoming track should playback snap to and start from?",
+            "criteria": {
+                "cue_1_intro": "Intro downbeat — first kick/hat groove for seamless phrase-matched blends.",
+                "cue_2_breakdown": "Breakdown/verse — vocal or melodic entry for atmospheric handoffs.",
+                "cue_3_drop": "Main drop — peak energetic transient drop for instant power swaps.",
+                "cue_4_outro": "Outro groove — rhythmic exit section for quick cut transitions."
+            }
+        },
         "use_bass_swap": {
             "type": "noul",
-            "instructions": (
-                "Should an equal-power Linkwitz-Riley bass crossover be used to smoothly "
-                "hand off the low end between tracks? Best when keys are harmonically "
-                "compatible and both tracks have strong bass."
-            )
+            "instructions": "Should an equal-power Linkwitz-Riley bass crossover be used to hand off the low end?"
         },
         "use_echo_wash": {
             "type": "noul",
-            "instructions": (
-                "Should a synchronized echo/delay tail be engaged on the outgoing track "
-                "to create spacious dissolution and fill the perceptual gap as it thins?"
-            )
+            "instructions": "Should a synchronized echo/delay tail be engaged on the outgoing track?"
         },
         "use_hpf_sweep": {
             "type": "noul",
-            "instructions": (
-                "Should a high-pass filter progressively sweep upward on the outgoing "
-                "track to naturally thin it during the transition?"
-            )
+            "instructions": "Should a high-pass filter progressively sweep upward on the outgoing track?"
         },
         "use_loop_roll": {
             "type": "noul",
-            "instructions": (
-                "Should an accelerating beat-repeat stutter (loop roll) be used on the "
-                "outgoing track to build rhythmic tension before the drop?"
-            )
+            "instructions": "Should an accelerating beat-repeat stutter (loop roll) build rhythmic tension?"
         },
         "use_noise_riser": {
             "type": "noul",
-            "instructions": (
-                "Should a white noise riser be layered under the mix to build "
-                "anticipation and energy before the incoming track's drop?"
-            )
+            "instructions": "Should a white noise riser build anticipation before the drop?"
         },
         "use_vinyl_brake": {
             "type": "noul",
-            "instructions": (
-                "Should the outgoing track decelerate like a turntable motor stopping, "
-                "creating a dramatic slowdown exit?"
-            )
+            "instructions": "Should the outgoing track decelerate like a turntable motor stopping?"
         },
         "use_predrop_gap": {
             "type": "noul",
-            "instructions": (
-                "Should there be a brief moment of silence (anticipation gap) just "
-                "before the incoming track's drop for maximum dramatic impact?"
-            )
+            "instructions": "Should there be an anticipation silence gap just before the drop?"
         },
         "use_drop_impact": {
             "type": "noul",
-            "instructions": (
-                "Should a sub-bass boom and crash cymbal hit on Beat 1 of the incoming "
-                "track's drop to emphasize the moment?"
-            )
+            "instructions": "Should a sub-bass boom and crash hit on Beat 1 of the drop?"
         },
         "vocal_ducking": {
             "type": "noul",
-            "instructions": (
-                "Should the outgoing track's vocal/mid-range frequencies be ducked "
-                "during the overlap to prevent vocal clashing?"
-            )
+            "instructions": "Should outgoing vocal/mid frequencies be ducked to prevent vocal clashing?"
+        },
+        "use_stem_mashup": {
+            "type": "noul",
+            "instructions": "Should 4-stem isolation (drums, bass, vocals, melody) be automated during the transition?"
+        },
+        "use_flanger": {
+            "type": "noul",
+            "instructions": "Should a resonant LFO flanger sweep be applied on the outgoing track?"
+        },
+        "use_beat_masher": {
+            "type": "noul",
+            "instructions": "Should a beat-synced masher stutter the groove in rapid subdivisions?"
+        },
+        "use_pitch_bend": {
+            "type": "noul",
+            "instructions": "Should a vinyl pitch bend or turntable speed glide be applied?"
         },
         "transition_bars": {
             "type": "choice",
@@ -288,6 +291,7 @@ def run_jev_pipeline(
     total_latency_ms += int((t1_end - t1) * 1000)
 
     # Parse Call 1
+    decisions["cue_target"] = _parse_choice(a1, "cue_target", "cue_1_intro")
     decisions["use_bass_swap"] = _parse_noul(a1, "use_bass_swap", True)
     decisions["use_echo_wash"] = _parse_noul(a1, "use_echo_wash", True)
     decisions["use_hpf_sweep"] = _parse_noul(a1, "use_hpf_sweep", True)
@@ -297,6 +301,11 @@ def run_jev_pipeline(
     decisions["use_predrop_gap"] = _parse_noul(a1, "use_predrop_gap", False)
     decisions["use_drop_impact"] = _parse_noul(a1, "use_drop_impact", False)
     decisions["vocal_ducking"] = _parse_noul(a1, "vocal_ducking", vocal_out > 0.2 or vocal_in > 0.2)
+    decisions["use_stem_mashup"] = _parse_noul(a1, "use_stem_mashup", False)
+    decisions["use_flanger"] = _parse_noul(a1, "use_flanger", False)
+    decisions["use_beat_masher"] = _parse_noul(a1, "use_beat_masher", False)
+    decisions["use_pitch_bend"] = _parse_noul(a1, "use_pitch_bend", False)
+
     try:
         decisions["transition_bars"] = int(_parse_choice(a1, "transition_bars", "16"))
     except ValueError:
@@ -305,7 +314,7 @@ def run_jev_pipeline(
     decisions["blend_quality"] = _parse_score(a1, "blend_quality", 3.0)
 
     # ═══════════════════════════════════════════════════════
-    # CALL 2: Timing & Positioning (8 batched questions)
+    # CALL 2: Timing, Fader Curves & Stem Routing (10 batched questions)
     # ═══════════════════════════════════════════════════════
     active_blocks = [k.replace("use_", "") for k, v in decisions.items()
                      if k.startswith("use_") and v is True]
@@ -314,10 +323,10 @@ def run_jev_pipeline(
         **base_state,
         "jev_call1_decisions": {
             "active_building_blocks": active_blocks,
+            "chosen_cue": decisions["cue_target"],
             "transition_bars": decisions["transition_bars"],
             "energy_intent": decisions["energy_intent"],
             "blend_quality_score": round(decisions["blend_quality"], 2),
-            "vocal_ducking_active": decisions["vocal_ducking"]
         }
     }
 
@@ -376,27 +385,33 @@ def run_jev_pipeline(
                 "Very late (90%) — minimal echo touch."
             ]
         },
-        "loop_roll_start": {
-            "type": "score",
-            "instructions": "When should the loop roll stutter begin?",
-            "criteria": [
-                "Early (30%) — long build stutter.",
-                "Mid (50%) — balanced positioning.",
-                "Late (65%) — shorter intense build.",
-                "Very late (80%) — brief final stutter.",
-                "Final bars (90%) — ultra-short rapid stutter."
-            ]
+        "outgoing_fader_decay": {
+            "type": "choice",
+            "instructions": "How should the outgoing channel volume fader descend to 0%?",
+            "criteria": {
+                "smooth_linear": "Smooth linear descent from 100% to 0%.",
+                "delayed_drop": "Hold 100% until 70% of transition, then drop steeply.",
+                "exponential": "Early gentle drop with a long subtle tail to 0%."
+            }
         },
-        "noise_riser_start": {
-            "type": "score",
-            "instructions": "When should the white noise riser begin building?",
-            "criteria": [
-                "Early (20%) — long gradual build.",
-                "Mid (40%) — moderate build length.",
-                "Standard (60%) — typical riser timing.",
-                "Late (75%) — short intense riser.",
-                "Final bars (85%) — very short sharp riser."
-            ]
+        "incoming_stem_focus": {
+            "type": "choice",
+            "instructions": "Which stems of the incoming track should lead the introduction?",
+            "criteria": {
+                "full": "All stems together at balanced levels.",
+                "drums_first": "Drums only first to lock the groove before harmony arrives.",
+                "vocals_first": "Acapella/vocal leads first over outgoing rhythm.",
+                "bass_and_drums": "Rhythm and bass foundation lead."
+            }
+        },
+        "outgoing_stem_mute": {
+            "type": "choice",
+            "instructions": "Which stem of the outgoing track should exit earliest to create space?",
+            "criteria": {
+                "bass_first": "Kill low-end bass immediately to prevent muddiness.",
+                "vocals_first": "Mute vocal immediately to prevent lyric clashing.",
+                "all_gradual": "Fade all stems down evenly."
+            }
         },
         "outgoing_dissolve": {
             "type": "score",
@@ -425,8 +440,9 @@ def run_jev_pipeline(
     decisions["bass_swap_width"] = _parse_score_norm(a2, "bass_swap_width", 0.5)
     decisions["hpf_start_point"] = _parse_score_norm(a2, "hpf_start_point", 0.5)
     decisions["echo_engage_point"] = _parse_score_norm(a2, "echo_engage_point", 0.5)
-    decisions["loop_roll_start"] = _parse_score_norm(a2, "loop_roll_start", 0.5)
-    decisions["noise_riser_start"] = _parse_score_norm(a2, "noise_riser_start", 0.5)
+    decisions["outgoing_fader_decay"] = _parse_choice(a2, "outgoing_fader_decay", "smooth_linear")
+    decisions["incoming_stem_focus"] = _parse_choice(a2, "incoming_stem_focus", "full")
+    decisions["outgoing_stem_mute"] = _parse_choice(a2, "outgoing_stem_mute", "bass_first")
     decisions["outgoing_dissolve"] = _parse_score_norm(a2, "outgoing_dissolve", 0.5)
 
     # ═══════════════════════════════════════════════════════
@@ -436,10 +452,11 @@ def run_jev_pipeline(
         **base_state,
         "jev_decisions_so_far": {
             "active_building_blocks": active_blocks,
+            "cue_target": decisions["cue_target"],
             "transition_bars": decisions["transition_bars"],
             "energy_intent": decisions["energy_intent"],
             "eq_intro_order": decisions["eq_intro_order"],
-            "bass_swap_center": f"{decisions['bass_swap_position'] * 100:.0f}%",
+            "outgoing_fader_decay": decisions["outgoing_fader_decay"]
         }
     }
 
@@ -499,16 +516,6 @@ def run_jev_pipeline(
                 "4000": "4000 Hz — extreme, almost fully washed out."
             }
         },
-        "crossfader_curve": {
-            "type": "choice",
-            "instructions": "What crossfader curve for the volume blend?",
-            "criteria": {
-                "linear": "Linear — constant-rate blend.",
-                "equal_power": "Equal power — maintains constant perceived loudness.",
-                "sharp_cut": "Sharp cut — holds loud, quick crossover in middle.",
-                "slow_start": "Slow start — gentle entry, accelerates, gentle exit."
-            }
-        },
         "incoming_fader_curve": {
             "type": "choice",
             "instructions": "How should the incoming track's volume be introduced?",
@@ -549,14 +556,17 @@ def run_jev_pipeline(
         decisions["hpf_ceiling_hz"] = int(_parse_choice(a3, "hpf_ceiling_hz", "1500"))
     except ValueError:
         decisions["hpf_ceiling_hz"] = 1500
-    decisions["crossfader_curve"] = _parse_choice(a3, "crossfader_curve", "equal_power")
     decisions["incoming_fader_curve"] = _parse_choice(a3, "incoming_fader_curve", "gradual")
     decisions["vocal_duck_depth"] = _parse_score_norm(a3, "vocal_duck_depth", 0.5)
 
     # ═══════════════════════════════════════════════════════
-    # CALL 4: Festival/Complex Params (conditional)
+    # CALL 4: Special FX (Loop roll / Gap / Impact / Flanger / Masher / Pitch Bend)
     # ═══════════════════════════════════════════════════════
-    needs_c4 = decisions["use_loop_roll"] or decisions["use_predrop_gap"] or decisions["use_drop_impact"]
+    needs_c4 = (
+        decisions["use_loop_roll"] or decisions["use_predrop_gap"] or
+        decisions["use_drop_impact"] or decisions["use_flanger"] or
+        decisions["use_beat_masher"] or decisions["use_pitch_bend"]
+    )
 
     if needs_c4:
         q4 = {}
@@ -600,6 +610,37 @@ def run_jev_pipeline(
                     "silent_drop": "No impact — let incoming track's own drop speak."
                 }
             }
+        if decisions["use_flanger"]:
+            q4["flanger_speed"] = {
+                "type": "choice",
+                "instructions": "What LFO speed for the flanger sweep?",
+                "criteria": {
+                    "slow": "Slow hypnotic sweep (2-4 bars).",
+                    "medium": "Medium rhythmic sweep (1 bar).",
+                    "fast": "Rapid laser-like flanger wobble (1/2 bar)."
+                }
+            }
+        if decisions["use_beat_masher"]:
+            q4["beat_masher_division"] = {
+                "type": "choice",
+                "instructions": "What subdivision for the beat masher stutter?",
+                "criteria": {
+                    "quarter": "1/4 beat stutter.",
+                    "eighth": "1/8 beat stutter.",
+                    "sixteenth": "1/16 beat rapid stutter.",
+                    "thirty_second": "1/32 beat glitch flutter."
+                }
+            }
+        if decisions["use_pitch_bend"]:
+            q4["pitch_bend_style"] = {
+                "type": "choice",
+                "instructions": "What turntable pitch bend curve should be applied?",
+                "criteria": {
+                    "turntable_slowdown": "Authentic turntable motor deceleration to a dead stop.",
+                    "rising_pitch_ramp": "Pitch ramp upwards (+2 semitones) for tension build.",
+                    "quick_dive": "Quick 1-beat downward pitch dive on the exit."
+                }
+            }
 
         if q4:
             t4 = time.time()
@@ -622,6 +663,12 @@ def run_jev_pipeline(
                 decisions["predrop_gap_beats"] = _parse_choice(a4, "predrop_gap_beats", "one_beat")
             if decisions["use_drop_impact"]:
                 decisions["drop_impact_style"] = _parse_choice(a4, "drop_impact_style", "boom_and_crash")
+            if decisions["use_flanger"]:
+                decisions["flanger_speed"] = _parse_choice(a4, "flanger_speed", "medium")
+            if decisions["use_beat_masher"]:
+                decisions["beat_masher_division"] = _parse_choice(a4, "beat_masher_division", "sixteenth")
+            if decisions["use_pitch_bend"]:
+                decisions["pitch_bend_style"] = _parse_choice(a4, "pitch_bend_style", "turntable_slowdown")
 
     # ═══════════════════════════════════════════════════════
     # COMPILE INTO BLUEPRINT
@@ -656,11 +703,26 @@ def compile_blueprint(
     # ─── Active blocks ───
     active_blocks = []
     for key in ["bass_swap", "echo_wash", "hpf_sweep", "loop_roll",
-                "noise_riser", "vinyl_brake", "predrop_gap", "drop_impact"]:
+                "noise_riser", "vinyl_brake", "predrop_gap", "drop_impact",
+                "stem_mashup", "flanger", "beat_masher", "pitch_bend"]:
         if d.get(f"use_{key}", False):
             active_blocks.append(key)
     if d.get("vocal_ducking", False):
         active_blocks.append("vocal_ducking")
+
+    # ─── Resolve Hot Cue Target & Exact Timestamp ───
+    cue_target = d.get("cue_target", "cue_1_intro")
+    hot_cues_in = profile_in.get("hot_cues", {})
+    dur_in = float(profile_in.get("duration", 180.0))
+
+    if cue_target == "cue_2_breakdown":
+        chosen_cue_time = float(hot_cues_in.get("cue_2", dur_in * 0.25))
+    elif cue_target == "cue_3_drop":
+        chosen_cue_time = float(hot_cues_in.get("cue_3", dur_in * 0.50))
+    elif cue_target == "cue_4_outro":
+        chosen_cue_time = float(hot_cues_in.get("cue_4", max(0.0, dur_in - 30.0)))
+    else:  # cue_1_intro
+        chosen_cue_time = float(hot_cues_in.get("cue_1", profile_in.get("suggested_cue_intro", 0.0)))
 
     # ─── Bass swap geometry ───
     bs_center = _lerp(0.20, 0.80, d.get("bass_swap_position", 0.5))
@@ -756,33 +818,33 @@ def compile_blueprint(
     else:
         out_hpf = [[0.00, 20], [1.00, 20]]
 
-    # ═══════ FADER KEYFRAMES ═══════
+    # ═══════ VERTICAL CHANNEL FADER KEYFRAMES ═══════
+    # Incoming Channel Fader
     fc = d.get("incoming_fader_curve", "gradual")
     if fc == "s_curve":
         in_fader = [[0.00, 0.0], [0.20, 0.05], [0.50, 0.5], [0.80, 0.95], [1.00, 1.0]]
-        out_fader = [[0.00, 1.0], [0.20, 0.95], [0.50, 0.5], [0.80, 0.05], [1.00, 0.0]]
     elif fc == "late_bloom":
         in_fader = [[0.00, 0.0], [0.60, 0.15], [0.80, 0.7], [1.00, 1.0]]
-        out_fader = [[0.00, 1.0], [0.40, 0.85], [0.80, 0.3], [1.00, 0.0]]
     elif fc == "instant":
         in_fader = [[0.00, 0.7], [0.20, 0.9], [1.00, 1.0]]
-        out_fader = [[0.00, 1.0], [0.80, 0.1], [1.00, 0.0]]
     else:  # gradual
         in_fader = [[0.00, 0.0], [0.50, 0.5], [1.00, 1.0]]
-        out_fader = [[0.00, 1.0], [0.50, 0.5], [1.00, 0.0]]
 
-    # ═══════ CROSSFADER KEYFRAMES ═══════
-    cc = d.get("crossfader_curve", "equal_power")
-    if cc == "equal_power":
-        xf = [[0.00, 0], [0.25, 15], [0.50, 50], [0.75, 85], [1.00, 100]]
-    elif cc == "sharp_cut":
-        xf = [[0.00, 0], [0.40, 5], [0.50, 50], [0.60, 95], [1.00, 100]]
-    elif cc == "slow_start":
-        xf = [[0.00, 0], [0.30, 10], [0.60, 40], [0.85, 80], [1.00, 100]]
-    else:  # linear
-        xf = [[0.00, 0], [1.00, 100]]
+    # Outgoing Channel Fader (decided by Jev's outgoing_fader_decay)
+    fd = d.get("outgoing_fader_decay", "smooth_linear")
+    if fd == "delayed_drop":
+        out_fader = [[0.00, 1.0], [0.65, 0.90], [0.85, 0.25], [1.00, 0.0]]
+    elif fd == "exponential":
+        out_fader = [[0.00, 1.0], [0.25, 0.60], [0.60, 0.20], [1.00, 0.0]]
+    else:  # smooth_linear
+        out_fader = [[0.00, 1.0], [0.50, 0.50], [1.00, 0.0]]
 
-    # ═══════ EFFECTS ═══════
+    # ═══════ CROSSFADER KEYFRAMES (LOCKED AT 50% CENTER) ═══════
+    # Per pro club standard: Crossfader remains permanently centered (50%)
+    # All attenuation/blend is driven by independent channel volume faders
+    xf = [[0.00, 50], [1.00, 50]]
+
+    # ═══════ EFFECTS SPECIFICATION ═══════
     effects = {}
 
     # Echo wash
@@ -863,9 +925,60 @@ def compile_blueprint(
     else:
         effects["vinyl_brake"] = None
 
+    # 4-Stem Mashup
+    if d.get("use_stem_mashup", False):
+        effects["stem_mashup"] = {
+            "incoming_focus": d.get("incoming_stem_focus", "drums_first"),
+            "outgoing_mute": d.get("outgoing_stem_mute", "bass_first"),
+            "switch_at": round(_lerp(0.3, 0.6, aggression), 3)
+        }
+    else:
+        effects["stem_mashup"] = None
+
+    # Flanger
+    if d.get("use_flanger", False):
+        effects["flanger"] = {
+            "start_at": round(_lerp(0.35, 0.70, aggression), 3),
+            "speed": d.get("flanger_speed", "medium"),
+            "depth": round(_lerp(0.3, 0.8, aggression), 2),
+            "wet": round(_lerp(0.2, 0.5, aggression), 2)
+        }
+    else:
+        effects["flanger"] = None
+
+    # Beat Masher
+    if d.get("use_beat_masher", False):
+        div_map = {
+            "quarter": "1/4", "eighth": "1/8", "sixteenth": "1/16", "thirty_second": "1/32"
+        }
+        effects["beat_masher"] = {
+            "start_at": round(_lerp(0.60, 0.85, aggression), 3),
+            "division": div_map.get(d.get("beat_masher_division", "sixteenth"), "1/16"),
+            "bars": 2
+        }
+    else:
+        effects["beat_masher"] = None
+
+    # Turntable Pitch Bend
+    if d.get("use_pitch_bend", False):
+        effects["pitch_bend"] = {
+            "start_at": round(_lerp(0.75, 0.90, aggression), 3),
+            "style": d.get("pitch_bend_style", "turntable_slowdown"),
+            "semitones": -4
+        }
+    else:
+        effects["pitch_bend"] = None
+
     # ═══════ ASSEMBLE ═══════
     blend_q = d.get("blend_quality", 3.0)
     blend_score = round(max(1.0, min(100.0, (blend_q / 4.0) * 100.0)), 1)
+
+    cue_names = {
+        "cue_1_intro": "INTRO (Downbeat)",
+        "cue_2_breakdown": "BREAKDOWN (Verse)",
+        "cue_3_drop": "MAIN DROP (Peak Energy)",
+        "cue_4_outro": "OUTRO (Mix Point)"
+    }
 
     return {
         "meta": {
@@ -874,9 +987,12 @@ def compile_blueprint(
             "energy_intent": d.get("energy_intent", "sustain"),
             "blend_score": blend_score,
             "aggression": round(aggression, 3),
-            "crossfader_curve": cc,
+            "crossfader_curve": "center_locked_50",
             "eq_intro_order": d.get("eq_intro_order", "highs_first"),
             "bpm": float(profile_out.get("bpm", 128.0)),
+            "cue_target": cue_target,
+            "cue_target_name": cue_names.get(cue_target, "INTRO"),
+            "chosen_cue_time": round(chosen_cue_time, 2)
         },
         "keyframes": {
             "incoming_eq_high": in_eq_hi,
@@ -919,6 +1035,7 @@ def compile_local_fallback_blueprint(
     harmonic = camelot_info.get("is_harmonically_compatible", True)
 
     decisions = {
+        "cue_target": "cue_3_drop" if delta_bpm > 10 else "cue_1_intro",
         "use_bass_swap": harmonic and delta_bpm < 8,
         "use_echo_wash": True,
         "use_hpf_sweep": True,
@@ -928,6 +1045,10 @@ def compile_local_fallback_blueprint(
         "use_predrop_gap": not harmonic,
         "use_drop_impact": not harmonic or delta_bpm > 8,
         "vocal_ducking": vocal_out > 0.2 and vocal_in > 0.2,
+        "use_stem_mashup": True,
+        "use_flanger": not harmonic and delta_bpm < 6,
+        "use_beat_masher": delta_bpm > 8,
+        "use_pitch_bend": delta_bpm > 12,
         "transition_bars": 32 if (harmonic and delta_bpm < 3) else (16 if delta_bpm < 8 else 8),
         "energy_intent": "sustain",
         "blend_quality": 4.0 if harmonic else 2.0,
@@ -936,17 +1057,20 @@ def compile_local_fallback_blueprint(
         "bass_swap_width": 0.5,
         "hpf_start_point": 0.5,
         "echo_engage_point": 0.6,
-        "loop_roll_start": 0.6,
-        "noise_riser_start": 0.5,
+        "outgoing_fader_decay": "smooth_linear",
+        "incoming_stem_focus": "drums_first" if harmonic else "full",
+        "outgoing_stem_mute": "bass_first",
         "outgoing_dissolve": 0.5,
         "aggression": 0.3 if harmonic else 0.7,
         "echo_delay_style": "three_quarter",
         "echo_feedback": 0.5,
         "echo_wet_level": 0.4,
         "hpf_ceiling_hz": 1500,
-        "crossfader_curve": "equal_power",
         "incoming_fader_curve": "gradual",
         "vocal_duck_depth": 0.5,
+        "flanger_speed": "medium",
+        "beat_masher_division": "sixteenth",
+        "pitch_bend_style": "turntable_slowdown"
     }
 
     if decisions["use_loop_roll"]:

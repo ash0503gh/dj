@@ -6,6 +6,53 @@
   <title>PULSE PRO // Professional DJ Console</title>
   <link rel="stylesheet" href="/css/style.css?v=8.0">
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;800&family=Inter:wght@400;500;700;900&display=swap" rel="stylesheet">
+  <style>
+    /* Hot Cue Pads */
+    .hot-cue-strip {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 6px;
+      margin: 10px 0 6px 0;
+    }
+    .btn-hot-cue {
+      background: #131722;
+      border: 1px solid #232a3b;
+      border-radius: 5px;
+      color: #94a3b8;
+      padding: 6px 4px;
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+    .btn-hot-cue:hover {
+      background: #1e293b;
+      transform: translateY(-1px);
+    }
+    .btn-hot-cue .cue-num {
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .btn-hot-cue .cue-tag {
+      font-size: 8px;
+      letter-spacing: 0.5px;
+      opacity: 0.85;
+    }
+    .btn-hot-cue.cue-1 { border-color: rgba(16, 185, 129, 0.4); color: #34d399; }
+    .btn-hot-cue.cue-1:hover, .btn-hot-cue.cue-1.active { background: rgba(16, 185, 129, 0.2); border-color: #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.35); }
+    .btn-hot-cue.cue-2 { border-color: rgba(14, 165, 233, 0.4); color: #38bdf8; }
+    .btn-hot-cue.cue-2:hover, .btn-hot-cue.cue-2.active { background: rgba(14, 165, 233, 0.2); border-color: #0ea5e9; box-shadow: 0 0 8px rgba(14, 165, 233, 0.35); }
+    .btn-hot-cue.cue-3 { border-color: rgba(236, 72, 153, 0.4); color: #f472b6; }
+    .btn-hot-cue.cue-3:hover, .btn-hot-cue.cue-3.active { background: rgba(236, 72, 153, 0.2); border-color: #ec4899; box-shadow: 0 0 8px rgba(236, 72, 153, 0.35); }
+    .btn-hot-cue.cue-4 { border-color: rgba(249, 115, 22, 0.4); color: #fb923c; }
+    .btn-hot-cue.cue-4:hover, .btn-hot-cue.cue-4.active { background: rgba(249, 115, 22, 0.2); border-color: #f97316; box-shadow: 0 0 8px rgba(249, 115, 22, 0.35); }
+  </style>
 </head>
 <body>
   <div class="dj-console">
@@ -167,6 +214,14 @@
           </select>
         </div>
 
+
+        <!-- Pioneer Style Hot Cue Performance Pads -->
+        <div class="hot-cue-strip">
+          <button class="btn-hot-cue cue-1" id="d1-cue-1" data-deck="1" data-cue="1" title="Snap to Cue 1 (Intro Downbeat)"><span class="cue-num">1</span> <span class="cue-tag">INTRO</span></button>
+          <button class="btn-hot-cue cue-2" id="d1-cue-2" data-deck="1" data-cue="2" title="Snap to Cue 2 (Verse / Breakdown)"><span class="cue-num">2</span> <span class="cue-tag">VERSE</span></button>
+          <button class="btn-hot-cue cue-3" id="d1-cue-3" data-deck="1" data-cue="3" title="Snap to Cue 3 (Main Drop)"><span class="cue-num">3</span> <span class="cue-tag">DROP</span></button>
+          <button class="btn-hot-cue cue-4" id="d1-cue-4" data-deck="1" data-cue="4" title="Snap to Cue 4 (Outro Mix Point)"><span class="cue-num">4</span> <span class="cue-tag">OUTRO</span></button>
+        </div>
 
         <!-- Deck Transport Controls -->
         <div class="transport-strip">
@@ -471,6 +526,14 @@
         </div>
 
 
+        <!-- Pioneer Style Hot Cue Performance Pads -->
+        <div class="hot-cue-strip">
+          <button class="btn-hot-cue cue-1" id="d2-cue-1" data-deck="2" data-cue="1" title="Snap to Cue 1 (Intro Downbeat)"><span class="cue-num">1</span> <span class="cue-tag">INTRO</span></button>
+          <button class="btn-hot-cue cue-2" id="d2-cue-2" data-deck="2" data-cue="2" title="Snap to Cue 2 (Verse / Breakdown)"><span class="cue-num">2</span> <span class="cue-tag">VERSE</span></button>
+          <button class="btn-hot-cue cue-3" id="d2-cue-3" data-deck="2" data-cue="3" title="Snap to Cue 3 (Main Drop)"><span class="cue-num">3</span> <span class="cue-tag">DROP</span></button>
+          <button class="btn-hot-cue cue-4" id="d2-cue-4" data-deck="2" data-cue="4" title="Snap to Cue 4 (Outro Mix Point)"><span class="cue-num">4</span> <span class="cue-tag">OUTRO</span></button>
+        </div>
+
         <!-- Deck Transport Controls -->
         <div class="transport-strip">
           <button id="d2-btn-cue" class="btn-transport btn-cue">CUE</button>
@@ -650,9 +713,9 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=10.3"></script>
-  <script src="/js/jog_wheel.js?v=10.3"></script>
-  <script src="/js/waveform.js?v=10.3"></script>
-  <script src="/js/app.js?v=10.3"></script>
+  <script src="/js/audio_engine.js?v=10.4"></script>
+  <script src="/js/jog_wheel.js?v=10.4"></script>
+  <script src="/js/waveform.js?v=10.4"></script>
+  <script src="/js/app.js?v=10.4"></script>
 </body>
 </html>
