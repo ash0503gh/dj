@@ -802,6 +802,468 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
+  // ═══════════════════════════════════════════════════
+  // JEV AUTONOMOUS DJ BRAIN: Client-Side Audio Profiling
+  // ═══════════════════════════════════════════════════
+  function profileTrackForJev(deckNum) {
+    const trackData = (deckNum === 1) ? track1Data : track2Data;
+    const deck = (deckNum === 1) ? engine.deck1 : engine.deck2;
+    if (!trackData) return null;
+
+    // Base profile from server analysis cache
+    const profile = {
+      title: trackData.title || trackData.filename || `Deck ${deckNum}`,
+      bpm: trackData.bpm || 128.0,
+      camelot: trackData.camelot || '8A',
+      key: trackData.key || 'Unknown',
+      duration: trackData.duration || 180.0,
+      current_position: deck.audio.currentTime || 0.0,
+    };
+
+    // Extract spectral energy from pre-computed waveform bins
+    const wf = trackData.waveform;
+    if (wf && wf.low && wf.mid && wf.high && wf.low.length > 0) {
+      const pos = deck.audio.currentTime || 0;
+      const dur = trackData.duration || 180;
+      const totalBins = wf.low.length;
+      // Analyze a window around current position (±15 seconds)
+      const windowSec = 15;
+      const startSec = Math.max(0, pos - windowSec);
+      const endSec = Math.min(dur, pos + windowSec);
+      const startBin = Math.floor((startSec / dur) * totalBins);
+      const endBin = Math.min(totalBins, Math.ceil((endSec / dur) * totalBins));
+      const count = Math.max(1, endBin - startBin);
+
+      let sumLow = 0, sumMid = 0, sumHigh = 0, peaks = 0;
+      let prevVal = 0;
+      for (let i = startBin; i < endBin; i++) {
+        sumLow += wf.low[i];
+        sumMid += wf.mid[i];
+        sumHigh += wf.high[i];
+        // Count transient peaks (sharp rises > 0.3)
+        const overall = (wf.overall ? wf.overall[i] : (wf.low[i] + wf.mid[i] + wf.high[i]) / 3);
+        if (overall - prevVal > 0.3) peaks++;
+        prevVal = overall;
+      }
+
+      profile.energy_low = Math.round((sumLow / count) * 1000) / 1000;
+      profile.energy_mid = Math.round((sumMid / count) * 1000) / 1000;
+      profile.energy_high = Math.round((sumHigh / count) * 1000) / 1000;
+
+      const totalEnergy = profile.energy_low + profile.energy_mid + profile.energy_high;
+      profile.spectral_centroid = totalEnergy > 0
+        ? Math.round((profile.energy_high / totalEnergy) * 1000) / 1000
+        : 0.33;
+
+      // Transient density: peaks per second in the analysis window
+      const windowDuration = endSec - startSec;
+      profile.transient_density = windowDuration > 0
+        ? Math.round((peaks / windowDuration) * 100) / 100
+        : 0.5;
+
+      // Energy trajectory: compare first half vs second half of window
+      const midBin = Math.floor((startBin + endBin) / 2);
+      let firstHalf = 0, secondHalf = 0;
+      for (let i = startBin; i < midBin; i++) {
+        firstHalf += (wf.overall ? wf.overall[i] : (wf.low[i] + wf.mid[i] + wf.high[i]) / 3);
+      }
+      for (let i = midBin; i < endBin; i++) {
+        secondHalf += (wf.overall ? wf.overall[i] : (wf.low[i] + wf.mid[i] + wf.high[i]) / 3);
+      }
+      const halfCount = Math.max(1, midBin - startBin);
+      const avgFirst = firstHalf / halfCount;
+      const avgSecond = secondHalf / Math.max(1, endBin - midBin);
+      if (avgSecond > avgFirst * 1.15) profile.energy_trajectory = 'building';
+      else if (avgFirst > avgSecond * 1.15) profile.energy_trajectory = 'dropping';
+      else profile.energy_trajectory = 'sustain';
+    } else {
+      profile.energy_low = 0.5;
+      profile.energy_mid = 0.5;
+      profile.energy_high = 0.5;
+      profile.spectral_centroid = 0.33;
+      profile.transient_density = 0.5;
+      profile.energy_trajectory = 'sustain';
+    }
+
+    // Vocal presence from server acoustic profile
+    const ap = trackData.acoustic_profile || {};
+    profile.vocal_presence = Math.max(
+      parseFloat(ap.intro_vocal_score || 0),
+      parseFloat(ap.outro_vocal_score || 0)
+    );
+
+    // Phrase position
+    if (profile.bpm > 0) {
+      const beatLen = 60.0 / profile.bpm;
+      const currentBeat = profile.current_position / beatLen;
+      profile.phrase_position = Math.floor(currentBeat % 16);
+    } else {
+      profile.phrase_position = 0;
+    }
+
+    return profile;
+  }
+
+  // ═══════════════════════════════════════════════════
+  // JEV BLUEPRINT: Generic Keyframe Interpolator
+  // ═══════════════════════════════════════════════════
+  function interpolateKeyframes(keyframes, progress) {
+    if (!keyframes || keyframes.length === 0) return 0;
+    if (progress <= keyframes[0][0]) return keyframes[0][1];
+    if (progress >= keyframes[keyframes.length - 1][0])
+      return keyframes[keyframes.length - 1][1];
+    for (let i = 0; i < keyframes.length - 1; i++) {
+      const [p0, v0] = keyframes[i];
+      const [p1, v1] = keyframes[i + 1];
+      if (progress >= p0 && progress <= p1) {
+        const t = (p1 - p0) > 0 ? (progress - p0) / (p1 - p0) : 0;
+        // Quintic smootherstep: 6t^5 - 15t^4 + 10t^3
+        const ct = Math.max(0, Math.min(1, t));
+        const s = ct * ct * ct * (ct * (ct * 6 - 15) + 10);
+        return v0 + (v1 - v0) * s;
+      }
+    }
+    return keyframes[keyframes.length - 1][1];
+  }
+
+  // ═══════════════════════════════════════════════════
+  // JEV BLUEPRINT: Effect Trigger Manager
+  // ═══════════════════════════════════════════════════
+  function triggerBlueprintEffects(bp, p, fxState, outDeck, inDeck, outTrack) {
+    const fx = bp.effects;
+    const bpm = outTrack.bpm || bp.meta.bpm || 128;
+
+    // Echo wash
+    if (fx.echo_wash && p >= fx.echo_wash.engage_at && !fxState.echoEngaged) {
+      fxState.echoEngaged = true;
+      const spb = 60.0 / bpm;
+      outDeck.engageSubtleEcho(bpm, fx.echo_wash.wet_level);
+      // Override delay and feedback with Jev-specified values
+      const now = outDeck.ctx.currentTime;
+      outDeck.delayNode.delayTime.setValueAtTime(spb * fx.echo_wash.delay_beats, now);
+      outDeck.delayFeedback.gain.cancelScheduledValues(now);
+      outDeck.delayFeedback.gain.setValueAtTime(fx.echo_wash.feedback, now);
+    }
+
+    // Vocal ducking
+    if (fx.vocal_ducking) {
+      if (p >= fx.vocal_ducking.start_at && p < fx.vocal_ducking.end_at) {
+        const duckProgress = Math.min(1, (p - fx.vocal_ducking.start_at) / 0.15);
+        const duckDb = fx.vocal_ducking.duck_db * duckProgress;
+        outDeck.duckMids(duckDb, 0.1);
+        fxState.vocalDucked = true;
+      } else if (fxState.vocalDucked && p >= fx.vocal_ducking.end_at) {
+        outDeck.unduckMids();
+        fxState.vocalDucked = false;
+      }
+    }
+
+    // Loop roll
+    if (fx.loop_roll && p >= fx.loop_roll.start_at && !fxState.loopRollStarted) {
+      fxState.loopRollStarted = true;
+      outDeck.triggerLoopRoll(bpm, fx.loop_roll.total_bars);
+    }
+
+    // Noise riser
+    if (fx.noise_riser && p >= fx.noise_riser.start_at && !fxState.noiseRiserStarted) {
+      fxState.noiseRiserStarted = true;
+      engine.triggerNoiseRiser(bpm, fx.noise_riser.bars);
+    }
+
+    // Pre-drop gap
+    if (fx.predrop_gap && p >= fx.predrop_gap.trigger_at && !fxState.predropGapTriggered) {
+      fxState.predropGapTriggered = true;
+      const gapSec = (60.0 / bpm) * fx.predrop_gap.duration_beats;
+      outDeck.triggerPreDropGap(gapSec);
+      inDeck.triggerPreDropGap(gapSec);
+    }
+
+    // Drop impact
+    if (fx.drop_impact && p >= fx.drop_impact.trigger_at && !fxState.dropImpactTriggered) {
+      fxState.dropImpactTriggered = true;
+      if (fx.drop_impact.style !== 'silent_drop') {
+        engine.triggerDropImpact(bpm);
+      }
+    }
+
+    // Vinyl brake
+    if (fx.vinyl_brake && p >= fx.vinyl_brake.start_at && !fxState.vinylBrakeStarted) {
+      fxState.vinylBrakeStarted = true;
+      const dur = fx.vinyl_brake.duration_sec;
+      const startRate = outDeck.audio.playbackRate;
+      const brakeStart = performance.now();
+      function brakeFrame() {
+        if (!fxState.vinylBrakeStarted) return;
+        const elapsed = (performance.now() - brakeStart) / 1000;
+        const brkProgress = Math.min(1, elapsed / dur);
+        outDeck.setPlaybackRate(startRate * (1 - brkProgress * 0.95));
+        if (brkProgress < 1) requestAnimationFrame(brakeFrame);
+      }
+      requestAnimationFrame(brakeFrame);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════
+  // JEV BLUEPRINT: Transition Executor
+  // ═══════════════════════════════════════════════════
+  let _blueprintAnimFrame = null;
+  let _blueprintAborted = false;
+  let _blueprintManual = false;
+
+  function executeBlueprintTransition(blueprint, outDeck, inDeck, outTrack, inTrack,
+                                      outDeckNum, inDeckNum, isDir1to2,
+                                      outBtnPlay, inBtnPlay, outFilter, inPitchVal) {
+    const bp = blueprint;
+    const bars = bp.meta.transition_bars;
+    const bpm = outTrack.bpm || bp.meta.bpm || 128;
+    const beatDurationMs = (60.0 / bpm) * 1000;
+    const totalTransMs = bars * 4 * beatDurationMs;
+
+    _blueprintAborted = false;
+    _blueprintManual = false;
+
+    // Show abort/manual buttons
+    const btnAbort = document.getElementById('btn-abort-transition');
+    const btnManual = document.getElementById('btn-manual-override');
+    if (btnAbort) btnAbort.style.display = 'inline-block';
+    if (btnManual) btnManual.style.display = 'inline-block';
+
+    // Initial EQ state from first keyframe values
+    applyDeckEQ(inDeckNum, 'hi', bp.keyframes.incoming_eq_high[0][1]);
+    applyDeckEQ(inDeckNum, 'mid', bp.keyframes.incoming_eq_mid[0][1]);
+    applyDeckEQ(inDeckNum, 'low', bp.keyframes.incoming_eq_low[0][1]);
+    applyDeckEQ(outDeckNum, 'hi', 0);
+    applyDeckEQ(outDeckNum, 'mid', 0);
+    applyDeckEQ(outDeckNum, 'low', 0);
+
+    // Ensure Outgoing Deck is playing
+    if (!outDeck.isPlaying) {
+      outDeck.play();
+      if (outBtnPlay) {
+        outBtnPlay.classList.add('playing');
+        outBtnPlay.textContent = '⏸ PAUSE';
+      }
+    }
+
+    // Tempo sync & phase-aligned cue
+    const syncRate = outTrack.bpm / inTrack.bpm;
+    inDeck.setPlaybackRate(syncRate);
+    if (inPitchVal) inPitchVal.textContent = `${((syncRate - 1) * 100).toFixed(1)}%`;
+
+    const introCue = inTrack.suggested_cue_intro || 0;
+    inDeck.audio.currentTime = introCue;
+    isTransitionPhaseLocked = true;
+
+    inDeck.play();
+    if (inBtnPlay) {
+      inBtnPlay.classList.add('playing');
+      inBtnPlay.textContent = '⏸ PAUSE';
+    }
+
+    const startTime = performance.now();
+    const fxState = {};
+
+    // Live HUD for blueprint active blocks
+    const blockLabels = {
+      bass_swap: '🔊 BASS SWAP', echo_wash: '🔁 ECHO WASH', hpf_sweep: '📡 HPF SWEEP',
+      loop_roll: '🌀 LOOP ROLL', noise_riser: '📈 NOISE RISER', vinyl_brake: '⚡ VINYL BRAKE',
+      predrop_gap: '⏸ PRE-DROP GAP', drop_impact: '💥 DROP IMPACT', vocal_ducking: '🎤 VOCAL DUCK'
+    };
+    const activeLabel = bp.meta.active_blocks
+      .map(b => blockLabels[b] || b.toUpperCase())
+      .join(' + ');
+
+    function updateBlueprintFrame() {
+      if (_blueprintAborted || !isTransitioning) return;
+      if (_blueprintManual) return;  // DJ took manual control
+
+      const now = performance.now();
+      const elapsed = now - startTime;
+      const p = Math.min(1.0, elapsed / totalTransMs);
+
+      // ─── Apply all keyframed parameters ───
+      applyDeckEQ(inDeckNum, 'hi', interpolateKeyframes(bp.keyframes.incoming_eq_high, p));
+      applyDeckEQ(inDeckNum, 'mid', interpolateKeyframes(bp.keyframes.incoming_eq_mid, p));
+      applyDeckEQ(inDeckNum, 'low', interpolateKeyframes(bp.keyframes.incoming_eq_low, p));
+      applyDeckEQ(outDeckNum, 'hi', interpolateKeyframes(bp.keyframes.outgoing_eq_high, p));
+      applyDeckEQ(outDeckNum, 'mid', interpolateKeyframes(bp.keyframes.outgoing_eq_mid, p));
+      applyDeckEQ(outDeckNum, 'low', interpolateKeyframes(bp.keyframes.outgoing_eq_low, p));
+
+      // HPF sweep on outgoing
+      const hpfHz = interpolateKeyframes(bp.keyframes.outgoing_hpf_hz, p);
+      outDeck.filterHPF.frequency.setValueAtTime(Math.max(20, hpfHz), outDeck.ctx.currentTime);
+      // Map to UI filter slider (0-50 range where 50 = 20kHz HPF)
+      if (outFilter) {
+        const filterVal = Math.floor(Math.min(50, (hpfHz / 4000) * 50));
+        outFilter.value = filterVal;
+      }
+
+      // Crossfader
+      const cfVal = isDir1to2
+        ? interpolateKeyframes(bp.keyframes.crossfader, p)
+        : (100 - interpolateKeyframes(bp.keyframes.crossfader, p));
+      if (typeof crossfader !== 'undefined') {
+        crossfader.value = Math.round(cfVal);
+      }
+      engine.setCrossfader(cfVal, 'club');
+
+      // PLL phase lock
+      if (typeof applyPhaseLockLoop === 'function') {
+        const tempoRamp = Math.abs(outTrack.bpm - inTrack.bpm) > 0.5;
+        const baseRate = tempoRamp
+          ? (syncRate + (1.0 - syncRate) * (p * p * p * (p * (p * 6 - 15) + 10)))
+          : syncRate;
+        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate);
+      }
+
+      // Trigger effects at their blueprint-specified progress points
+      triggerBlueprintEffects(bp, p, fxState, outDeck, inDeck, outTrack);
+
+      // ─── Live HUD ───
+      const currentBar = Math.floor(p * bars) + 1;
+      const pctDone = Math.round(p * 100);
+      if (transitionStatusBanner) {
+        transitionStatusBanner.textContent = `⚡ JEV BLUEPRINT: ${activeLabel} (BAR ${currentBar}/${bars} • ${pctDone}%)`;
+      }
+
+      // ─── Completion or continue ───
+      if (p < 1.0) {
+        _blueprintAnimFrame = requestAnimationFrame(updateBlueprintFrame);
+      } else {
+        cleanupBlueprintTransition(bp, fxState, outDeck, inDeck, outTrack, inTrack,
+                                    outDeckNum, inDeckNum, outBtnPlay, inBtnPlay,
+                                    outFilter, inPitchVal);
+      }
+    }
+
+    _blueprintAnimFrame = requestAnimationFrame(updateBlueprintFrame);
+  }
+
+  // ═══════════════════════════════════════════════════
+  // JEV BLUEPRINT: Cleanup after completion
+  // ═══════════════════════════════════════════════════
+  function cleanupBlueprintTransition(bp, fxState, outDeck, inDeck, outTrack, inTrack,
+                                       outDeckNum, inDeckNum, outBtnPlay, inBtnPlay,
+                                       outFilter, inPitchVal) {
+    // Disengage effects
+    if (fxState.echoEngaged) outDeck.disengageSubtleEcho(2.0);
+    if (fxState.vocalDucked) outDeck.unduckMids();
+    if (fxState.loopRollStarted) outDeck.cancelLoopRoll();
+    fxState.vinylBrakeStarted = false;
+
+    // Reset EQs
+    resetDeckEQs(outDeckNum);
+    resetDeckEQs(inDeckNum);
+
+    // Reset outgoing filter
+    if (outFilter) { outFilter.value = 0; }
+    outDeck.setColorFilter(0);
+    outDeck.filterHPF.frequency.setValueAtTime(20, outDeck.ctx.currentTime);
+
+    // Stop outgoing deck
+    outDeck.pause();
+    if (outBtnPlay) {
+      outBtnPlay.classList.remove('playing');
+      outBtnPlay.textContent = '▶ PLAY';
+    }
+
+    // Reset incoming to natural rate
+    inDeck.setPlaybackRate(1.0);
+    if (inPitchVal) inPitchVal.textContent = '0.0%';
+
+    // Hide abort/manual buttons
+    const btnAbort = document.getElementById('btn-abort-transition');
+    const btnManual = document.getElementById('btn-manual-override');
+    if (btnAbort) btnAbort.style.display = 'none';
+    if (btnManual) btnManual.style.display = 'none';
+
+    isTransitionPhaseLocked = false;
+
+    // Reuse existing finishTransition for direction flip and modal
+    // We pass a resolved promise since blueprint transitions don't do server rendering
+    finishTransition(Promise.resolve({ status: 'blueprint_complete' }));
+  }
+
+  // ═══════════════════════════════════════════════════
+  // JEV BLUEPRINT: Abort Handler
+  // ═══════════════════════════════════════════════════
+  function abortBlueprintTransition() {
+    _blueprintAborted = true;
+    if (_blueprintAnimFrame) {
+      cancelAnimationFrame(_blueprintAnimFrame);
+      _blueprintAnimFrame = null;
+    }
+
+    // Snap everything back to neutral
+    resetDeckEQs(1);
+    resetDeckEQs(2);
+    engine.deck1.filterHPF.frequency.setValueAtTime(20, engine.ctx.currentTime);
+    engine.deck2.filterHPF.frequency.setValueAtTime(20, engine.ctx.currentTime);
+    engine.deck1.setColorFilter(0);
+    engine.deck2.setColorFilter(0);
+    engine.deck1.unduckMids();
+    engine.deck2.unduckMids();
+    try { engine.deck1.cancelLoopRoll(); } catch(e) {}
+    try { engine.deck2.cancelLoopRoll(); } catch(e) {}
+    try { engine.deck1.disengageSubtleEcho(0.5); } catch(e) {}
+    try { engine.deck2.disengageSubtleEcho(0.5); } catch(e) {}
+    engine.deck1.setPlaybackRate(1.0);
+    engine.deck2.setPlaybackRate(1.0);
+
+    // Pause incoming deck that was launched during transition; keep outgoing deck live
+    const incomingDeck = (transitionDirection === '1_to_2') ? engine.deck2 : engine.deck1;
+    const incomingBtn = (transitionDirection === '1_to_2') ? document.getElementById('d2-btn-play') : document.getElementById('d1-btn-play');
+    if (incomingDeck) {
+      incomingDeck.pause();
+    }
+    if (incomingBtn) {
+      incomingBtn.classList.remove('playing');
+      incomingBtn.textContent = '▶ PLAY';
+    }
+
+    // Reset crossfader back to outgoing deck (0 for Deck 1, 100 for Deck 2)
+    const preXf = (transitionDirection === '1_to_2') ? 0 : 100;
+    if (typeof crossfader !== 'undefined') crossfader.value = preXf;
+    engine.setCrossfader(preXf, 'club');
+
+    // Reset filter sliders
+    const f1 = document.getElementById('d1-filter');
+    const f2 = document.getElementById('d2-filter');
+    if (f1) f1.value = 0;
+    if (f2) f2.value = 0;
+
+    isTransitioning = false;
+    isTransitionPhaseLocked = false;
+    if (btnTriggerTransition) btnTriggerTransition.classList.remove('in-transition');
+    transitionStatusBanner.textContent = '🛑 TRANSITION ABORTED — Full rollback to original deck.';
+
+    // Hide buttons
+    const btnAbort = document.getElementById('btn-abort-transition');
+    const btnManual = document.getElementById('btn-manual-override');
+    if (btnAbort) btnAbort.style.display = 'none';
+    if (btnManual) btnManual.style.display = 'none';
+  }
+
+  // ═══════════════════════════════════════════════════
+  // JEV BLUEPRINT: Manual Override Handler
+  // ═══════════════════════════════════════════════════
+  function manualOverrideTransition() {
+    _blueprintManual = true;
+    if (_blueprintAnimFrame) {
+      cancelAnimationFrame(_blueprintAnimFrame);
+      _blueprintAnimFrame = null;
+    }
+
+    if (transitionStatusBanner) {
+      transitionStatusBanner.textContent = '🎛️ MANUAL MODE — You have full control. Both decks playing.';
+    }
+
+    // Hide manual button, change abort to show
+    const btnManual = document.getElementById('btn-manual-override');
+    if (btnManual) btnManual.style.display = 'none';
+    // Keep abort visible so DJ can still fully abort
+  }
+
   async function fetchAIStrategy() {
     if (!track1Data || !track2Data) {
       const missing = (!track1Data && !track2Data) 
@@ -1471,6 +1933,20 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // ─── Jev Blueprint: Abort & Manual Override Buttons ───
+  const btnAbortTransition = document.getElementById('btn-abort-transition');
+  const btnManualOverride = document.getElementById('btn-manual-override');
+  if (btnAbortTransition) {
+    btnAbortTransition.addEventListener('click', () => {
+      abortBlueprintTransition();
+    });
+  }
+  if (btnManualOverride) {
+    btnManualOverride.addEventListener('click', () => {
+      manualOverrideTransition();
+    });
+  }
+
   // --- THE PRO TRANSITION PERFORMANCE ---
   btnTriggerTransition.addEventListener('click', async () => {
     unlockAudio();
@@ -1508,6 +1984,62 @@ document.addEventListener('DOMContentLoaded', () => {
     const harmonicLock = document.getElementById('toggle-harmonic').checked;
     const neuralStems = document.getElementById('toggle-neural-stems').checked;
     const bars = selectedBars;
+
+    // ═══════════════════════════════════════════════════
+    // JEV AUTONOMOUS BRAIN: Blueprint-driven transition
+    // When Jev is available and technique is 'auto', let Jev compose
+    // the entire transition from scratch with full parameter control.
+    // ═══════════════════════════════════════════════════
+    const jevKeyForBlueprint = jevKeyInput ? jevKeyInput.value.trim() : (localStorage.getItem('jev_api_key') || '');
+    // Also check if server has Jev configured via environment variable
+    const serverJevConfigured = (aiSourceBadge && aiSourceBadge.textContent.includes('Jev'));
+    const isJevBlueprintMode = (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap') && (jevKeyForBlueprint || serverJevConfigured);
+
+    if (isJevBlueprintMode) {
+      // Profile both tracks client-side
+      const profileOut = profileTrackForJev(outDeckNum);
+      const profileIn = profileTrackForJev(inDeckNum);
+
+      if (profileOut && profileIn) {
+        transitionStatusBanner.textContent = '⚡ JEV COMPUTING BLUEPRINT...';
+        btnTriggerTransition.classList.add('in-transition');
+        isTransitioning = true;
+
+        try {
+          const bpPayload = {
+            profile_out: profileOut,
+            profile_in: profileIn,
+          };
+          if (jevKeyForBlueprint) bpPayload.jev_api_key = jevKeyForBlueprint;
+
+          const bpRes = await fetch('/api/jev-blueprint', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(bpPayload)
+          });
+          const bpData = await bpRes.json();
+
+          if (bpData.status === 'success' && bpData.blueprint) {
+            const bp = bpData.blueprint;
+            console.log(`⚡ Jev Blueprint received: ${bp.meta.active_blocks.join(' + ')} over ${bp.meta.transition_bars} bars (${bp.meta.total_pipeline_ms || 0}ms)`);
+
+            // Execute the blueprint
+            executeBlueprintTransition(
+              bp, outDeck, inDeck, outTrack, inTrack,
+              outDeckNum, inDeckNum, isDir1to2,
+              outBtnPlay, inBtnPlay, outFilter, inPitchVal
+            );
+            return;  // Blueprint path handles everything from here
+          } else {
+            console.warn('Jev blueprint failed, falling through to standard techniques');
+            transitionStatusBanner.textContent = '⚠️ Jev unavailable, using standard technique...';
+          }
+        } catch (bpErr) {
+          console.warn('Jev blueprint fetch error:', bpErr);
+          transitionStatusBanner.textContent = '⚠️ Jev unavailable, using standard technique...';
+        }
+      }
+    }
 
     // Start background lossless WAV render
     const renderPromise = (async () => {

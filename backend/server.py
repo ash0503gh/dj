@@ -9,7 +9,7 @@ import json
 import shutil
 import gc
 from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -217,6 +217,42 @@ async def get_ai_status():
         "jev_configured": has_jev,
         "gemini_configured": has_gemini,
         "active_engine": "jev" if has_jev else ("gemini" if has_gemini else "local")
+    })
+
+@app.post("/api/jev-blueprint")
+async def get_jev_blueprint(request: Request):
+    """
+    Jev Autonomous DJ Brain: runs 3-4 chained Jev System One calls,
+    producing a complete TransitionBlueprint with keyframe arrays for
+    every EQ band, HPF, fader, crossfader, and effect trigger point.
+    Falls back to local acoustic heuristics if no Jev key is available.
+    """
+    from .ai_advisor import get_jev_api_key
+    from .jev_blueprint import run_jev_pipeline, compile_local_fallback_blueprint
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(content={"status": "error", "detail": "Invalid JSON body"}, status_code=400)
+
+    profile_out = body.get("profile_out", {})
+    profile_in = body.get("profile_in", {})
+    provided_key = body.get("jev_api_key", None)
+
+    api_key = get_jev_api_key(provided_key)
+
+    if api_key:
+        blueprint, err = run_jev_pipeline(profile_out, profile_in, api_key)
+        if err:
+            print(f"Jev pipeline failed ({err}), falling back to local blueprint")
+            blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
+            blueprint["meta"]["jev_fallback_reason"] = err
+    else:
+        blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
+
+    return JSONResponse(content={
+        "status": "success",
+        "blueprint": blueprint
     })
 
 @app.post("/api/ai-strategy")
