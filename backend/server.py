@@ -241,14 +241,19 @@ async def get_jev_blueprint(request: Request):
 
     api_key = get_jev_api_key(provided_key)
 
-    if api_key:
-        blueprint, err = run_jev_pipeline(profile_out, profile_in, api_key)
-        if err:
-            print(f"Jev pipeline failed ({err}), falling back to local blueprint")
+    try:
+        if api_key:
+            blueprint, err = run_jev_pipeline(profile_out, profile_in, api_key)
+            if err:
+                print(f"Jev pipeline returned note ({err}), falling back to local blueprint")
+                blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
+                blueprint["meta"]["jev_fallback_reason"] = err
+        else:
             blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
-            blueprint["meta"]["jev_fallback_reason"] = err
-    else:
+    except Exception as exc:
+        print(f"Blueprint exception ({exc}), compiling resilient local fallback")
         blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
+        blueprint["meta"]["jev_fallback_reason"] = str(exc)
 
     return JSONResponse(content={
         "status": "success",

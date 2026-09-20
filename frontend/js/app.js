@@ -20,6 +20,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastRenderedMix = null;
   let zoomLevel = 1.0;
   let currentAIRec = null;
+  let serverHasJev = false;
 
   // Auto-unlock AudioContext on first user interaction
   const unlockAudio = () => {
@@ -110,6 +111,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Mixer
   const crossfader = document.getElementById('crossfader');
+  if (crossfader) {
+    crossfader.value = 50;
+  }
+  engine.setCrossfader(50, 'club');
   const d1VolFader = document.getElementById('d1-vol-fader');
   const d2VolFader = document.getElementById('d2-vol-fader');
   const d1EqHi = document.getElementById('d1-eq-hi');
@@ -283,6 +288,10 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       if (aiFlowBadge) aiFlowBadge.textContent = 'DECK 2 ➔ DECK 1';
     }
+    // Crossfader remains permanently centered at 50%
+    if (crossfader) crossfader.value = 50;
+    engine.setCrossfader(50, 'club');
+
     transitionStatusBanner.textContent = `MIX FLOW: ${dir === '1_to_2' ? 'DECK 1 ➔ DECK 2' : 'DECK 2 ➔ DECK 1'}`;
     updateHarmonicCompatibility();
     updateAIRecCard();
@@ -789,6 +798,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       if (data.status === 'success') {
         if (data.jev_configured) {
+          serverHasJev = true;
           if (jevKeyInput && !jevKeyInput.value) {
             jevKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
           }
@@ -1120,6 +1130,12 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnAbort) btnAbort.style.display = 'inline-block';
     if (btnManual) btnManual.style.display = 'inline-block';
 
+    // Crossfader: LOCKED PERMANENTLY AT 50% CENTER
+    if (crossfader) {
+      crossfader.value = 50;
+    }
+    engine.setCrossfader(50, 'club');
+
     // Initial EQ state from first keyframe values
     applyDeckEQ(inDeckNum, 'hi', bp.keyframes.incoming_eq_high[0][1]);
     applyDeckEQ(inDeckNum, 'mid', bp.keyframes.incoming_eq_mid[0][1]);
@@ -1127,6 +1143,11 @@ document.addEventListener('DOMContentLoaded', () => {
     applyDeckEQ(outDeckNum, 'hi', 0);
     applyDeckEQ(outDeckNum, 'mid', 0);
     applyDeckEQ(outDeckNum, 'low', 0);
+
+    // Initial channel faders: Incoming starts at 0% silence, Outgoing at 100%
+    inDeck.setVolume(0);
+    const inFaderInitEl = (inDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+    if (inFaderInitEl) inFaderInitEl.value = 0;
 
     // Ensure Outgoing Deck is playing
     if (!outDeck.isPlaying) {
@@ -1168,9 +1189,16 @@ document.addEventListener('DOMContentLoaded', () => {
       predrop_gap: '⏸ PRE-DROP GAP', drop_impact: '💥 DROP IMPACT', vocal_ducking: '🎤 VOCAL DUCK',
       stem_mashup: '🎛️ STEM MASH', flanger: '🌀 FLANGER', beat_masher: '⚡ MASHER', pitch_bend: '💿 PITCH BEND'
     };
-    const activeLabel = bp.meta.active_blocks
-      .map(b => blockLabels[b] || b.toUpperCase())
-      .join(' + ');
+    const activeBlocks = bp.meta.active_blocks || [];
+    const activeLabel = activeBlocks.length > 0
+      ? activeBlocks.map(b => blockLabels[b] || b.toUpperCase()).join(' + ')
+      : 'SEAMLESS BLEND';
+
+    // Immediate HUD update on beat 1 launch
+    const cueNameInit = (bp.meta && bp.meta.cue_target_name) ? bp.meta.cue_target_name : 'INTRO';
+    if (transitionStatusBanner) {
+      transitionStatusBanner.textContent = `⚡ JEV MIX: ${activeLabel} ➔ ${cueNameInit} (BAR 1/${bars} • 0%)`;
+    }
 
     function updateBlueprintFrame() {
       if (_blueprintAborted || !isTransitioning) return;
@@ -1214,13 +1242,13 @@ document.addEventListener('DOMContentLoaded', () => {
       if (inFaderEl) inFaderEl.value = Math.round(inFaderNorm * 100);
       if (outFaderEl) outFaderEl.value = Math.round(outFaderNorm * 100);
 
-      // PLL phase lock
+      // PLL phase lock (pitch nudging only, zero audio seeking during transition)
       if (typeof applyPhaseLockLoop === 'function') {
         const tempoRamp = Math.abs(outTrack.bpm - inTrack.bpm) > 0.5;
         const baseRate = tempoRamp
           ? (syncRate + (1.0 - syncRate) * (p * p * p * (p * (p * 6 - 15) + 10)))
           : syncRate;
-        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate);
+        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate, false);
       }
 
       // Trigger effects at their blueprint-specified progress points
@@ -1550,6 +1578,9 @@ document.addEventListener('DOMContentLoaded', () => {
     if (aiSourceBadge) {
       aiSourceBadge.textContent = `${st.engine_source || 'AI Engine'} • ${timeStr}`;
     }
+    if (st.engine_source && st.engine_source.includes('Jev')) {
+      serverHasJev = true;
+    }
 
     if (aiMetricTech) aiMetricTech.textContent = st.recommended_technique.replace('_', ' ').toUpperCase();
     if (aiMetricBars) aiMetricBars.textContent = `${st.recommended_bars} BARS`;
@@ -1857,15 +1888,15 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function applyPhaseLockLoop(masterDeck, masterTrack, slaveDeck, slaveTrack, baseSyncRate) {
+  function applyPhaseLockLoop(masterDeck, masterTrack, slaveDeck, slaveTrack, baseSyncRate, allowMicroSeek = true) {
     if (!masterTrack || !slaveTrack) return;
     const tMaster = masterDeck.audio.currentTime;
     const tSlave = slaveDeck.audio.currentTime;
 
     const { phaseDiff, errorMs } = computePhaseError(masterTrack, tMaster, slaveTrack, tSlave);
 
-    // 1. Gross error (e.g. initial audio seek latency > 80ms): instantly micro-seek to snap onto beat
-    if (Math.abs(errorMs) > 80 && !slaveDeck.audio.seeking) {
+    // 1. Gross error: micro-seek ONLY when explicitly allowed (never during active transitions to avoid rotating track)
+    if (allowMicroSeek && Math.abs(errorMs) > 80 && !slaveDeck.audio.seeking) {
       const m = getDeckPhase(masterTrack, tMaster);
       const s = getDeckPhase(slaveTrack, tSlave);
       const targetTime = s.currentBeat + (m.phase * s.beatDuration);
@@ -2146,7 +2177,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const inPitchVal = isDir1to2 ? d2PitchVal : d1PitchVal;
     const outDeckName = isDir1to2 ? 'DECK 1' : 'DECK 2';
     const inDeckName = isDir1to2 ? 'DECK 2' : 'DECK 1';
-    const targetCf = isDir1to2 ? 100 : 0;
+    // Crossfader: LOCKED PERMANENTLY AT 50% CENTER
+    if (crossfader) {
+      crossfader.value = 50;
+    }
+    engine.setCrossfader(50, 'club');
 
     const effectiveTech = selectedTechnique === 'auto' 
       ? (currentAIRec ? currentAIRec.recommended_technique : 'bass_swap')
@@ -2165,9 +2200,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // the entire transition from scratch with full parameter control.
     // ═══════════════════════════════════════════════════
     const jevKeyForBlueprint = jevKeyInput ? jevKeyInput.value.trim() : (localStorage.getItem('jev_api_key') || '');
-    // Also check if server has Jev configured via environment variable
-    const serverJevConfigured = (aiSourceBadge && aiSourceBadge.textContent.includes('Jev'));
-    const isJevBlueprintMode = (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap') && (jevKeyForBlueprint || serverJevConfigured);
+    const hasJevEngine = Boolean(serverHasJev || jevKeyForBlueprint || (aiSourceBadge && aiSourceBadge.textContent.includes('Jev')));
+    const isJevBlueprintMode = hasJevEngine && (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap');
 
     if (isJevBlueprintMode) {
       // Profile both tracks client-side
@@ -2175,7 +2209,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const profileIn = profileTrackForJev(inDeckNum);
 
       if (profileOut && profileIn) {
-        transitionStatusBanner.textContent = '⚡ JEV COMPUTING BLUEPRINT...';
+        transitionStatusBanner.textContent = '⚡ JEV COMPUTING BLUEPRINT (ANALYZING HARMONICS & CUES)...';
         btnTriggerTransition.classList.add('in-transition');
         isTransitioning = true;
 
@@ -2186,16 +2220,26 @@ document.addEventListener('DOMContentLoaded', () => {
           };
           if (jevKeyForBlueprint) bpPayload.jev_api_key = jevKeyForBlueprint;
 
+          // 12-second abort timeout so the UI never hangs indefinitely
+          const controller = new AbortController();
+          const timeoutId = setTimeout(() => controller.abort(), 12000);
+
           const bpRes = await fetch('/api/jev-blueprint', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(bpPayload)
+            body: JSON.stringify(bpPayload),
+            signal: controller.signal
           });
+          clearTimeout(timeoutId);
+
+          if (!bpRes.ok) {
+            throw new Error(`Server returned ${bpRes.status}`);
+          }
           const bpData = await bpRes.json();
 
           if (bpData.status === 'success' && bpData.blueprint) {
             const bp = bpData.blueprint;
-            console.log(`⚡ Jev Blueprint received: ${bp.meta.active_blocks.join(' + ')} over ${bp.meta.transition_bars} bars (${bp.meta.total_pipeline_ms || 0}ms)`);
+            console.log(`⚡ Jev Blueprint received: ${(bp.meta.active_blocks || []).join(' + ')} over ${bp.meta.transition_bars} bars (${bp.meta.total_pipeline_ms || 0}ms)`);
 
             // Execute the blueprint
             executeBlueprintTransition(
@@ -2206,11 +2250,11 @@ document.addEventListener('DOMContentLoaded', () => {
             return;  // Blueprint path handles everything from here
           } else {
             console.warn('Jev blueprint failed, falling through to standard techniques');
-            transitionStatusBanner.textContent = '⚠️ Jev unavailable, using standard technique...';
+            transitionStatusBanner.textContent = '⚠️ Jev blueprint empty, using standard technique...';
           }
         } catch (bpErr) {
           console.warn('Jev blueprint fetch error:', bpErr);
-          transitionStatusBanner.textContent = '⚠️ Jev unavailable, using standard technique...';
+          transitionStatusBanner.textContent = '⚠️ Jev timed out/unavailable, using standard technique...';
         }
       }
     }
@@ -2320,8 +2364,15 @@ document.addEventListener('DOMContentLoaded', () => {
         outBtnPlay.classList.remove('playing');
         outBtnPlay.textContent = '▶ PLAY';
 
-        crossfader.value = targetCf;
-        engine.setCrossfader(targetCf, 'club');
+        // Crossfader remains permanently centered at 50%
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        outDeck.setVolume(0);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+        inDeck.setVolume(100);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
 
         // Ensure incoming deck drops with pristine 0 dB EQs and beat-aligned cue
         resetDeckEQs(inDeckNum);
@@ -2364,8 +2415,16 @@ document.addEventListener('DOMContentLoaded', () => {
 
             resetDeckEQs(outDeckNum);
 
-            crossfader.value = targetCf;
-            engine.setCrossfader(targetCf, 'club');
+            // Crossfader remains permanently centered at 50%
+            crossfader.value = 50;
+            engine.setCrossfader(50, 'club');
+            outDeck.setVolume(0);
+            if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+            if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+            inDeck.setVolume(100);
+            if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+            if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
+
             resetDeckEQs(inDeckNum);
 
             const introCue = getTrackIntroCue(inTrack);
@@ -2403,8 +2462,16 @@ document.addEventListener('DOMContentLoaded', () => {
         clearInterval(hudInterval);
         phraseHud.classList.add('hidden');
         transitionStatusBanner.textContent = `💥 DROP: ${inDeckName} DROPS WITH FULL 3-BAND POWER!`;
-        crossfader.value = targetCf;
-        engine.setCrossfader(targetCf, 'club');
+        // Crossfader remains permanently centered at 50%
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        outDeck.setVolume(0);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+        inDeck.setVolume(100);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
+
         resetDeckEQs(inDeckNum);
 
         const introCue = getTrackIntroCue(inTrack);
@@ -2458,8 +2525,15 @@ document.addEventListener('DOMContentLoaded', () => {
         outBtnPlay.classList.remove('playing');
         outBtnPlay.textContent = '▶ PLAY';
 
-        crossfader.value = targetCf;
-        engine.setCrossfader(targetCf, 'club');
+        // Crossfader remains permanently centered at 50%
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        outDeck.setVolume(0);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+        inDeck.setVolume(100);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
         resetDeckEQs(inDeckNum);
         resetDeckEQs(outDeckNum);
 
@@ -2502,8 +2576,15 @@ document.addEventListener('DOMContentLoaded', () => {
         resetDeckEQs(outDeckNum);
         outDeck.resetAllFX();
 
-        crossfader.value = targetCf;
-        engine.setCrossfader(targetCf, 'club');
+        // Crossfader remains permanently centered at 50%
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        outDeck.setVolume(0);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+        inDeck.setVolume(100);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
         resetDeckEQs(inDeckNum);
 
         const introCue = getTrackIntroCue(inTrack);
@@ -2584,8 +2665,15 @@ document.addEventListener('DOMContentLoaded', () => {
         outFilter.value = 0;
         outDeck.setColorFilter(0);
 
-        crossfader.value = targetCf;
-        engine.setCrossfader(targetCf, 'club');
+        // Crossfader remains permanently centered at 50%
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        outDeck.setVolume(0);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+        inDeck.setVolume(100);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
         resetDeckEQs(inDeckNum);
 
         const introCue = getTrackIntroCue(inTrack);
@@ -2617,9 +2705,15 @@ document.addEventListener('DOMContentLoaded', () => {
         outFilter.value = 0;
         outDeck.setColorFilter(0);
 
-        // Snap crossfader to target
-        crossfader.value = targetCf;
-        engine.setCrossfader(targetCf, 'club');
+        // Crossfader remains permanently centered at 50%
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        outDeck.setVolume(0);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+        inDeck.setVolume(100);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
 
         // Incoming deck starts on the 1 with full punch
         resetDeckEQs(inDeckNum);
@@ -2677,6 +2771,14 @@ document.addEventListener('DOMContentLoaded', () => {
       inDeck.audio.currentTime = sPhase.currentBeat + (mPhase.phase * sPhase.beatDuration);
       isTransitionPhaseLocked = true;
 
+      // Initialize channel faders for blend: Incoming at 0%, Outgoing at 100%
+      inDeck.setVolume(0);
+      if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+      if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
+      outDeck.setVolume(100);
+      if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+      if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
+
       inDeck.play();
       inBtnPlay.classList.add('playing');
       inBtnPlay.textContent = '⏸ PAUSE';
@@ -2704,12 +2806,20 @@ document.addEventListener('DOMContentLoaded', () => {
         const p = Math.min(1.0, elapsed / totalTransMs);
 
         // ═══════════════════════════════════════════════════
-        // 1. CROSSFADER: Quintic S-Curve with Club Gain Curve
+        // 1. VERTICAL CHANNEL FADERS: Quintic S-Curve (Crossfader at 50%)
         // ═══════════════════════════════════════════════════
         const pSmooth = smootherstep(p);
-        const cfVal = isDir1to2 ? (pSmooth * 100) : ((1.0 - pSmooth) * 100);
-        crossfader.value = Math.round(cfVal);
-        engine.setCrossfader(cfVal, 'club');
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+
+        const inVol = pSmooth * 100;
+        const outVol = (1.0 - pSmooth) * 100;
+        inDeck.setVolume(inVol);
+        outDeck.setVolume(outVol);
+        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = Math.round(inVol);
+        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = Math.round(inVol);
+        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = Math.round(outVol);
+        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = Math.round(outVol);
 
         // ═══════════════════════════════════════════════════
         // 2. CLOSED-LOOP PLL: Phase Lock with Tempo Ramp
@@ -2717,7 +2827,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const baseRate = (tempoRamp && Math.abs(outTrack.bpm - inTrack.bpm) > 0.5)
           ? (syncRate + (1.0 - syncRate) * smootherstep(p))
           : syncRate;
-        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate);
+        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate, false);
 
         // ═══════════════════════════════════════════════════
         // 3. INCOMING DECK: 3-Band EQ Sculpting
@@ -2879,11 +2989,18 @@ document.addEventListener('DOMContentLoaded', () => {
           outDeck.setColorFilter(0);
 
           outDeck.pause();
+          outDeck.setVolume(0);
+          if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
+          if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
           outBtnPlay.classList.remove('playing');
           outBtnPlay.textContent = '▶ PLAY';
 
           inDeck.setPlaybackRate(1.0);
           inPitchVal.textContent = '0.0%';
+
+          inDeck.setVolume(100);
+          if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
+          if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
 
           resetDeckEQs(inDeckNum);
 
@@ -2918,18 +3035,28 @@ document.addEventListener('DOMContentLoaded', () => {
     const liveDeckNum = (transitionDirection === '1_to_2') ? 2 : 1;
     transitionStatusBanner.textContent = `TRANSITION COMPLETE! ${liveDeck} LIVE ON AIR.`;
 
-    // Ensure live deck has pristine neutral EQs
+    // Ensure live deck has pristine neutral EQs and full volume
     resetDeckEQs(liveDeckNum);
+    const liveDeckRef = (liveDeckNum === 1) ? engine.deck1 : engine.deck2;
+    const liveVolFader = (liveDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+    liveDeckRef.setVolume(100);
+    if (liveVolFader) liveVolFader.value = 100;
 
-    // Reset both decks' FX, filters, and volume to pristine neutral state
-    const outDeckRef = (transitionDirection === '1_to_2') ? engine.deck1 : engine.deck2;
-    const outDeckFilterEl = (transitionDirection === '1_to_2') ? document.getElementById('d1-filter') : document.getElementById('d2-filter');
-    const outVolFader = (transitionDirection === '1_to_2') ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
+    // Reset outgoing deck's FX and filters, and keep its volume at 0 (silent since crossfader is centered at 50%)
+    const outDeckNum = (liveDeckNum === 1) ? 2 : 1;
+    const outDeckRef = (outDeckNum === 1) ? engine.deck1 : engine.deck2;
+    const outDeckFilterEl = (outDeckNum === 1) ? document.getElementById('d1-filter') : document.getElementById('d2-filter');
+    const outVolFader = (outDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
     outDeckRef.resetAllFX();
-    outDeckRef.setVolume(100);
+    outDeckRef.pause();
+    outDeckRef.setVolume(0);
     if (outDeckFilterEl) { outDeckFilterEl.value = 0; }
-    if (outVolFader) { outVolFader.value = 100; }
-    resetDeckEQs(liveDeckNum === 1 ? 2 : 1);
+    if (outVolFader) { outVolFader.value = 0; }
+    resetDeckEQs(outDeckNum);
+
+    // Crossfader remains permanently centered at 50%
+    if (crossfader) crossfader.value = 50;
+    engine.setCrossfader(50, 'club');
 
     // Automatically flip the mix direction so DJ is ready for next sequence
     const nextDir = (transitionDirection === '1_to_2') ? '2_to_1' : '1_to_2';
@@ -3267,24 +3394,30 @@ document.addEventListener('DOMContentLoaded', () => {
         toggleTransitionDirection();
         break;
 
-      case 'ArrowLeft': // Crossfader hard left
+      case 'ArrowLeft': // Fade channel fader: Deck 1 up (100%), Deck 2 down (0%)
         e.preventDefault();
-        crossfader.value = 0;
-        crossfader.dispatchEvent(new Event('input'));
-        flashButton('#crossfader');
-        break;
-
-      case 'ArrowDown': // Crossfader center (50%)
-        e.preventDefault();
+        if (d1VolFader) { d1VolFader.value = 100; d1VolFader.dispatchEvent(new Event('input')); }
+        if (d2VolFader) { d2VolFader.value = 0; d2VolFader.dispatchEvent(new Event('input')); }
         crossfader.value = 50;
-        crossfader.dispatchEvent(new Event('input'));
+        engine.setCrossfader(50, 'club');
         flashButton('#crossfader');
         break;
 
-      case 'ArrowRight': // Crossfader hard right
+      case 'ArrowDown': // Balance both channel faders at 100% (Crossfader center 50%)
         e.preventDefault();
-        crossfader.value = 100;
-        crossfader.dispatchEvent(new Event('input'));
+        if (d1VolFader) { d1VolFader.value = 100; d1VolFader.dispatchEvent(new Event('input')); }
+        if (d2VolFader) { d2VolFader.value = 100; d2VolFader.dispatchEvent(new Event('input')); }
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
+        flashButton('#crossfader');
+        break;
+
+      case 'ArrowRight': // Fade channel fader: Deck 2 up (100%), Deck 1 down (0%)
+        e.preventDefault();
+        if (d1VolFader) { d1VolFader.value = 0; d1VolFader.dispatchEvent(new Event('input')); }
+        if (d2VolFader) { d2VolFader.value = 100; d2VolFader.dispatchEvent(new Event('input')); }
+        crossfader.value = 50;
+        engine.setCrossfader(50, 'club');
         flashButton('#crossfader');
         break;
 

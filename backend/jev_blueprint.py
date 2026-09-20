@@ -14,6 +14,7 @@ Key Enhancements:
 """
 
 import json
+import math
 import os
 import time
 import urllib.request
@@ -106,6 +107,17 @@ def _parse_score_norm(answers: dict, key: str, default: float = 0.5) -> float:
     return _parse_score(answers, key, default * 4.0) / 4.0
 
 
+def _safe_float(val: Any, default: float = 0.0) -> float:
+    """Safely converts any value to float, handling None, NaN, inf, and invalid types."""
+    if val is None:
+        return default
+    try:
+        f = float(val)
+        return default if (math.isnan(f) or math.isinf(f)) else f
+    except (ValueError, TypeError):
+        return default
+
+
 def _lerp(a: float, b: float, t: float) -> float:
     """Linear interpolation between a and b."""
     return a + (b - a) * max(0.0, min(1.0, t))
@@ -126,46 +138,46 @@ def run_jev_pipeline(
     """
     t0 = time.time()
 
-    # ─── Build rich state from both track profiles ───
-    bpm_out = float(profile_out.get("bpm", 128.0))
-    bpm_in = float(profile_in.get("bpm", 128.0))
+    # ─── Build rich state from both track profiles safely ───
+    bpm_out = _safe_float(profile_out.get("bpm"), 128.0)
+    bpm_in = _safe_float(profile_in.get("bpm"), 128.0)
     delta_bpm = round(abs(bpm_out - bpm_in), 1)
-    camelot_out = str(profile_out.get("camelot", "8A"))
-    camelot_in = str(profile_in.get("camelot", "8A"))
+    camelot_out = str(profile_out.get("camelot") or "8A")
+    camelot_in = str(profile_in.get("camelot") or "8A")
     camelot_info = check_camelot_compatibility(camelot_out, camelot_in)
 
-    vocal_out = float(profile_out.get("vocal_presence", 0.0))
-    vocal_in = float(profile_in.get("vocal_presence", 0.0))
+    vocal_out = _safe_float(profile_out.get("vocal_presence"), 0.0)
+    vocal_in = _safe_float(profile_in.get("vocal_presence"), 0.0)
 
     base_state = {
         "outgoing_track": {
-            "title": profile_out.get("title", "Track A"),
+            "title": profile_out.get("title") or "Track A",
             "bpm": bpm_out,
             "camelot_key": camelot_out,
-            "key": profile_out.get("key", "Unknown"),
+            "key": profile_out.get("key") or "Unknown",
             "vocal_presence_pct": round(vocal_out * 100, 1),
-            "energy_low": round(float(profile_out.get("energy_low", 0.5)), 3),
-            "energy_mid": round(float(profile_out.get("energy_mid", 0.5)), 3),
-            "energy_high": round(float(profile_out.get("energy_high", 0.5)), 3),
-            "spectral_centroid": round(float(profile_out.get("spectral_centroid", 0.33)), 3),
-            "transient_density": round(float(profile_out.get("transient_density", 0.5)), 3),
-            "energy_trajectory": profile_out.get("energy_trajectory", "sustain"),
-            "duration_sec": float(profile_out.get("duration", 180.0)),
+            "energy_low": round(_safe_float(profile_out.get("energy_low"), 0.5), 3),
+            "energy_mid": round(_safe_float(profile_out.get("energy_mid"), 0.5), 3),
+            "energy_high": round(_safe_float(profile_out.get("energy_high"), 0.5), 3),
+            "spectral_centroid": round(_safe_float(profile_out.get("spectral_centroid"), 0.33), 3),
+            "transient_density": round(_safe_float(profile_out.get("transient_density"), 0.5), 3),
+            "energy_trajectory": profile_out.get("energy_trajectory") or "sustain",
+            "duration_sec": _safe_float(profile_out.get("duration"), 180.0),
         },
         "incoming_track": {
-            "title": profile_in.get("title", "Track B"),
+            "title": profile_in.get("title") or "Track B",
             "bpm": bpm_in,
             "camelot_key": camelot_in,
-            "key": profile_in.get("key", "Unknown"),
+            "key": profile_in.get("key") or "Unknown",
             "vocal_presence_pct": round(vocal_in * 100, 1),
-            "energy_low": round(float(profile_in.get("energy_low", 0.5)), 3),
-            "energy_mid": round(float(profile_in.get("energy_mid", 0.5)), 3),
-            "energy_high": round(float(profile_in.get("energy_high", 0.5)), 3),
-            "spectral_centroid": round(float(profile_in.get("spectral_centroid", 0.33)), 3),
-            "transient_density": round(float(profile_in.get("transient_density", 0.5)), 3),
-            "energy_trajectory": profile_in.get("energy_trajectory", "building"),
-            "duration_sec": float(profile_in.get("duration", 180.0)),
-            "hot_cues": profile_in.get("hot_cues", {})
+            "energy_low": round(_safe_float(profile_in.get("energy_low"), 0.5), 3),
+            "energy_mid": round(_safe_float(profile_in.get("energy_mid"), 0.5), 3),
+            "energy_high": round(_safe_float(profile_in.get("energy_high"), 0.5), 3),
+            "spectral_centroid": round(_safe_float(profile_in.get("spectral_centroid"), 0.33), 3),
+            "transient_density": round(_safe_float(profile_in.get("transient_density"), 0.5), 3),
+            "energy_trajectory": profile_in.get("energy_trajectory") or "building",
+            "duration_sec": _safe_float(profile_in.get("duration"), 180.0),
+            "hot_cues": profile_in.get("hot_cues") or {}
         },
         "mix_context": {
             "bpm_delta": delta_bpm,
@@ -712,17 +724,17 @@ def compile_blueprint(
 
     # ─── Resolve Hot Cue Target & Exact Timestamp ───
     cue_target = d.get("cue_target", "cue_1_intro")
-    hot_cues_in = profile_in.get("hot_cues", {})
-    dur_in = float(profile_in.get("duration", 180.0))
+    hot_cues_in = profile_in.get("hot_cues") or {}
+    dur_in = _safe_float(profile_in.get("duration"), 180.0)
 
     if cue_target == "cue_2_breakdown":
-        chosen_cue_time = float(hot_cues_in.get("cue_2", dur_in * 0.25))
+        chosen_cue_time = _safe_float(hot_cues_in.get("cue_2"), dur_in * 0.25)
     elif cue_target == "cue_3_drop":
-        chosen_cue_time = float(hot_cues_in.get("cue_3", dur_in * 0.50))
+        chosen_cue_time = _safe_float(hot_cues_in.get("cue_3"), dur_in * 0.50)
     elif cue_target == "cue_4_outro":
-        chosen_cue_time = float(hot_cues_in.get("cue_4", max(0.0, dur_in - 30.0)))
+        chosen_cue_time = _safe_float(hot_cues_in.get("cue_4"), max(0.0, dur_in - 30.0))
     else:  # cue_1_intro
-        chosen_cue_time = float(hot_cues_in.get("cue_1", profile_in.get("suggested_cue_intro", 0.0)))
+        chosen_cue_time = _safe_float(hot_cues_in.get("cue_1"), _safe_float(profile_in.get("suggested_cue_intro"), 0.0))
 
     # ─── Bass swap geometry ───
     bs_center = _lerp(0.20, 0.80, d.get("bass_swap_position", 0.5))
@@ -984,12 +996,13 @@ def compile_blueprint(
         "meta": {
             "active_blocks": active_blocks,
             "transition_bars": bars,
+            "bars": bars,
             "energy_intent": d.get("energy_intent", "sustain"),
             "blend_score": blend_score,
             "aggression": round(aggression, 3),
             "crossfader_curve": "center_locked_50",
             "eq_intro_order": d.get("eq_intro_order", "highs_first"),
-            "bpm": float(profile_out.get("bpm", 128.0)),
+            "bpm": _safe_float(profile_out.get("bpm"), 128.0),
             "cue_target": cue_target,
             "cue_target_name": cue_names.get(cue_target, "INTRO"),
             "chosen_cue_time": round(chosen_cue_time, 2)
@@ -1022,15 +1035,15 @@ def compile_local_fallback_blueprint(
     Generates a blueprint using local acoustic heuristics when no Jev key is available.
     Same keyframe format as Jev-compiled blueprints — the frontend executor is identical.
     """
-    bpm_out = float(profile_out.get("bpm", 128.0))
-    bpm_in = float(profile_in.get("bpm", 128.0))
+    bpm_out = _safe_float(profile_out.get("bpm"), 128.0)
+    bpm_in = _safe_float(profile_in.get("bpm"), 128.0)
     delta_bpm = abs(bpm_out - bpm_in)
 
-    vocal_out = float(profile_out.get("vocal_presence", 0.0))
-    vocal_in = float(profile_in.get("vocal_presence", 0.0))
+    vocal_out = _safe_float(profile_out.get("vocal_presence"), 0.0)
+    vocal_in = _safe_float(profile_in.get("vocal_presence"), 0.0)
 
-    camelot_out = str(profile_out.get("camelot", "8A"))
-    camelot_in = str(profile_in.get("camelot", "8A"))
+    camelot_out = str(profile_out.get("camelot") or "8A")
+    camelot_in = str(profile_in.get("camelot") or "8A")
     camelot_info = check_camelot_compatibility(camelot_out, camelot_in)
     harmonic = camelot_info.get("is_harmonically_compatible", True)
 

@@ -90,9 +90,9 @@ class DJDeckAudio {
     this.flangerWetGain = this.ctx.createGain();
     this.flangerWetGain.gain.value = 0.0;
 
-    // Crossfader contribution gain
+    // Crossfader contribution gain: initialized to 1.0 (50% center club curve)
     this.cfGain = this.ctx.createGain();
-    this.cfGain.gain.value = (deckNum === 1) ? 1.0 : 0.0;
+    this.cfGain.gain.value = 1.0;
 
     // Analyser for VU Meter
     this.analyser = this.ctx.createAnalyser();
@@ -821,6 +821,7 @@ class DJAudioEngine {
 
     this.deck1 = new DJDeckAudio(this.ctx, 1, this.masterGain);
     this.deck2 = new DJDeckAudio(this.ctx, 2, this.masterGain);
+    this.setCrossfader(50, 'club');
   }
 
   setCrossfader(val, curve = 'club') {
