@@ -1,7 +1,7 @@
 """
 ai_advisor.py - AI DJ Co-Pilot and Transition Strategy Advisor.
 Supports:
-1. Google Gemini Generative AI (gemini-1.5-flash / gemini-1.5-pro / gemini-2.5-flash) via REST API.
+1. Google Gemini Generative AI (gemini-3.8-flash) via REST API.
 2. High-precision Local Physical Acoustic Engine (offline, 100% free, 0ms latency).
 Generates deep musical transition strategies, drop alignment timestamps, harmonic pitch shifts,
 and tactical performance guides for both 1 -> 2 and 2 -> 1 mixing.
@@ -46,7 +46,7 @@ def get_gemini_api_key(provided_key: Optional[str] = None) -> Optional[str]:
 def call_gemini_api(
     prompt: str,
     api_key: str,
-    model_name: str = "gemini-1.5-flash",
+    model_name: str = "gemini-3.8-flash",
     audio_b64: Optional[str] = None,
     audio_mime: str = "audio/wav"
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:

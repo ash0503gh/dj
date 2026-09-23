@@ -1185,7 +1185,7 @@ def run_gemini_audition_pipeline(
     gemini_api_key: str,
     audio_b64: Optional[str] = None,
     audio_mime: str = "audio/wav",
-    model_name: str = "gemini-1.5-flash"
+    model_name: str = "gemini-3.8-flash"
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
     Runs Gemini Multimodal Audition Pipeline:

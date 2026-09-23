@@ -193,7 +193,9 @@ document.addEventListener('DOMContentLoaded', () => {
     geminiKeyInput.value = localStorage.getItem('gemini_api_key') || '';
   }
   if (aiModelSelect) {
-    aiModelSelect.value = localStorage.getItem('ai_dj_model') || 'jev-latest';
+    const savedModel = localStorage.getItem('ai_dj_model') || 'jev-latest';
+    // Saved choices of retired Gemini models (1.5 / 2.x) move to the current Flash model
+    aiModelSelect.value = savedModel.startsWith('gemini-') ? 'gemini-3.8-flash' : savedModel;
     aiModelSelect.addEventListener('change', () => {
       localStorage.setItem('ai_dj_model', aiModelSelect.value);
       fetchAIStrategy();
@@ -835,7 +837,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
         }
         if (aiModelSelect && !localStorage.getItem('ai_dj_model')) {
-          aiModelSelect.value = data.jev_configured ? 'jev-latest' : (data.gemini_configured ? 'gemini-1.5-flash' : 'local');
+          aiModelSelect.value = data.jev_configured ? 'jev-latest' : (data.gemini_configured ? 'gemini-3.8-flash' : 'local');
         }
       }
     } catch (e) {
@@ -1203,7 +1205,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const model = aiModelSelect ? aiModelSelect.value : (localStorage.getItem('ai_dj_model') || 'jev-latest');
     const modelLabel = (model === 'local') ? 'Local Acoustic DSP' : 
                        (model.startsWith('jev') ? 'TypeSafe Jev System One (<200ms)' : 
-                       (model === 'gemini-1.5-pro' ? 'Gemini 1.5 Pro' : 'Gemini 1.5 Flash'));
+                       'Gemini 3.8 Flash');
 
     if (btnRefreshAI) {
       btnRefreshAI.disabled = true;
