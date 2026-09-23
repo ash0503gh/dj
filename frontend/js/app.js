@@ -886,6 +886,141 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ═══════════════════════════════════════════════════
+  // CONTENT-AWARE TRANSITION INTELLIGENCE
+  // Uses section_map from backend analysis to make DJ decisions
+  // ═══════════════════════════════════════════════════
+
+  function getSectionAt(track, time) {
+    if (!track || !track.section_map || track.section_map.length === 0) return null;
+    for (let i = track.section_map.length - 1; i >= 0; i--) {
+      if (track.section_map[i].time <= time) return track.section_map[i];
+    }
+    return track.section_map[0];
+  }
+
+  function getSectionsInRange(track, startTime, endTime) {
+    if (!track || !track.section_map) return [];
+    return track.section_map.filter(s => s.time >= startTime && s.time < endTime);
+  }
+
+  function findBestTransitionPoint(outTrack, currentTime, bars) {
+    if (!outTrack || !outTrack.section_map || outTrack.section_map.length < 4) return null;
+
+    const spb = 60.0 / outTrack.bpm;
+    const blendDuration = bars * 4 * spb;
+    const phrases = (bars >= 16 && outTrack.phrase_16_times && outTrack.phrase_16_times.length > 0)
+      ? outTrack.phrase_16_times
+      : (outTrack.phrase_8_times || []);
+
+    const candidates = phrases.filter(pt => pt > currentTime + 1.0 && pt < outTrack.duration - blendDuration);
+    if (candidates.length === 0) return null;
+
+    let bestTime = candidates[0];
+    let bestScore = -Infinity;
+
+    for (const pt of candidates) {
+      const sec = getSectionAt(outTrack, pt);
+      if (!sec) continue;
+
+      let score = 0;
+
+      // Prefer declining energy (leaving a drop/chorus)
+      const nextSec = getSectionAt(outTrack, pt + blendDuration * 0.5);
+      if (nextSec && nextSec.energy < sec.energy) score += 20;
+
+      // Prefer sections without vocals (clean exit)
+      if (!sec.has_vocals) score += 30;
+      score -= sec.vocal_score * 20;
+
+      // Prefer lower bass energy (easier to swap bass)
+      score += (1.0 - sec.bass_energy) * 15;
+
+      // Prefer breakdown/outro sections
+      if (sec.section_type === 'breakdown') score += 25;
+      if (sec.section_type === 'outro') score += 20;
+      if (sec.section_type === 'buildup') score += 10;
+      if (sec.section_type === 'drop') score -= 15;
+
+      // Penalty for being too far from current position (prefer sooner transitions)
+      const waitSec = pt - currentTime;
+      if (waitSec > 30) score -= (waitSec - 30) * 0.5;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestTime = pt;
+      }
+    }
+
+    return bestTime;
+  }
+
+  function detectVocalOverlap(outTrack, outTime, inTrack, inTime, blendDuration) {
+    if (!outTrack?.section_map || !inTrack?.section_map) return false;
+
+    const outSections = getSectionsInRange(outTrack, outTime, outTime + blendDuration);
+    const inSections = getSectionsInRange(inTrack, inTime, inTime + blendDuration);
+
+    const outVocal = outSections.some(s => s.has_vocals && s.vocal_score > 0.35);
+    const inVocal = inSections.some(s => s.has_vocals && s.vocal_score > 0.35);
+
+    return outVocal && inVocal;
+  }
+
+  function computeAdaptiveEQParams(outTrack, outStartTime, inTrack, inStartTime, blendDuration) {
+    const params = {
+      bassSwapStart: 0.28,
+      bassSwapEnd: 0.72,
+      inHiFullAt: 0.25,
+      inMidFullAt: 0.60,
+      outMidDuckStart: 0.25,
+      outHiDissolveStart: 0.35,
+      vocalDuckDepth: -5.0
+    };
+
+    if (!outTrack?.section_map || !inTrack?.section_map) return params;
+
+    const inIntroSections = getSectionsInRange(inTrack, inStartTime, inStartTime + blendDuration * 0.5);
+    const outExitSections = getSectionsInRange(outTrack, outStartTime, outStartTime + blendDuration);
+
+    // Nudge bass swap timing based on incoming bass density (small shifts only)
+    const inAvgBass = inIntroSections.length > 0
+      ? inIntroSections.reduce((s, x) => s + x.bass_energy, 0) / inIntroSections.length
+      : 0.33;
+    if (inAvgBass < 0.2) {
+      params.bassSwapStart = 0.32;
+      params.bassSwapEnd = 0.75;
+    } else if (inAvgBass > 0.45) {
+      params.bassSwapStart = 0.24;
+      params.bassSwapEnd = 0.68;
+    }
+
+    // If incoming has strong highs early, bring them in slightly faster
+    const inAvgHigh = inIntroSections.length > 0
+      ? inIntroSections.reduce((s, x) => s + x.high_energy, 0) / inIntroSections.length
+      : 0.33;
+    if (inAvgHigh > 0.4) {
+      params.inHiFullAt = 0.18;
+    }
+
+    // If outgoing has vocals in exit zone, nudge ducking (gentle adjustments)
+    const outHasVocals = outExitSections.some(s => s.has_vocals);
+    if (outHasVocals) {
+      params.outMidDuckStart = 0.22;
+      params.vocalDuckDepth = -6.0;
+    }
+
+    // If incoming has strong mids AND outgoing has vocals, slightly delay incoming mids
+    const inAvgMid = inIntroSections.length > 0
+      ? inIntroSections.reduce((s, x) => s + x.mid_energy, 0) / inIntroSections.length
+      : 0.33;
+    if (inAvgMid > 0.45 && outHasVocals) {
+      params.inMidFullAt = 0.65;
+    }
+
+    return params;
+  }
+
+  // ═══════════════════════════════════════════════════
   // JEV AUTONOMOUS DJ BRAIN: Client-Side Audio Profiling
   // ═══════════════════════════════════════════════════
   function profileTrackForJev(deckNum) {
@@ -2227,7 +2362,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     engine.setCrossfader(50, 'club');
 
-    const effectiveTech = selectedTechnique === 'auto' 
+    let effectiveTech = selectedTechnique === 'auto'
       ? (currentAIRec ? currentAIRec.recommended_technique : 'bass_swap')
       : selectedTechnique;
 
@@ -2374,7 +2509,8 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // -------------------------------------------------------------
-    // 16/32-BAR PHRASE LOCKING & HUD COUNTDOWN
+    // CONTENT-AWARE PHRASE LOCKING & HUD COUNTDOWN
+    // Uses section_map energy contour to pick the best exit point
     // -------------------------------------------------------------
     const curTime = outDeck.audio.currentTime;
     const spb = 60.0 / outTrack.bpm;
@@ -2382,14 +2518,19 @@ document.addEventListener('DOMContentLoaded', () => {
     let targetDropTime = null;
 
     if (isPhraseLock) {
-      const phrases = (bars >= 16 && outTrack.phrase_16_times && outTrack.phrase_16_times.length > 0)
-        ? outTrack.phrase_16_times
-        : (outTrack.phrase_8_times || outTrack.downbeat_times || []);
-        
-      for (let pt of phrases) {
-        if (pt > curTime + 0.5) {
-          targetDropTime = pt;
-          break;
+      // Try content-aware selection first (uses energy, vocals, section type)
+      const smartPoint = findBestTransitionPoint(outTrack, curTime, bars);
+      if (smartPoint) {
+        targetDropTime = smartPoint;
+      } else {
+        const phrases = (bars >= 16 && outTrack.phrase_16_times && outTrack.phrase_16_times.length > 0)
+          ? outTrack.phrase_16_times
+          : (outTrack.phrase_8_times || outTrack.downbeat_times || []);
+        for (let pt of phrases) {
+          if (pt > curTime + 0.5) {
+            targetDropTime = pt;
+            break;
+          }
         }
       }
     }
@@ -2407,6 +2548,17 @@ document.addEventListener('DOMContentLoaded', () => {
       const beatNum = Math.ceil(curTime / spb);
       const nextBarBeat = Math.ceil((beatNum + 1) / 4) * 4;
       targetDropTime = nextBarBeat * spb;
+    }
+
+    // Auto-detect vocal overlap and switch technique if needed
+    if (effectiveTech === 'bass_swap' || effectiveTech === 'auto') {
+      const blendDur = bars * 4 * spb;
+      const introCueForCheck = getTrackIntroCue(inTrack);
+      if (detectVocalOverlap(outTrack, targetDropTime, inTrack, introCueForCheck, blendDur)) {
+        console.log('⚠️ Vocal overlap detected in blend zone — switching to echo_freeze');
+        transitionStatusBanner.textContent = '⚠️ VOCAL CLASH DETECTED — SWITCHING TO ECHO FREEZE...';
+        effectiveTech = 'echo_freeze';
+      }
     }
 
     const waitMs = Math.max(100, Math.min(20000, (targetDropTime - curTime) * 1000));
@@ -2835,12 +2987,15 @@ document.addEventListener('DOMContentLoaded', () => {
       clearInterval(hudInterval);
       phraseHud.classList.add('hidden');
 
+      // ─── CONTENT-AWARE EQ PARAMS ───
+      const introCue = getTrackIntroCue(inTrack);
+      const blendDurSec = bars * 4 * spb;
+      const eqParams = computeAdaptiveEQParams(outTrack, targetDropTime, inTrack, introCue, blendDurSec);
+
       // ─── INITIAL EQ STATE ───
-      // Incoming starts nearly inaudible (pro technique: hi-hats arrive first)
-      applyDeckEQ(inDeckNum, 'low', -24);  // Bass KILLED (no double-kick mud)
-      applyDeckEQ(inDeckNum, 'mid', -18);  // Melody/vocals invisible
-      applyDeckEQ(inDeckNum, 'hi', -8);    // Subtle hat presence (first in!)
-      // Outgoing stays at full 0 dB (natural, unprocessed)
+      applyDeckEQ(inDeckNum, 'low', -24);
+      applyDeckEQ(inDeckNum, 'mid', -18);
+      applyDeckEQ(inDeckNum, 'hi', -8);
       applyDeckEQ(outDeckNum, 'low', 0);
       applyDeckEQ(outDeckNum, 'mid', 0);
       applyDeckEQ(outDeckNum, 'hi', 0);
@@ -2849,16 +3004,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const isVocalDuck = toggleVocalDuck ? toggleVocalDuck.checked : true;
       const useStems = toggleNeuralStems ? toggleNeuralStems.checked : false;
 
-      // ─── TEMPO SYNC & PHASE-ALIGNED CUE ───
+      // ─── PRE-LOCK BEAT ALIGNMENT ───
+      // Snap incoming deck to exact phase BEFORE the blend starts.
+      // This eliminates the need for PLL correction during audible overlap.
       const syncRate = outTrack.bpm / inTrack.bpm;
       inDeck.setPlaybackRate(syncRate);
       inPitchVal.textContent = `${((syncRate - 1) * 100).toFixed(1)}%`;
 
-      const introCue = getTrackIntroCue(inTrack);
       const mPhase = getDeckPhase(outTrack, outDeck.audio.currentTime);
       const sPhase = getDeckPhase(inTrack, introCue);
-      inDeck.audio.currentTime = sPhase.currentBeat + (mPhase.phase * sPhase.beatDuration);
+      // Phase-align to the exact sub-beat position of the outgoing deck
+      const alignedStartTime = sPhase.currentBeat + (mPhase.phase * sPhase.beatDuration);
+      inDeck.audio.currentTime = alignedStartTime;
       isTransitionPhaseLocked = true;
+
+      // Verify alignment and micro-correct if needed (pre-blend, so inaudible)
+      requestAnimationFrame(() => {
+        const verifyError = computePhaseError(outTrack, outDeck.audio.currentTime, inTrack, inDeck.audio.currentTime);
+        if (Math.abs(verifyError.errorMs) > 10) {
+          const mRetry = getDeckPhase(outTrack, outDeck.audio.currentTime);
+          const sRetry = getDeckPhase(inTrack, inDeck.audio.currentTime);
+          inDeck.audio.currentTime = sRetry.currentBeat + (mRetry.phase * sRetry.beatDuration);
+        }
+      });
 
       // Initialize channel faders for blend: Incoming at 0%, Outgoing at 100%
       inDeck.setVolume(0);
@@ -2916,46 +3084,51 @@ document.addEventListener('DOMContentLoaded', () => {
         const baseRate = (tempoRamp && Math.abs(outTrack.bpm - inTrack.bpm) > 0.5)
           ? (syncRate + (1.0 - syncRate) * smootherstep(p))
           : syncRate;
-        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate, false);
+        // Allow micro-seek during first 8% (incoming is inaudible, correction is free)
+        const allowSeekEarly = (p < 0.08);
+        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate, allowSeekEarly);
 
         // ═══════════════════════════════════════════════════
         // 3. INCOMING DECK: 3-Band EQ Sculpting
         // ═══════════════════════════════════════════════════
 
-        // ─── INCOMING HIGHS (First in! Hi-hats arrive earliest) ───
-        // -8dB → 0dB over p: 0.00 → 0.25 (bars 1-8 of a 32-bar blend)
+        // ─── INCOMING HIGHS (adaptive: eqParams.inHiFullAt) ───
         let inHi;
-        if (p < 0.05) {
-          inHi = -8.0 + (3.0 * smootherstep(p / 0.05));  // -8 → -5
-        } else if (p < 0.25) {
-          inHi = -5.0 + (5.0 * smootherstep((p - 0.05) / 0.20));  // -5 → 0
+        const hiFullAt = eqParams.inHiFullAt;
+        if (p < hiFullAt * 0.2) {
+          inHi = -8.0 + (3.0 * smootherstep(p / (hiFullAt * 0.2)));
+        } else if (p < hiFullAt) {
+          inHi = -5.0 + (5.0 * smootherstep((p - hiFullAt * 0.2) / (hiFullAt * 0.8)));
         } else {
           inHi = 0.0;
         }
         applyDeckEQ(inDeckNum, 'hi', inHi);
 
-        // ─── INCOMING MIDS (Melody/vocals arrive gradually, avoiding clash) ───
-        // -18dB → -10dB (p: 0-0.20), -10 → -4dB (p: 0.20-0.40), -4 → 0dB (p: 0.40-0.60)
+        // ─── INCOMING MIDS (adaptive: eqParams.inMidFullAt) ───
         let inMid;
-        if (p < 0.20) {
-          inMid = -18.0 + (8.0 * smootherstep(p / 0.20));   // -18 → -10
-        } else if (p < 0.40) {
-          inMid = -10.0 + (6.0 * smootherstep((p - 0.20) / 0.20));  // -10 → -4
-        } else if (p < 0.60) {
-          inMid = -4.0 + (4.0 * smootherstep((p - 0.40) / 0.20));   // -4 → 0
+        const midFullAt = eqParams.inMidFullAt;
+        const midThird = midFullAt / 3;
+        if (p < midThird) {
+          inMid = -18.0 + (8.0 * smootherstep(p / midThird));
+        } else if (p < midThird * 2) {
+          inMid = -10.0 + (6.0 * smootherstep((p - midThird) / midThird));
+        } else if (p < midFullAt) {
+          inMid = -4.0 + (4.0 * smootherstep((p - midThird * 2) / midThird));
         } else {
           inMid = 0.0;
         }
         applyDeckEQ(inDeckNum, 'mid', inMid);
 
-        // ─── INCOMING LOWS (Bass KILLED until Linkwitz-Riley crossover zone) ───
-        // -24dB → -18dB warmup (p: 0-0.28), then equal-power sin() swap (0.28-0.72), then 0dB
+        // ─── INCOMING LOWS (adaptive bass swap zone: eqParams.bassSwapStart/End) ───
         let inLow;
-        if (p < 0.28) {
-          inLow = -24.0 + (6.0 * smootherstep(p / 0.28));  // sub warmth only
-        } else if (p < 0.72) {
-          const k = (p - 0.28) / 0.44;  // 0→1 across 44% of transition (wider = smoother)
-          const inGain = Math.sin(k * Math.PI * 0.5);  // equal-power rise
+        const bssStart = eqParams.bassSwapStart;
+        const bssEnd = eqParams.bassSwapEnd;
+        const bssWidth = bssEnd - bssStart;
+        if (p < bssStart) {
+          inLow = -24.0 + (6.0 * smootherstep(p / bssStart));
+        } else if (p < bssEnd) {
+          const k = (p - bssStart) / bssWidth;
+          const inGain = Math.sin(k * Math.PI * 0.5);
           inLow = -18.0 + (18.0 * inGain);
         } else {
           inLow = 0.0;
@@ -2963,15 +3136,15 @@ document.addEventListener('DOMContentLoaded', () => {
         applyDeckEQ(inDeckNum, 'low', inLow);
 
         // ═══════════════════════════════════════════════════
-        // 4. OUTGOING DECK: 3-Band EQ Sculpting
+        // 4. OUTGOING DECK: Content-Aware 3-Band EQ Sculpting
         // ═══════════════════════════════════════════════════
 
-        // ─── OUTGOING LOWS (Bass exits via Linkwitz-Riley equal-power cos() decay) ───
+        // ─── OUTGOING LOWS (adaptive bass swap zone matches incoming) ───
         let outLow;
-        if (p < 0.28) {
+        if (p < bssStart) {
           outLow = 0.0;
-        } else if (p < 0.72) {
-          const k = (p - 0.28) / 0.44;
+        } else if (p < bssEnd) {
+          const k = (p - bssStart) / bssWidth;
           const outGain = Math.cos(k * Math.PI * 0.5);
           outLow = -24.0 * (1.0 - outGain);
         } else {
@@ -2979,27 +3152,29 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         applyDeckEQ(outDeckNum, 'low', outLow);
 
-        // ─── OUTGOING MIDS (Duck gradually to avoid vocal clash, then dissolve) ───
-        // Hold 0dB until p=0.25, duck to -6dB by p=0.50, dissolve to -24dB by p=0.85
+        // ─── OUTGOING MIDS (adaptive: eqParams.outMidDuckStart) ───
         let outMid;
-        if (p < 0.25) {
+        const midDuckStart = eqParams.outMidDuckStart;
+        const midDuckMid = midDuckStart + 0.25;
+        const midDuckEnd = Math.min(0.90, midDuckMid + 0.35);
+        if (p < midDuckStart) {
           outMid = 0.0;
-        } else if (p < 0.50) {
-          outMid = 0.0 - (6.0 * smootherstep((p - 0.25) / 0.25));
-        } else if (p < 0.85) {
-          outMid = -6.0 - (18.0 * smootherstep((p - 0.50) / 0.35));
+        } else if (p < midDuckMid) {
+          outMid = 0.0 - (6.0 * smootherstep((p - midDuckStart) / 0.25));
+        } else if (p < midDuckEnd) {
+          outMid = -6.0 - (18.0 * smootherstep((p - midDuckMid) / (midDuckEnd - midDuckMid)));
         } else {
           outMid = -24.0;
         }
         applyDeckEQ(outDeckNum, 'mid', outMid);
 
-        // ─── OUTGOING HIGHS (Last out! Hats maintain rhythmic continuity longest) ───
-        // Hold 0dB until p=0.35, slowly dissolve to -24dB by p=0.92
+        // ─── OUTGOING HIGHS (adaptive: eqParams.outHiDissolveStart) ───
         let outHi;
-        if (p < 0.35) {
+        const hiDissolveStart = eqParams.outHiDissolveStart;
+        if (p < hiDissolveStart) {
           outHi = 0.0;
         } else if (p < 0.92) {
-          outHi = 0.0 - (24.0 * smootherstep((p - 0.35) / 0.57));
+          outHi = 0.0 - (24.0 * smootherstep((p - hiDissolveStart) / (0.92 - hiDissolveStart)));
         } else {
           outHi = -24.0;
         }
@@ -3026,10 +3201,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // to prevent the cardinal sin of vocal clashing
         // ═══════════════════════════════════════════════════
         if (useStems && p > 0.25 && p < 0.75) {
-          const duckAmount = -8.0 * smootherstep((p - 0.25) / 0.25);
+          const duckAmount = Math.min(-8.0, eqParams.vocalDuckDepth) * smootherstep((p - 0.25) / 0.25);
           outDeck.duckMids(duckAmount, 0.15);
         } else if (isVocalDuck && p > 0.20 && p < 0.80) {
-          const duckAmount = -5.0 * smootherstep((p - 0.20) / 0.20);
+          const duckAmount = eqParams.vocalDuckDepth * smootherstep((p - 0.20) / 0.20);
           outDeck.duckMids(duckAmount, 0.15);
         }
 

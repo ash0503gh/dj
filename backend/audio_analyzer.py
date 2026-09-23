@@ -292,6 +292,100 @@ def extract_acoustic_profile(mono: np.ndarray, sr: int, duration: float, cue_int
         "outro_percussion": outro_analysis["percussion_density"]
     }
 
+def compute_section_map(mono: np.ndarray, sr: int, beat_times: List[float], bpm: float) -> List[Dict[str, Any]]:
+    """
+    Builds a per-4-bar-window map of energy, spectral density, and vocal activity.
+    Each entry covers 16 beats (4 bars). Used by the frontend to make content-aware
+    transition decisions: where to start blending, how to shape EQ curves, and
+    whether vocals overlap.
+    """
+    from scipy.signal import butter, sosfilt
+
+    if len(beat_times) < 16 or len(mono) < sr:
+        return []
+
+    spb = 60.0 / bpm
+    sos_low = butter(2, min(0.95, 250 / (sr / 2)), btype='low', output='sos')
+    sos_mid_upper = min(0.95, 2500 / (sr / 2))
+    sos_mid_lower = min(sos_mid_upper - 0.01, 250 / (sr / 2))
+    sos_mid = butter(2, [sos_mid_lower, sos_mid_upper], btype='bandpass', output='sos')
+    sos_high = butter(2, min(0.95, 2500 / (sr / 2)), btype='high', output='sos')
+    sos_vocal = butter(2, [min(0.95, 300 / (sr / 2)), min(0.95, 3200 / (sr / 2))], btype='bandpass', output='sos')
+
+    low_sig = sosfilt(sos_low, mono)
+    mid_sig = sosfilt(sos_mid, mono)
+    high_sig = sosfilt(sos_high, mono)
+    vocal_sig = sosfilt(sos_vocal, mono)
+
+    global_rms = float(np.sqrt(np.mean(mono ** 2))) + 1e-10
+
+    sections = []
+    window_beats = 16  # 4 bars
+
+    for i in range(0, len(beat_times) - window_beats + 1, window_beats):
+        t_start = beat_times[i]
+        t_end = beat_times[min(i + window_beats, len(beat_times) - 1)]
+        if i + window_beats < len(beat_times):
+            t_end = beat_times[i + window_beats]
+        else:
+            t_end = t_start + window_beats * spb
+
+        s0 = int(t_start * sr)
+        s1 = min(len(mono), int(t_end * sr))
+        if s1 - s0 < int(0.5 * sr):
+            continue
+
+        chunk = mono[s0:s1]
+        rms = float(np.sqrt(np.mean(chunk ** 2)))
+        energy = round(min(1.0, rms / global_rms), 3)
+
+        bass_e = float(np.sqrt(np.mean(low_sig[s0:s1] ** 2)))
+        mid_e = float(np.sqrt(np.mean(mid_sig[s0:s1] ** 2)))
+        high_e = float(np.sqrt(np.mean(high_sig[s0:s1] ** 2)))
+        band_total = bass_e + mid_e + high_e + 1e-10
+
+        vocal_e = float(np.sqrt(np.mean(vocal_sig[s0:s1] ** 2)))
+        try:
+            flatness = float(np.mean(librosa.feature.spectral_flatness(y=vocal_sig[s0:s1])))
+        except Exception:
+            flatness = 0.01
+        vocal_ratio = min(1.0, vocal_e / (rms + 1e-10))
+        raw_vocal = (vocal_ratio * 1.8) * (1.0 - min(0.8, flatness * 15.0))
+        vocal_score = round(float(np.clip(raw_vocal, 0.0, 1.0)), 3)
+
+        sections.append({
+            "time": round(t_start, 3),
+            "duration": round(t_end - t_start, 3),
+            "energy": energy,
+            "bass_energy": round(bass_e / band_total, 3),
+            "mid_energy": round(mid_e / band_total, 3),
+            "high_energy": round(high_e / band_total, 3),
+            "vocal_score": vocal_score,
+            "has_vocals": vocal_score >= 0.22
+        })
+
+    if len(sections) >= 2:
+        for i, sec in enumerate(sections):
+            prev_e = sections[i - 1]["energy"] if i > 0 else sec["energy"]
+            next_e = sections[i + 1]["energy"] if i < len(sections) - 1 else sec["energy"]
+            e = sec["energy"]
+
+            if e < 0.4 and sec["bass_energy"] < 0.3:
+                sec["section_type"] = "breakdown"
+            elif e > prev_e * 1.3 and e > 0.6:
+                sec["section_type"] = "drop"
+            elif next_e > e * 1.2 and e > 0.3:
+                sec["section_type"] = "buildup"
+            elif i <= 1:
+                sec["section_type"] = "intro"
+            elif i >= len(sections) - 2:
+                sec["section_type"] = "outro"
+            else:
+                sec["section_type"] = "groove"
+
+    return sections
+
+
 def analyze_track(file_path: str) -> Dict[str, Any]:
     """
     Full professional track analysis (optimized for low-latency cloud execution).
@@ -365,7 +459,10 @@ def analyze_track(file_path: str) -> Dict[str, Any]:
 
     # 5. True physical acoustic profile
     acoustic_data = extract_acoustic_profile(mono, sr, duration, cue_intro, cue_outro)
-    
+
+    # 6. Section map: per-4-bar energy, spectral density, and vocal activity
+    section_map = compute_section_map(mono, sr, beat_times, bpm)
+
     # Explicit memory cleanup
     del y, mono
     gc.collect()
@@ -387,5 +484,6 @@ def analyze_track(file_path: str) -> Dict[str, Any]:
         "suggested_cue_intro": round(cue_intro, 3),
         "suggested_cue_outro": round(cue_outro, 3),
         "waveform": waveform_data,
-        "acoustic_profile": acoustic_data
+        "acoustic_profile": acoustic_data,
+        "section_map": section_map
     }

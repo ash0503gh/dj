@@ -541,41 +541,81 @@ def render_pro_transition(
         # Smart vocal ducking: duck Track 1 mids whenever Track 2 mids are loud
         mid_1 = apply_vocal_ducking(mid_1, mid_2, sr, max_duck_db=8.0)
         
-        # Linkwitz-Riley 3-Band Fader Automation (Matching DJM-900 / DJM-A9 physical knobs)
+        # Content-aware fader automation using section_map
         N = min_trans_len
-        # 1. High frequencies: Track 2 highs enter early (0 to swap_sample), Track 1 highs roll off post-swap
+        section_map_1 = info_1.get('section_map', [])
+        section_map_2 = info_2.get('section_map', [])
+
+        # Compute adaptive bass swap position from incoming track's bass energy
+        bass_swap_ratio = 0.5  # default: midpoint
+        if section_map_2:
+            intro_sections = [s for s in section_map_2
+                              if cue_2_sec <= s['time'] < cue_2_sec + transition_dur_sec * 0.5]
+            if intro_sections:
+                avg_bass = sum(s['bass_energy'] for s in intro_sections) / len(intro_sections)
+                if avg_bass < 0.2:
+                    bass_swap_ratio = 0.6
+                elif avg_bass > 0.45:
+                    bass_swap_ratio = 0.4
+
+        swap_sample = int(bass_swap_ratio * min_trans_len)
+        swap_sample = min(swap_sample, min_trans_len - 100)
+
+        # Check for vocal presence in outgoing exit zone
+        out_has_vocals = False
+        if section_map_1:
+            exit_sections = [s for s in section_map_1
+                             if cue_1_sec <= s['time'] < cue_1_sec + transition_dur_sec]
+            out_has_vocals = any(s.get('has_vocals', False) for s in exit_sections)
+
+        # 1. High frequencies: adaptive entry speed
+        hi_full_ratio = 0.4
+        if section_map_2:
+            in_hi_secs = [s for s in section_map_2
+                          if cue_2_sec <= s['time'] < cue_2_sec + transition_dur_sec * 0.5]
+            if in_hi_secs:
+                avg_hi = sum(s['high_energy'] for s in in_hi_secs) / len(in_hi_secs)
+                if avg_hi > 0.4:
+                    hi_full_ratio = 0.25
+
+        hi_full_sample = int(hi_full_ratio * N)
         high_fade_1 = np.ones(N)
-        # Phase 1: Track 1 highs gently dip to 0.85 to make room for Track 2's hats
         high_fade_1[:swap_sample] = np.linspace(1.0, 0.85, swap_sample)
-        # Phase 2: Track 1 highs fade out cleanly
         high_fade_1[swap_sample:] = np.linspace(0.85, 0.0, N - swap_sample) ** 1.5
 
         high_fade_2 = np.ones(N)
-        # Phase 1: Track 2 highs smoothly ride in from 0.25 (-12 dB) to 1.0 (0 dB)
-        high_fade_2[:swap_sample] = np.linspace(0.25, 1.0, swap_sample) ** 1.2
-        # Phase 2: Track 2 highs remain at 100%
-        high_fade_2[swap_sample:] = 1.0
+        high_fade_2[:hi_full_sample] = np.linspace(0.25, 1.0, hi_full_sample) ** 1.2
+        high_fade_2[hi_full_sample:] = 1.0
 
-        # 2. Mid frequencies: Track 2 mids stay sculpted at 0.5 (-6 dB) to avoid vocal clash, then open to 1.0 at swap
+        # 2. Mid frequencies: gentle duck when outgoing has vocals
+        mid_duck_depth = 0.05 if out_has_vocals else 0.0
         mid_fade_1 = np.ones(N)
-        mid_fade_1[:swap_sample] = np.linspace(1.0, 0.90, swap_sample)
-        mid_fade_1[swap_sample:] = np.linspace(0.90, 0.0, N - swap_sample) ** 1.8
+        mid_fade_1[:swap_sample] = np.linspace(1.0, 0.90 - mid_duck_depth, swap_sample)
+        mid_fade_1[swap_sample:] = np.linspace(0.90 - mid_duck_depth, 0.0, N - swap_sample) ** 1.8
 
         mid_fade_2 = np.ones(N)
-        mid_fade_2[:swap_sample] = np.linspace(0.40, 0.65, swap_sample)
+        mid_start = 0.38 if out_has_vocals else 0.40
+        mid_fade_2[:swap_sample] = np.linspace(mid_start, 0.65, swap_sample)
         mid_fade_2[swap_sample:] = 1.0
 
-        # 3. Low frequencies: 10ms Linkwitz-Riley Bass Swap & Kill
-        ramp_w = int(0.01 * sr)
+        # 3. Low frequencies: punchy equal-power crossover (2 bars wide, not the full blend)
+        xfade_beats = 8
+        xfade_width = int(xfade_beats * seconds_per_beat_1 * sr)
+        xfade_width = min(xfade_width, N // 3)
+        xfade_start = max(0, swap_sample - xfade_width // 2)
+        xfade_end = min(N, xfade_start + xfade_width)
+        actual_width = xfade_end - xfade_start
+
         low_fade_1 = np.ones(N)
-        low_fade_1[swap_sample:] = 0.0
-        if swap_sample > ramp_w:
-            low_fade_1[swap_sample-ramp_w:swap_sample] = np.linspace(1, 0, ramp_w)
-            
+        low_fade_1[xfade_end:] = 0.0
+        if actual_width > 0:
+            k = np.linspace(0, 1, actual_width)
+            low_fade_1[xfade_start:xfade_end] = np.cos(k * np.pi * 0.5)
+
         low_fade_2 = np.zeros(N)
-        low_fade_2[swap_sample:] = 1.0
-        if swap_sample + ramp_w < N:
-            low_fade_2[swap_sample:swap_sample+ramp_w] = np.linspace(0, 1, ramp_w)
+        low_fade_2[xfade_end:] = 1.0
+        if actual_width > 0:
+            low_fade_2[xfade_start:xfade_end] = np.sin(k * np.pi * 0.5)
             
         # HPF sweep on Track 1 pre-drop
         sweep_start = max(0, swap_sample - int(4 * seconds_per_beat_1 * sr))
