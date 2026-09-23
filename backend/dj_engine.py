@@ -1,11 +1,11 @@
 """
-dj_engine.py - The Master DJ Transition Engine
-Supports 5 Professional Mixing Techniques + AI Live Decision Engine:
-1. 💥 bass_swap: 16/32-Bar Linkwitz-Riley crossover with HPF sweep and drop
-2. ❄️ echo_freeze: 3/4-beat delay freeze & 4s reverb wash ("Drop on the 1")
-3. 🎙️ stem_mashup: Demucs acapella isolation & vocal mashup over incoming groove
-4. 🌀 loop_roll: Stutter beat-roll (1 -> 1/16) with exponential HPF riser build
-5. ⚡ vinyl_brake: Turntable motor-off deceleration with sub-bass drop impact
+dj_engine.py - The Master DJ Transition Engine (v2.0 — 22 Techniques)
+
+SMOOTH: bass_swap, filter_sweep, stutter_edit, drum_swap, seamless
+BUILD:  noise_riser, loop_roll, tension_riser, beatmash_drop, festival_drop
+BOLD:   spinback, hard_cut, rewind, backspin_slam, acapella_mashup, vocal_chop
+BOMB:   power_cut, fake_drop, silence_drop, double_drop
+DRAMATIC: echo_freeze, vinyl_brake, echo_dissolve
 """
 
 import os
@@ -28,8 +28,14 @@ from .audio_dsp import (
     apply_loop_roll_riser,
     apply_spinback_fx,
     apply_noise_riser,
-    apply_vocal_ducking
+    apply_vocal_ducking,
+    apply_filter_sweep_blend,
+    apply_stutter_chop,
+    apply_tension_snare_roll,
+    apply_rewind_fx,
+    apply_sidechain_pump,
 )
+from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY
 
 def soft_limit(y: np.ndarray, threshold: float = 0.95) -> np.ndarray:
     """Soft knee saturation / limiter to avoid digital clipping."""
@@ -38,157 +44,175 @@ def soft_limit(y: np.ndarray, threshold: float = 0.95) -> np.ndarray:
         return np.tanh(y / max_val * 1.2) * threshold
     return y
 
-def ai_analyze_and_recommend_transition(info_1: Dict[str, Any], info_2: Dict[str, Any]) -> Dict[str, Any]:
+def ai_analyze_and_recommend_transition(
+    info_1: Dict[str, Any],
+    info_2: Dict[str, Any],
+    energy_mgr: Optional[SetEnergyManager] = None,
+) -> Dict[str, Any]:
     """
-    AI Live Decision Engine (Option 1: Physical Acoustic & Spectral Analysis):
-    Analyzes true physical audio features (vocal formant energy ratio, spectral flatness,
-    percussion density, section dynamics, tempo disparity, and Camelot key alignment)
-    to select the mathematically optimal professional transition technique.
+    AI Live Decision Engine v2.0 — 22 techniques with set-energy awareness.
+    Selects technique based on acoustic analysis, then re-ranks using energy arc.
     """
     bpm_1 = float(info_1['bpm'])
     bpm_2 = float(info_2['bpm'])
     delta_bpm = abs(bpm_1 - bpm_2)
-    
+
     camelot_info = check_camelot_compatibility(info_1['camelot'], info_2['camelot'])
     is_harmonic = camelot_info['is_harmonically_compatible']
 
-    # Extract physical acoustic profiles
     ac_1 = info_1.get('acoustic_profile', {})
     ac_2 = info_2.get('acoustic_profile', {})
-    
-    # Measure real physical vocal formant presence
+
     vocal_outro_1 = ac_1.get('vocal_detected_outro', False)
     vocal_score_1 = ac_1.get('outro_vocal_score', 0.0)
     vocal_intro_2 = ac_2.get('vocal_detected_intro', False)
     vocal_score_2 = ac_2.get('intro_vocal_score', 0.0)
-    
     perc_outro_1 = ac_1.get('outro_percussion', 'driving_4_4')
     perc_intro_2 = ac_2.get('intro_percussion', 'driving_4_4')
-    
-    # Priority 1: Prevent Simultaneous Vocal Clashing (Both artists singing during overlap)
+
+    # Build candidate list with acoustic scores
+    candidates = []
+
+    def add(tech, conf, reason, bars=16, **extra):
+        candidates.append({
+            "recommended_technique": tech,
+            "confidence": conf,
+            "reasoning": reason,
+            "recommended_bars": bars,
+            "acoustic_analysis": extra,
+        })
+
+    # --- VOCAL CLASH → dramatic exit techniques ---
     if vocal_outro_1 and vocal_intro_2:
-        return {
-            "recommended_technique": "echo_freeze",
-            "technique_name": "❄️ Word Echo Freeze & Drop on the 1",
-            "confidence": 0.98,
-            "reasoning": f"Spectral analysis detected simultaneous vocal formants ({vocal_score_1*100:.0f}% in Deck 1 outro & {vocal_score_2*100:.0f}% in Deck 2 intro). Echo Freeze cuts Track 1 on Beat 1 with a 4s tape delay throw, completely eliminating vocal and lyrical overlap.",
-            "recommended_bars": 8,
-            "acoustic_analysis": {
-                "deck_1_vocal_energy": f"{vocal_score_1*100:.0f}%",
-                "deck_2_vocal_energy": f"{vocal_score_2*100:.0f}%",
-                "vocal_clash_risk": "CRITICAL"
-            }
-        }
+        add("echo_freeze", 0.98,
+            f"Vocal clash ({vocal_score_1*100:.0f}%/{vocal_score_2*100:.0f}%). Echo Freeze prevents lyrical collision with 4s delay wash.",
+            bars=8, vocal_clash_risk="CRITICAL")
+        add("power_cut", 0.90,
+            f"Vocal clash — power cut: 0.5s silence gap slams Deck 2 with zero overlap.",
+            bars=8)
+        add("rewind", 0.85,
+            f"Vocal clash — vinyl rewind snaps attention, resets harmonic memory before Deck 2.",
+            bars=8)
+        add("echo_dissolve", 0.82,
+            f"Vocal clash — echo dissolve melts Deck 1 into infinite delay feedback, fading naturally.",
+            bars=8)
 
-    # Priority 2: Vocal Outro into Clean Drum Intro (e.g. Vocal track into Afro House / Techno beat)
-    if vocal_outro_1 and not vocal_intro_2 and delta_bpm <= 8.0 and camelot_info['score'] >= 80:
-        return {
-            "recommended_technique": "bass_swap",
-            "technique_name": "💥 16-Bar Bass Swap & Vocal Blend",
-            "confidence": 0.96,
-            "reasoning": f"Acoustic analysis shows Deck 1 outro carries vocals ({vocal_score_1*100:.0f}%) while Deck 2 opens with a clean, vocal-free rhythm groove ({perc_intro_2}). 16-bar Bass Swap with Smart Vocal Ducking lets Deck 1's vocals float over Deck 2's fresh beat.",
-            "recommended_bars": 16,
-            "acoustic_analysis": {
-                "deck_1_vocal_energy": f"{vocal_score_1*100:.0f}%",
-                "deck_2_vocal_energy": f"{vocal_score_2*100:.0f}%",
-                "vocal_clash_risk": "SAFE (Clean drum intro)"
-            }
-        }
+    # --- VOCAL OUTRO + CLEAN INTRO → blend techniques ---
+    if vocal_outro_1 and not vocal_intro_2 and delta_bpm <= 8.0:
+        add("bass_swap", 0.96,
+            f"Deck 1 vocals ({vocal_score_1*100:.0f}%) over Deck 2's clean {perc_intro_2} groove. Bass swap with vocal ducking.",
+            bars=16)
+        if is_harmonic:
+            add("acapella_mashup", 0.88,
+                f"Harmonic match — vocal stem of Deck 1 floats over Deck 2's full mix.",
+                bars=16)
+            add("filter_sweep", 0.84,
+                f"Frequency-domain crossover — HPF sweeps Deck 1 up while LPF brings Deck 2 down.",
+                bars=16)
 
-    # Priority 3: Extreme tempo difference (> 18 BPM) -> Hard Cut on the 1
+    # --- EXTREME TEMPO GAP ---
     if delta_bpm > 18.0:
-        return {
-            "recommended_technique": "hard_cut",
-            "technique_name": "✂️ Hard Cut on Beat 1 (Instant Snap)",
-            "confidence": 0.96,
-            "reasoning": f"Extreme tempo disparity (Δ{delta_bpm:.1f} BPM: {bpm_1:.1f} → {bpm_2:.1f} BPM). Blending across this speed gap creates rhythmic trainwrecks. Instant 0ms Hard Cut locked to Beat 1 resets the groove with dynamic surprise.",
-            "recommended_bars": 8,
-            "acoustic_analysis": {
-                "delta_bpm": round(delta_bpm, 1),
-                "tempo_friction": "EXTREME"
-            }
-        }
+        add("hard_cut", 0.96,
+            f"Extreme tempo gap (Δ{delta_bpm:.1f} BPM). Instant 0ms cut on Beat 1.",
+            bars=8, tempo_friction="EXTREME")
+        add("power_cut", 0.92,
+            f"Tempo gap (Δ{delta_bpm:.1f} BPM). 0.5s silence gap then slam Deck 2.",
+            bars=8)
+        add("fake_drop", 0.85,
+            f"Tempo gap — fake drop: build tension with riser, cut to silence, THEN slam Deck 2.",
+            bars=8)
 
-    # Priority 3B: Wide tempo difference (> 10 BPM)
-    if delta_bpm > 10.0:
-        return {
-            "recommended_technique": "echo_freeze",
-            "technique_name": "❄️ Echo Freeze & Drop on the 1",
-            "confidence": 0.95,
-            "reasoning": f"Large tempo disparity (Δ{delta_bpm:.1f} BPM: {bpm_1:.1f} → {bpm_2:.1f} BPM). 3/4-beat Echo Freeze masks the tempo discontinuity with a 4s ambient reverb wash while Deck 2 drops cleanly at native speed.",
-            "recommended_bars": 8,
-            "acoustic_analysis": {
-                "delta_bpm": round(delta_bpm, 1),
-                "tempo_friction": "HIGH"
-            }
-        }
+    # --- WIDE TEMPO GAP ---
+    if 10.0 < delta_bpm <= 18.0:
+        add("echo_freeze", 0.95,
+            f"Wide tempo gap (Δ{delta_bpm:.1f} BPM). Echo freeze masks discontinuity.",
+            bars=8)
+        add("silence_drop", 0.88,
+            f"Wide tempo gap — 2-beat silence for maximum anticipation before tempo reset.",
+            bars=8)
+        add("backspin_slam", 0.85,
+            f"Wide tempo gap — backspin reverse spin into hard slam on Beat 1.",
+            bars=8)
 
-    # Priority 4: Melodic Breakdown into Heavy Drum Drop
+    # --- BREAKDOWN → DROP ---
     if perc_outro_1 == "melodic_breakdown" and perc_intro_2 == "driving_4_4":
-        return {
-            "recommended_technique": "noise_riser",
-            "technique_name": "📈 White Noise HPF Riser & Drop",
-            "confidence": 0.92,
-            "reasoning": f"Deck 1 ends in an ambient melodic breakdown while Deck 2 features driving 4/4 percussion. 4-bar White Noise HPF Riser builds high-frequency tension before dropping Deck 2 on Beat 1.",
-            "recommended_bars": 16,
-            "acoustic_analysis": {
-                "deck_1_section": "Melodic Breakdown",
-                "deck_2_section": "Driving 4/4 Kick"
-            }
-        }
+        add("tension_riser", 0.94,
+            f"Breakdown → drop: 8-bar snare roll + filter sweep + noise riser builds massive anticipation.",
+            bars=16)
+        add("fake_drop", 0.90,
+            f"Breakdown → drop: fake drop builds tension, cuts to silence, THEN slams Deck 2.",
+            bars=16)
+        add("festival_drop", 0.88,
+            f"Breakdown → drop: full festival build (HPF + loop roll + noise riser → silence → boom).",
+            bars=16)
+        add("noise_riser", 0.86,
+            f"Breakdown → drop: 4-bar white noise riser with sidechain pumping.",
+            bars=16)
 
-    # Priority 5: Heavy harmonic key clash with moderate tempo difference
+    # --- KEY CLASH ---
     if not is_harmonic and delta_bpm >= 4.0:
-        return {
-            "recommended_technique": "spinback",
-            "technique_name": "💫 Vinyl Spinback & Drop Impact",
-            "confidence": 0.90,
-            "reasoning": f"Harmonic tension ({info_1['camelot']} vs {info_2['camelot']}). Vinyl Spinback cleanly cuts tonal dissonance with an accelerated reverse scrub and sub-drop on Beat 1.",
-            "recommended_bars": 8,
-            "acoustic_analysis": {
-                "camelot_clash": f"{info_1['camelot']} → {info_2['camelot']}",
-                "harmonic_score": camelot_info['score']
-            }
-        }
+        add("spinback", 0.90,
+            f"Key clash ({info_1['camelot']}→{info_2['camelot']}). Vinyl spinback resets tonal memory.",
+            bars=8)
+        add("backspin_slam", 0.87,
+            f"Key clash — backspin slam: aggressive reverse into sub-bass impact.",
+            bars=8)
+        add("rewind", 0.83,
+            f"Key clash — rewind pull-up: crowd-engaging reset before Deck 2.",
+            bars=8)
 
-    if not is_harmonic:
-        return {
-            "recommended_technique": "vinyl_brake",
-            "technique_name": "⚡ Turntable Brake & Drop Impact",
-            "confidence": 0.88,
-            "reasoning": f"Harmonic key dissonance ({info_1['camelot']} → {info_2['camelot']}). Turntable brake decelerates Deck 1 into silence, resetting harmonic tension before Deck 2 enters.",
-            "recommended_bars": 8,
-            "acoustic_analysis": {
-                "camelot_clash": f"{info_1['camelot']} → {info_2['camelot']}",
-                "harmonic_score": camelot_info['score']
-            }
-        }
-        
-    # Priority 6: Harmonically compatible dance tracks with close tempo
-    if delta_bpm <= 8.0:
-        return {
-            "recommended_technique": "bass_swap",
-            "technique_name": "🎧 32-Bar Pro Seamless Blend",
-            "confidence": 0.96,
-            "reasoning": f"Harmonic resonance ({info_1['camelot']} → {info_2['camelot']}) and compatible 4/4 tempo (Δ{delta_bpm:.1f} BPM). 32-bar quintic smootherstep blend with Linkwitz-Riley crossover and HPF washout ensures imperceptible dancefloor transition.",
-            "recommended_bars": 32,
-            "vocal_ducking": True,
-            "acoustic_analysis": {
-                "harmonic_resonance": True,
-                "rhythm_compatibility": "EXCELLENT"
-            }
-        }
-        
-    return {
-        "recommended_technique": "festival_drop",
-        "technique_name": "🎆 Festival Build & Drop",
-        "confidence": 0.86,
-        "reasoning": f"Progressive energy transition: HPF sweep + loop roll stutter + noise riser → silence gap → sub-bass impact drop from {bpm_1:.1f} to {bpm_2:.1f} BPM.",
-        "recommended_bars": 16,
-        "acoustic_analysis": {
-            "energy_style": "High Tension Build & Drop"
-        }
-    }
+    if not is_harmonic and delta_bpm < 4.0:
+        add("vinyl_brake", 0.88,
+            f"Key clash ({info_1['camelot']}→{info_2['camelot']}). Motor-off brake resets tension.",
+            bars=8)
+        add("echo_dissolve", 0.84,
+            f"Key clash — echo dissolve: delay feedback melts Deck 1 away naturally.",
+            bars=8)
+
+    # --- HARMONIC + CLOSE TEMPO → smooth/build techniques ---
+    if is_harmonic and delta_bpm <= 8.0:
+        add("bass_swap", 0.96,
+            f"Harmonic match ({info_1['camelot']}→{info_2['camelot']}), Δ{delta_bpm:.1f} BPM. Smooth bass swap.",
+            bars=32)
+        add("filter_sweep", 0.88,
+            f"Harmonic match — frequency-domain crossover blend.",
+            bars=16)
+        add("drum_swap", 0.85,
+            f"Harmonic match — swap drums first, bring melody later for layered transition.",
+            bars=16)
+        add("stutter_edit", 0.82,
+            f"Harmonic match — 1/16th stutter chops on Deck 1 while Deck 2 fades in.",
+            bars=16)
+        add("double_drop", 0.80,
+            f"Harmonic match — both tracks drop simultaneously for massive energy spike.",
+            bars=8)
+        add("beatmash_drop", 0.78,
+            f"Harmonic match — rapid beat-repeat (1/2→1/4→1/8→1/16) then slam.",
+            bars=8)
+
+    # Fallback
+    if not candidates:
+        add("festival_drop", 0.86,
+            f"Generic energy transition: build → silence → sub-bass impact drop.",
+            bars=16)
+
+    # --- ENERGY ARC RE-RANKING ---
+    if energy_mgr:
+        for c in candidates:
+            energy_score = energy_mgr.score_technique(c["recommended_technique"])
+            c["energy_score"] = energy_score
+            c["confidence"] = min(0.99, c["confidence"] * (0.5 + energy_score * 0.5))
+        candidates.sort(key=lambda x: x["confidence"], reverse=True)
+
+    best = candidates[0]
+    best["alternatives"] = [
+        {"technique": c["recommended_technique"], "confidence": round(c["confidence"], 2)}
+        for c in candidates[1:4]
+    ]
+    if energy_mgr:
+        best["set_energy"] = energy_mgr.get_state()
+
+    return best
 
 def render_pro_transition(
     track_1_path: str,
@@ -492,9 +516,511 @@ def render_pro_transition(
         mix_end_sec = cue_1_sec + 4.0
 
     # -------------------------------------------------------------
-    # TECHNIQUE 7 & 8: BASS SWAP & STEM MASHUP (16/32 BARS)
+    # TECHNIQUE 7: POWER CUT (Silence Gap → Slam)
     # -------------------------------------------------------------
-    else: # bass_swap or stem_mashup
+    elif selected_technique == "power_cut":
+        if progress_cb: progress_cb(0.40, "Rendering power cut: silence gap → slam drop...")
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample].copy()
+
+        fade_len = int(0.015 * sr)
+        if s1_pre.shape[1] > fade_len:
+            s1_pre[:, -fade_len:] *= np.linspace(1.0, 0.0, fade_len)
+
+        gap_sec = seconds_per_beat_1 * 2
+        gap_samples = int(gap_sec * sr)
+        silence = np.zeros((2, gap_samples))
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        t_boom = np.linspace(0, 0.8, int(0.8 * sr), endpoint=False)
+        boom_freq = 80.0 * np.exp(-t_boom * 14.0) + 30.0
+        boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 4.5) * 0.55
+        boom_stereo = np.vstack([boom, boom])
+        s2_with_boom = np.copy(s2_play)
+        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
+        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre, silence, s2_with_boom])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + gap_sec
+        mix_end_sec = cue_1_sec + gap_sec + 4.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 8: FAKE DROP (Build → Silence → Drop)
+    # -------------------------------------------------------------
+    elif selected_technique == "fake_drop":
+        if progress_cb: progress_cb(0.40, "Building fake drop: tension riser → silence → SLAM...")
+        spb = 60.0 / bpm_1
+        build_bars = min(bars, 8)
+        build_samples = int(build_bars * 4 * spb * sr)
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre_build = y1[:, :max(0, s1_cut_sample - build_samples)]
+
+        s1_build = y1[:, max(0, s1_cut_sample - build_samples):s1_cut_sample].copy()
+        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, 3500.0)
+
+        noise = apply_noise_riser(sr, bpm=bpm_1, bars=build_bars)
+        n_len = min(s1_build.shape[1], noise.shape[1])
+        s1_build[:, :n_len] += noise[:, :n_len] * 0.75
+
+        snare = apply_tension_snare_roll(sr, bpm_1, bars=build_bars)
+        sn_len = min(s1_build.shape[1], snare.shape[1])
+        s1_build[:, :sn_len] += snare[:, :sn_len] * 0.5
+
+        gap_samples = int(spb * 2 * sr)
+        if s1_build.shape[1] > gap_samples:
+            s1_build[:, -gap_samples:] = 0.0
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        t_boom = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
+        boom_freq = 80.0 * np.exp(-t_boom * 12.0) + 30.0
+        boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 3.5) * 0.6
+        boom_stereo = np.vstack([boom, boom])
+        s2_with_boom = np.copy(s2_play)
+        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
+        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre_build, s1_build, s2_with_boom])
+        mix_start_sec = max(0, cue_1_sec - build_samples / sr)
+        mix_swap_sec = cue_1_sec
+        mix_end_sec = cue_1_sec + 4.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 9: SILENCE DROP (Extended Silence → Massive Drop)
+    # -------------------------------------------------------------
+    elif selected_technique == "silence_drop":
+        if progress_cb: progress_cb(0.40, "Rendering silence drop: 4-beat pause → massive impact...")
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample].copy()
+
+        fade_len = int(0.5 * sr)
+        if s1_pre.shape[1] > fade_len:
+            s1_pre[:, -fade_len:] *= np.linspace(1.0, 0.0, fade_len) ** 2
+
+        gap_beats = 4
+        gap_samples = int(gap_beats * seconds_per_beat_1 * sr)
+        silence = np.zeros((2, gap_samples))
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        t_boom = np.linspace(0, 1.2, int(1.2 * sr), endpoint=False)
+        boom_freq = 90.0 * np.exp(-t_boom * 10.0) + 28.0
+        boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 3.0) * 0.65
+        boom_stereo = np.vstack([boom, boom])
+        s2_with_boom = np.copy(s2_play)
+        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
+        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre, silence, s2_with_boom])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + gap_beats * seconds_per_beat_1
+        mix_end_sec = mix_swap_sec + 4.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 10: REWIND / PULL-UP
+    # -------------------------------------------------------------
+    elif selected_technique == "rewind":
+        if progress_cb: progress_cb(0.40, "Rendering vinyl rewind pull-up...")
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        rewind_source = s1_pre[:, max(0, s1_cut_sample - int(2 * sr)):].copy()
+        rewind_audio = apply_rewind_fx(rewind_source, sr, duration_sec=1.5)
+
+        gap_samples = int(0.3 * sr)
+        silence = np.zeros((2, gap_samples))
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        master_mix = np.hstack([s1_pre, rewind_audio, silence, s2_play])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + 1.8
+        mix_end_sec = cue_1_sec + 3.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 11: DOUBLE DROP (Both tracks drop simultaneously)
+    # -------------------------------------------------------------
+    elif selected_technique == "double_drop":
+        if progress_cb: progress_cb(0.40, "Rendering double drop: both tracks slam on Beat 1...")
+        spb = 60.0 / bpm_1
+        build_bars = min(bars, 4)
+        build_samples = int(build_bars * 4 * spb * sr)
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :max(0, s1_cut_sample - build_samples)]
+        s1_build = y1[:, max(0, s1_cut_sample - build_samples):s1_cut_sample].copy()
+        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, 2500.0)
+
+        noise = apply_noise_riser(sr, bpm=bpm_1, bars=build_bars)
+        n_len = min(s1_build.shape[1], noise.shape[1])
+        s1_build[:, :n_len] += noise[:, :n_len] * 0.6
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_drop = y2[:, s2_in_sample:]
+
+        s1_drop = y1[:, s1_cut_sample:]
+        drop_len = min(s1_drop.shape[1], s2_drop.shape[1], int(16 * spb * sr))
+        mixed_drop = s1_drop[:, :drop_len] * 0.65 + s2_drop[:, :drop_len] * 0.65
+        s2_tail = s2_drop[:, drop_len:]
+
+        fade_out = np.linspace(1.0, 0.0, min(int(4 * spb * sr), drop_len)) ** 1.5
+        s1_in_drop = s1_drop[:, :len(fade_out)]
+        s1_in_drop *= fade_out
+
+        mixed_drop[:, :len(fade_out)] = s1_in_drop + s2_drop[:, :len(fade_out)]
+        if drop_len > len(fade_out):
+            mixed_drop[:, len(fade_out):] = s2_drop[:, len(fade_out):drop_len]
+
+        master_mix = np.hstack([s1_pre, s1_build, mixed_drop, s2_tail])
+        mix_start_sec = max(0, cue_1_sec - build_samples / sr)
+        mix_swap_sec = cue_1_sec
+        mix_end_sec = cue_1_sec + drop_len / sr
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 12: BEATMASH DROP (Rapid beat-repeat → slam)
+    # -------------------------------------------------------------
+    elif selected_technique == "beatmash_drop":
+        if progress_cb: progress_cb(0.40, "Rendering beatmash: 1/2→1/4→1/8→1/16 stutter → drop...")
+        spb = 60.0 / bpm_1
+        s1_cut_sample = int(cue_1_sec * sr)
+        mash_source = y1[:, max(0, s1_cut_sample - int(spb * sr)):s1_cut_sample].copy()
+
+        mash_audio = apply_stutter_chop(mash_source, sr, bpm_1, total_beats=16, final_div=16)
+        mash_audio = apply_hpf_sweep(mash_audio, sr, 60.0, 4000.0)
+
+        s1_pre = y1[:, :max(0, s1_cut_sample - int(spb * sr))]
+
+        gap_samples = int(spb * sr)
+        silence = np.zeros((2, gap_samples))
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        t_boom = np.linspace(0, 0.8, int(0.8 * sr), endpoint=False)
+        boom = np.sin(2 * np.pi * np.cumsum(75.0 * np.exp(-t_boom * 14.0) + 32.0) / sr) * np.exp(-t_boom * 5.0) * 0.55
+        boom_stereo = np.vstack([boom, boom])
+        s2_with_boom = np.copy(s2_play)
+        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
+        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre, mash_audio, silence, s2_with_boom])
+        mix_start_sec = max(0, cue_1_sec - spb)
+        mix_swap_sec = cue_1_sec + mash_audio.shape[1] / sr
+        mix_end_sec = mix_swap_sec + spb + 4.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 13: BACKSPIN SLAM
+    # -------------------------------------------------------------
+    elif selected_technique == "backspin_slam":
+        if progress_cb: progress_cb(0.40, "Rendering backspin slam: aggressive reverse → impact...")
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+        spin_source = s1_pre[:, max(0, s1_cut_sample - int(2.0 * sr)):].copy()
+        spin_audio = apply_spinback_fx(spin_source, sr, duration_sec=1.0)
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        t_boom = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
+        boom_freq = 85.0 * np.exp(-t_boom * 12.0) + 30.0
+        boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 3.5) * 0.6
+        boom_stereo = np.vstack([boom, boom])
+        s2_with_boom = np.copy(s2_play)
+        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
+        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre, spin_audio, s2_with_boom])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + 1.0
+        mix_end_sec = cue_1_sec + 2.5
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 14: TENSION RISER (Snare Roll + Filter + Noise → Drop)
+    # -------------------------------------------------------------
+    elif selected_technique == "tension_riser":
+        if progress_cb: progress_cb(0.40, "Building tension: snare roll + filter sweep + noise riser...")
+        spb = 60.0 / bpm_1
+        build_bars = min(bars, 8)
+        build_samples = int(build_bars * 4 * spb * sr)
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :max(0, s1_cut_sample - build_samples)]
+        s1_build = y1[:, max(0, s1_cut_sample - build_samples):s1_cut_sample].copy()
+        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, 4000.0)
+
+        noise = apply_noise_riser(sr, bpm=bpm_1, bars=build_bars)
+        n_len = min(s1_build.shape[1], noise.shape[1])
+        s1_build[:, :n_len] += noise[:, :n_len] * 0.7
+
+        snare = apply_tension_snare_roll(sr, bpm_1, bars=build_bars)
+        sn_len = min(s1_build.shape[1], snare.shape[1])
+        s1_build[:, :sn_len] += snare[:, :sn_len] * 0.55
+
+        s1_build = apply_sidechain_pump(s1_build, sr, bpm_1, depth=0.5)
+
+        gap_samples = int(spb * sr)
+        if s1_build.shape[1] > gap_samples:
+            s1_build[:, -gap_samples:] = 0.0
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        t_boom = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
+        boom_freq = 85.0 * np.exp(-t_boom * 12.0) + 30.0
+        boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 3.5) * 0.6
+        boom_stereo = np.vstack([boom, boom])
+        s2_with_boom = np.copy(s2_play)
+        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
+        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+
+        master_mix = np.hstack([s1_pre, s1_build, s2_with_boom])
+        mix_start_sec = max(0, cue_1_sec - build_samples / sr)
+        mix_swap_sec = cue_1_sec
+        mix_end_sec = cue_1_sec + 4.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 15: STUTTER EDIT (1/16th chops + incoming fade)
+    # -------------------------------------------------------------
+    elif selected_technique == "stutter_edit":
+        if progress_cb: progress_cb(0.40, "Rendering stutter edit: rapid chops + incoming fade-in...")
+        spb = 60.0 / bpm_1
+        stutter_beats = min(bars * 4, 16)
+        stutter_dur = stutter_beats * spb
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        stutter_source = y1[:, max(0, s1_cut_sample - int(spb * sr)):s1_cut_sample].copy()
+        stutter_audio = apply_stutter_chop(stutter_source, sr, bpm_1, total_beats=stutter_beats, final_div=16)
+        stutter_audio = apply_hpf_sweep(stutter_audio, sr, 80.0, 3000.0)
+
+        s2_in_sample = int(cue_2_sec * sr)
+        stutter_len = stutter_audio.shape[1]
+        s2_blend = y2[:, s2_in_sample:s2_in_sample + stutter_len]
+        if s2_blend.shape[1] < stutter_len:
+            s2_blend = np.hstack([s2_blend, np.zeros((2, stutter_len - s2_blend.shape[1]))])
+
+        blend_len = min(stutter_len, s2_blend.shape[1])
+        fade_in = np.linspace(0, 1, blend_len) ** 1.5
+        fade_out = np.linspace(1, 0, blend_len) ** 1.2
+        mixed = stutter_audio[:, :blend_len] * fade_out + s2_blend[:, :blend_len] * fade_in
+
+        s2_post = y2[:, s2_in_sample + stutter_len:]
+
+        master_mix = np.hstack([s1_pre, mixed, s2_post])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + stutter_dur * 0.5
+        mix_end_sec = cue_1_sec + stutter_dur
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 16: FILTER SWEEP BLEND
+    # -------------------------------------------------------------
+    elif selected_technique == "filter_sweep":
+        if progress_cb: progress_cb(0.40, "Rendering filter sweep: HPF out ↔ LPF in crossover...")
+        transition_dur = bars * 4 * seconds_per_beat_1
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        trans_samples = int(transition_dur * sr)
+        s1_trans = y1[:, s1_cut_sample:s1_cut_sample + trans_samples]
+        if s1_trans.shape[1] < trans_samples:
+            s1_trans = np.hstack([s1_trans, np.zeros((2, trans_samples - s1_trans.shape[1]))])
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_trans = y2[:, s2_in_sample:s2_in_sample + trans_samples]
+        if s2_trans.shape[1] < trans_samples:
+            s2_trans = np.hstack([s2_trans, np.zeros((2, trans_samples - s2_trans.shape[1]))])
+
+        if tempo_ramp and abs(bpm_1 - bpm_2) > 0.8:
+            s2_trans = dynamic_tempo_ramp(s2_trans, sr, start_rate=bpm_1 / bpm_2, end_rate=1.0)
+        min_len = min(s1_trans.shape[1], s2_trans.shape[1])
+        mixed = apply_filter_sweep_blend(s1_trans[:, :min_len], s2_trans[:, :min_len], sr)
+
+        s2_post = y2[:, s2_in_sample + trans_samples:]
+        master_mix = np.hstack([s1_pre, mixed, s2_post])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + transition_dur * 0.5
+        mix_end_sec = cue_1_sec + transition_dur
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 17: ECHO DISSOLVE (Increasing delay feedback → melt)
+    # -------------------------------------------------------------
+    elif selected_technique == "echo_dissolve":
+        if progress_cb: progress_cb(0.40, "Rendering echo dissolve: feedback melt into Deck 2...")
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        exit_chunk = y1[:, max(0, s1_cut_sample - int(3 * sr)):s1_cut_sample].copy()
+        echo_tail = apply_echo_freeze(exit_chunk, sr, bpm=bpm_1, tail_sec=6.0)
+
+        vol_env = np.linspace(1.0, 0.0, echo_tail.shape[1]) ** 0.8
+        echo_tail *= vol_env
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+
+        tail_len = min(echo_tail.shape[1], s2_play.shape[1])
+        s2_with_dissolve = np.copy(s2_play)
+        fade_in_len = min(int(2 * sr), s2_with_dissolve.shape[1])
+        s2_with_dissolve[:, :fade_in_len] *= np.linspace(0.3, 1.0, fade_in_len)
+        s2_with_dissolve[:, :tail_len] += echo_tail[:, :tail_len] * 0.6
+
+        fade_len = int(0.02 * sr)
+        if s1_pre.shape[1] > fade_len:
+            s1_pre[:, -fade_len:] *= np.linspace(1, 0, fade_len)
+
+        master_mix = np.hstack([s1_pre, s2_with_dissolve])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec
+        mix_end_sec = cue_1_sec + 6.0
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 18: DRUM SWAP (Drums first, melody later)
+    # -------------------------------------------------------------
+    elif selected_technique == "drum_swap":
+        if progress_cb: progress_cb(0.40, "Rendering drum swap: percussion first, melody follows...")
+        transition_dur = bars * 4 * seconds_per_beat_1
+        trans_samples = int(transition_dur * sr)
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        s1_trans = y1[:, s1_cut_sample:s1_cut_sample + trans_samples]
+        if s1_trans.shape[1] < trans_samples:
+            s1_trans = np.hstack([s1_trans, np.zeros((2, trans_samples - s1_trans.shape[1]))])
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_trans = y2[:, s2_in_sample:s2_in_sample + trans_samples]
+        if s2_trans.shape[1] < trans_samples:
+            s2_trans = np.hstack([s2_trans, np.zeros((2, trans_samples - s2_trans.shape[1]))])
+
+        if tempo_ramp and abs(bpm_1 - bpm_2) > 0.8:
+            s2_trans = dynamic_tempo_ramp(s2_trans, sr, start_rate=bpm_1 / bpm_2, end_rate=1.0)
+
+        min_len = min(s1_trans.shape[1], s2_trans.shape[1])
+        s1_trans = s1_trans[:, :min_len]
+        s2_trans = s2_trans[:, :min_len]
+
+        low_1, mid_1, high_1 = split_3band(s1_trans, sr)
+        low_2, mid_2, high_2 = split_3band(s2_trans, sr)
+
+        N = min_len
+        half = N // 2
+
+        low_fade_1 = np.ones(N)
+        low_fade_1[half // 2:half] = np.linspace(1.0, 0.0, half - half // 2)
+        low_fade_1[half:] = 0.0
+
+        low_fade_2 = np.zeros(N)
+        low_fade_2[half // 2:half] = np.linspace(0.0, 1.0, half - half // 2)
+        low_fade_2[half:] = 1.0
+
+        high_fade_1 = np.ones(N)
+        high_fade_1[:half] = np.linspace(1.0, 0.3, half)
+        high_fade_1[half:] = np.linspace(0.3, 0.0, N - half) ** 1.5
+
+        high_fade_2 = np.zeros(N)
+        high_fade_2[:half] = np.linspace(0.0, 0.7, half)
+        high_fade_2[half:] = np.linspace(0.7, 1.0, N - half)
+
+        mid_fade_1 = np.ones(N)
+        mid_fade_1[half:] = np.linspace(1.0, 0.0, N - half) ** 1.5
+
+        mid_fade_2 = np.zeros(N)
+        mid_fade_2[half:] = np.linspace(0.0, 1.0, N - half) ** 1.2
+
+        mixed = (low_1 * low_fade_1 + low_2 * low_fade_2 +
+                 mid_1 * mid_fade_1 + mid_2 * mid_fade_2 +
+                 high_1 * high_fade_1 + high_2 * high_fade_2)
+
+        s2_post = y2[:, s2_in_sample + trans_samples:]
+        master_mix = np.hstack([s1_pre, mixed, s2_post])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + transition_dur * 0.5
+        mix_end_sec = cue_1_sec + transition_dur
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 19: ACAPELLA MASHUP (Vocal stem over incoming beat)
+    # -------------------------------------------------------------
+    elif selected_technique == "acapella_mashup":
+        if progress_cb: progress_cb(0.40, "Rendering acapella mashup: vocals over incoming beat...")
+        transition_dur = bars * 4 * seconds_per_beat_1
+        trans_samples = int(transition_dur * sr)
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        s1_vocal = y1[:, s1_cut_sample:s1_cut_sample + trans_samples]
+        if s1_vocal.shape[1] < trans_samples:
+            s1_vocal = np.hstack([s1_vocal, np.zeros((2, trans_samples - s1_vocal.shape[1]))])
+        _, s1_mid, _ = split_3band(s1_vocal, sr, f_low=300, f_high=3500)
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_trans = y2[:, s2_in_sample:s2_in_sample + trans_samples]
+        if s2_trans.shape[1] < trans_samples:
+            s2_trans = np.hstack([s2_trans, np.zeros((2, trans_samples - s2_trans.shape[1]))])
+
+        if tempo_ramp and abs(bpm_1 - bpm_2) > 0.8:
+            s2_trans = dynamic_tempo_ramp(s2_trans, sr, start_rate=bpm_1 / bpm_2, end_rate=1.0)
+
+        min_len = min(s1_mid.shape[1], s2_trans.shape[1])
+
+        vocal_env = np.ones(min_len)
+        fade_out_start = int(min_len * 0.6)
+        vocal_env[fade_out_start:] = np.linspace(1.0, 0.0, min_len - fade_out_start)
+
+        mixed = s2_trans[:, :min_len] + s1_mid[:, :min_len] * vocal_env * 0.7
+
+        s2_post = y2[:, s2_in_sample + trans_samples:]
+        master_mix = np.hstack([s1_pre, mixed, s2_post])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + transition_dur * 0.5
+        mix_end_sec = cue_1_sec + transition_dur
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 20: VOCAL CHOP BRIDGE
+    # -------------------------------------------------------------
+    elif selected_technique == "vocal_chop":
+        if progress_cb: progress_cb(0.40, "Rendering vocal chop bridge...")
+        spb = 60.0 / bpm_1
+
+        s1_cut_sample = int(cue_1_sec * sr)
+        s1_pre = y1[:, :s1_cut_sample]
+
+        vocal_source = y1[:, max(0, s1_cut_sample - int(2 * spb * sr)):s1_cut_sample]
+        _, vocal_mid, _ = split_3band(vocal_source, sr, f_low=300, f_high=3500)
+
+        chop_beats = 8
+        chop_samples = int(chop_beats * spb * sr)
+        chop_audio = apply_stutter_chop(vocal_mid, sr, bpm_1, total_beats=chop_beats, final_div=8)
+        chop_len = min(chop_audio.shape[1], chop_samples)
+        chop_audio = chop_audio[:, :chop_len]
+
+        s2_in_sample = int(cue_2_sec * sr)
+        s2_play = y2[:, s2_in_sample:]
+        blend_len = min(chop_len, s2_play.shape[1])
+
+        fade_in = np.linspace(0.3, 1.0, blend_len)
+        mixed = chop_audio[:, :blend_len] * 0.5 + s2_play[:, :blend_len] * fade_in
+        s2_tail = s2_play[:, blend_len:]
+
+        master_mix = np.hstack([s1_pre, mixed, s2_tail])
+        mix_start_sec = cue_1_sec
+        mix_swap_sec = cue_1_sec + chop_len / sr * 0.5
+        mix_end_sec = cue_1_sec + chop_len / sr
+
+    # -------------------------------------------------------------
+    # TECHNIQUE 21 & 22: BASS SWAP & STEM MASHUP (16/32 BARS)
+    # -------------------------------------------------------------
+    else: # bass_swap, stem_mashup, or seamless
         if progress_cb: progress_cb(0.30, f"Tempo matching & 3-band crossover (Transition: {bars} bars)...")
         beats_in_transition = bars * 4
         transition_dur_sec = beats_in_transition * seconds_per_beat_1

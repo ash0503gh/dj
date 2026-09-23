@@ -21,6 +21,7 @@ from .audio_analyzer import analyze_track, check_camelot_compatibility
 from .dj_engine import render_pro_transition
 from .stem_separator import separate_with_demucs, separate_fast_spectral
 from .ai_advisor import generate_ai_dj_strategy
+from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -63,6 +64,45 @@ def save_cache_to_disk():
         print("Failed to save analysis cache:", e)
 
 load_cache_from_disk()
+
+# Set-level energy manager (single instance per server, reset per set)
+ENERGY_MGR: Optional[SetEnergyManager] = None
+
+@app.post("/api/set-energy/init")
+async def init_set_energy(request: Request):
+    """Initialize or reset the set-level energy arc manager."""
+    global ENERGY_MGR
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        pass
+    arc = body.get("arc_template", "festival_mainstage")
+    total = body.get("total_tracks", 15)
+    ENERGY_MGR = SetEnergyManager(arc_template=arc, total_tracks=total)
+    return JSONResponse(content={
+        "status": "success",
+        "state": ENERGY_MGR.get_state(),
+        "available_arcs": list(ENERGY_ARC_TEMPLATES.keys()),
+    })
+
+@app.get("/api/set-energy/state")
+async def get_set_energy_state():
+    """Returns current set energy state."""
+    if not ENERGY_MGR:
+        return JSONResponse(content={"status": "inactive", "message": "No set energy arc active. POST /api/set-energy/init to start."})
+    return JSONResponse(content={"status": "success", "state": ENERGY_MGR.get_state(), "history": ENERGY_MGR.history[-10:]})
+
+@app.get("/api/set-energy/rank")
+async def rank_techniques_energy(techniques: str = ""):
+    """Rank candidate techniques by energy arc fit. Pass comma-separated technique names."""
+    if not ENERGY_MGR:
+        return JSONResponse(content={"status": "inactive", "message": "No set energy arc active."})
+    candidates = [t.strip() for t in techniques.split(",") if t.strip() in TECHNIQUE_ENERGY]
+    if not candidates:
+        candidates = list(TECHNIQUE_ENERGY.keys())
+    ranked = ENERGY_MGR.rank_techniques(candidates)
+    return JSONResponse(content={"status": "success", "ranked": ranked, "state": ENERGY_MGR.get_state()})
 
 @app.get("/api/presets")
 async def get_presets():
@@ -507,6 +547,12 @@ async def render_mix(
         )
         result["mix_url"] = f"/api/outputs/{mix_id}"
         result["direction"] = direction
+
+        used_technique = result.get("technique", technique)
+        if ENERGY_MGR and used_technique in TECHNIQUE_ENERGY:
+            ENERGY_MGR.apply_transition(used_technique)
+            result["set_energy"] = ENERGY_MGR.get_state()
+
         gc.collect()
         return JSONResponse(content={"status": "success", "mix": result})
     except Exception as e:

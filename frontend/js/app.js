@@ -338,7 +338,21 @@ document.addEventListener('DOMContentLoaded', () => {
         'spinback': '💫 VINYL SPINBACK & DROP',
         'noise_riser': '📈 WHITE NOISE RISER & DROP',
         'festival_drop': '🎆 FESTIVAL BUILD & DROP',
-        'hard_cut': '✂️ HARD CUT (BEAT 1 SNAP)'
+        'hard_cut': '✂️ HARD CUT (BEAT 1 SNAP)',
+        'power_cut': '⚡ POWER CUT → SLAM',
+        'fake_drop': '💣 FAKE DROP → BOOM',
+        'silence_drop': '🔇 SILENCE DROP',
+        'rewind': '🔄 REWIND PULL-UP',
+        'double_drop': '💥💥 DOUBLE DROP',
+        'beatmash_drop': '🎛️ BEATMASH → DROP',
+        'backspin_slam': '🌀 BACKSPIN SLAM',
+        'tension_riser': '📈 TENSION BUILD → DROP',
+        'stutter_edit': '✂️ STUTTER EDIT',
+        'filter_sweep': '🔊 FILTER SWEEP',
+        'echo_dissolve': '🌊 ECHO DISSOLVE',
+        'acapella_mashup': '🎤 ACAPELLA MASHUP',
+        'vocal_chop': '🎵 VOCAL CHOP BRIDGE',
+        'drum_swap': '🥁 DRUM SWAP'
       };
       transitionStateSub.textContent = names[selectedTechnique] || selectedTechnique.toUpperCase();
     }
@@ -1339,6 +1353,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const blockLabels = {
       bass_swap: '🔊 BASS SWAP', echo_wash: '🔁 ECHO WASH', hpf_sweep: '📡 HPF SWEEP',
       loop_roll: '🌀 LOOP ROLL', noise_riser: '📈 NOISE RISER', vinyl_brake: '⚡ VINYL BRAKE',
+      rewind: '🔄 REWIND', stutter_chop: '✂️ STUTTER', tension_snare: '🥁 SNARE ROLL',
+      sidechain_pump: '💓 SIDECHAIN', filter_sweep_blend: '🔊 FILTER SWEEP',
       predrop_gap: '⏸ PRE-DROP GAP', drop_impact: '💥 DROP IMPACT', vocal_ducking: '🎤 VOCAL DUCK',
       stem_mashup: '🎛️ STEM MASH', flanger: '🌀 FLANGER', beat_masher: '⚡ MASHER', pitch_bend: '💿 PITCH BEND'
     };

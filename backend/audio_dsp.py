@@ -400,6 +400,159 @@ def apply_noise_riser(sr: int, bpm: float = 128.0, bars: int = 4) -> np.ndarray:
 
     return noise
 
+def apply_filter_sweep_blend(y1: np.ndarray, y2: np.ndarray, sr: int) -> np.ndarray:
+    """
+    Filter sweep crossover blend: HPF sweeps up on track 1 while LPF sweeps down on track 2.
+    They cross at midpoint, creating a frequency-domain handoff.
+    """
+    N = min(y1.shape[-1], y2.shape[-1])
+    y1 = y1[:, :N] if y1.ndim == 2 else y1[:N]
+    y2 = y2[:, :N] if y2.ndim == 2 else y2[:N]
+
+    num_chunks = 48
+    chunk_size = N // num_chunks
+    out = np.zeros_like(y1)
+
+    hpf_freqs = np.geomspace(20.0, min(sr / 2.1, 6000.0), num_chunks)
+    lpf_freqs = np.geomspace(min(sr / 2.1, 18000.0), 200.0, num_chunks)
+
+    for i in range(num_chunks):
+        s = i * chunk_size
+        e = N if i == num_chunks - 1 else (i + 1) * chunk_size
+        p = i / (num_chunks - 1)
+
+        sos_hp = signal.butter(2, hpf_freqs[i] / (sr / 2.0), btype='high', output='sos')
+        sos_lp = signal.butter(2, lpf_freqs[i] / (sr / 2.0), btype='low', output='sos')
+
+        vol1 = np.cos(p * np.pi * 0.5)
+        vol2 = np.sin(p * np.pi * 0.5)
+
+        if y1.ndim == 2:
+            chunk1_l = signal.sosfilt(sos_hp, y1[0, s:e]) * vol1
+            chunk1_r = signal.sosfilt(sos_hp, y1[1, s:e]) * vol1
+            chunk2_l = signal.sosfilt(sos_lp, y2[0, s:e]) * vol2
+            chunk2_r = signal.sosfilt(sos_lp, y2[1, s:e]) * vol2
+            out[0, s:e] = chunk1_l + chunk2_l
+            out[1, s:e] = chunk1_r + chunk2_r
+        else:
+            out[s:e] = signal.sosfilt(sos_hp, y1[s:e]) * vol1 + signal.sosfilt(sos_lp, y2[s:e]) * vol2
+
+    return out
+
+
+def apply_stutter_chop(y: np.ndarray, sr: int, bpm: float, total_beats: int = 16, final_div: int = 16) -> np.ndarray:
+    """
+    Rapid stutter chop: progressively shorter slices (1/2 → 1/4 → 1/8 → 1/16 beat).
+    Each division repeats the same slice from the anchor point.
+    """
+    spb = 60.0 / bpm
+    one_beat = int(spb * sr)
+    anchor = y[:, :one_beat] if y.ndim == 2 else y[:one_beat]
+    pieces = []
+
+    beats_done = 0
+    for div in [2, 4, 8, final_div]:
+        chunk_len = max(1, one_beat // div)
+        seed = anchor[:, :chunk_len] if anchor.ndim == 2 else anchor[:chunk_len]
+        reps_per_beat = div
+        beats_this_phase = total_beats // 4
+        total_reps = reps_per_beat * beats_this_phase
+        for _ in range(total_reps):
+            pieces.append(seed)
+        beats_done += beats_this_phase
+
+    if y.ndim == 2:
+        return np.hstack(pieces)
+    return np.concatenate(pieces)
+
+
+def apply_tension_snare_roll(sr: int, bpm: float, bars: int = 4) -> np.ndarray:
+    """
+    Synthesized snare roll that accelerates from quarter notes to 32nd notes.
+    Creates tension before a drop.
+    """
+    spb = 60.0 / bpm
+    total_beats = bars * 4
+    total_samples = int(total_beats * spb * sr)
+    out = np.zeros((2, total_samples), dtype=np.float32)
+
+    snare_len = int(0.03 * sr)
+    snare = np.random.uniform(-1, 1, snare_len).astype(np.float32)
+    snare *= np.exp(-np.linspace(0, 8, snare_len))
+    sos = signal.butter(2, [200 / (sr / 2), 8000 / (sr / 2)], btype='bandpass', output='sos')
+    snare = signal.sosfilt(sos, snare)
+
+    divisions = [(1.0, 0.25), (0.5, 0.25), (0.25, 0.25), (0.125, 0.15), (0.0625, 0.10)]
+
+    pos = 0
+    for div_beats, phase_frac in divisions:
+        phase_samples = int(phase_frac * total_samples)
+        hit_interval = int(div_beats * spb * sr)
+        if hit_interval < snare_len:
+            hit_interval = snare_len
+        while pos < min(pos + phase_samples, total_samples):
+            vol = 0.15 + 0.55 * (pos / total_samples)
+            end = min(pos + snare_len, total_samples)
+            n = end - pos
+            out[0, pos:end] += snare[:n] * vol
+            out[1, pos:end] += snare[:n] * vol
+            pos += hit_interval
+            if pos >= total_samples:
+                break
+
+    return out
+
+
+def apply_rewind_fx(y: np.ndarray, sr: int, duration_sec: float = 1.5) -> np.ndarray:
+    """
+    DJ rewind / pull-up effect: plays audio backwards with accelerating speed
+    and a characteristic rising pitch whine.
+    """
+    num_samples = int(duration_sec * sr)
+    if y.shape[-1] < num_samples:
+        pad = np.zeros((2, num_samples - y.shape[-1]) if y.ndim == 2 else num_samples - y.shape[-1])
+        y = np.hstack([pad, y]) if y.ndim == 2 else np.concatenate([pad, y])
+
+    t = np.linspace(0, 1, num_samples, endpoint=False)
+    rev_speed = 1.0 + t * 2.5
+    rev_progress = np.cumsum(rev_speed) / np.sum(rev_speed)
+    chunk_len = y.shape[-1]
+    rev_indices = np.clip((1.0 - rev_progress) * (chunk_len - 1), 0, chunk_len - 1)
+
+    if y.ndim == 2:
+        out_l = np.interp(rev_indices, np.arange(chunk_len), y[0])
+        out_r = np.interp(rev_indices, np.arange(chunk_len), y[1])
+        out = np.vstack([out_l, out_r])
+    else:
+        out = np.interp(rev_indices, np.arange(chunk_len), y)
+
+    fade = np.exp(-t * 3.0)
+    out *= fade
+
+    return out
+
+
+def apply_sidechain_pump(y: np.ndarray, sr: int, bpm: float, depth: float = 0.7) -> np.ndarray:
+    """
+    Simulates sidechain compression pumping effect synced to kick pattern.
+    """
+    spb = 60.0 / bpm
+    one_beat = int(spb * sr)
+    N = y.shape[-1]
+    envelope = np.ones(N, dtype=np.float32)
+
+    beat_t = np.linspace(0, 1, one_beat, endpoint=False)
+    pump = (1.0 - depth) + depth * (beat_t ** 1.8)
+
+    for b in range(N // one_beat + 1):
+        s = b * one_beat
+        e = min(N, s + one_beat)
+        n = e - s
+        envelope[s:e] = pump[:n]
+
+    return y * envelope
+
+
 def apply_vocal_ducking(mid_1: np.ndarray, mid_2: np.ndarray, sr: int, max_duck_db: float = 8.0) -> np.ndarray:
     """
     Sidechain vocal anti-clash ducking:

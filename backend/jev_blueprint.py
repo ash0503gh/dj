@@ -233,6 +233,26 @@ def run_jev_pipeline(
             "type": "noul",
             "instructions": "Should the outgoing track decelerate like a turntable motor stopping?"
         },
+        "use_rewind": {
+            "type": "noul",
+            "instructions": "Should a vinyl rewind pull-up effect reset the mix before the incoming track drops?"
+        },
+        "use_stutter_chop": {
+            "type": "noul",
+            "instructions": "Should a progressive stutter chop (1/2→1/4→1/8→1/16) build rhythmic tension?"
+        },
+        "use_tension_snare": {
+            "type": "noul",
+            "instructions": "Should an accelerating snare roll build physical tension before the drop?"
+        },
+        "use_sidechain_pump": {
+            "type": "noul",
+            "instructions": "Should sidechain compression pump the outgoing track for rhythmic tension?"
+        },
+        "use_filter_sweep_blend": {
+            "type": "noul",
+            "instructions": "Should HPF sweep up on outgoing while LPF sweeps down on incoming for equal-power crossover?"
+        },
         "use_predrop_gap": {
             "type": "noul",
             "instructions": "Should there be an anticipation silence gap just before the drop?"
@@ -310,6 +330,11 @@ def run_jev_pipeline(
     decisions["use_loop_roll"] = _parse_noul(a1, "use_loop_roll", False)
     decisions["use_noise_riser"] = _parse_noul(a1, "use_noise_riser", False)
     decisions["use_vinyl_brake"] = _parse_noul(a1, "use_vinyl_brake", False)
+    decisions["use_rewind"] = _parse_noul(a1, "use_rewind", False)
+    decisions["use_stutter_chop"] = _parse_noul(a1, "use_stutter_chop", False)
+    decisions["use_tension_snare"] = _parse_noul(a1, "use_tension_snare", False)
+    decisions["use_sidechain_pump"] = _parse_noul(a1, "use_sidechain_pump", False)
+    decisions["use_filter_sweep_blend"] = _parse_noul(a1, "use_filter_sweep_blend", False)
     decisions["use_predrop_gap"] = _parse_noul(a1, "use_predrop_gap", False)
     decisions["use_drop_impact"] = _parse_noul(a1, "use_drop_impact", False)
     decisions["vocal_ducking"] = _parse_noul(a1, "vocal_ducking", vocal_out > 0.2 or vocal_in > 0.2)
@@ -577,7 +602,9 @@ def run_jev_pipeline(
     needs_c4 = (
         decisions["use_loop_roll"] or decisions["use_predrop_gap"] or
         decisions["use_drop_impact"] or decisions["use_flanger"] or
-        decisions["use_beat_masher"] or decisions["use_pitch_bend"]
+        decisions["use_beat_masher"] or decisions["use_pitch_bend"] or
+        decisions["use_rewind"] or decisions["use_stutter_chop"] or
+        decisions["use_tension_snare"]
     )
 
     if needs_c4:
@@ -715,7 +742,9 @@ def compile_blueprint(
     # ─── Active blocks ───
     active_blocks = []
     for key in ["bass_swap", "echo_wash", "hpf_sweep", "loop_roll",
-                "noise_riser", "vinyl_brake", "predrop_gap", "drop_impact",
+                "noise_riser", "vinyl_brake", "rewind", "stutter_chop",
+                "tension_snare", "sidechain_pump", "filter_sweep_blend",
+                "predrop_gap", "drop_impact",
                 "stem_mashup", "flanger", "beat_masher", "pitch_bend"]:
         if d.get(f"use_{key}", False):
             active_blocks.append(key)
@@ -936,6 +965,52 @@ def compile_blueprint(
         }
     else:
         effects["vinyl_brake"] = None
+
+    # Rewind pull-up
+    if d.get("use_rewind", False):
+        effects["rewind"] = {
+            "start_at": round(_lerp(0.85, 0.95, aggression), 3),
+            "duration_sec": 1.5
+        }
+    else:
+        effects["rewind"] = None
+
+    # Stutter chop
+    if d.get("use_stutter_chop", False):
+        effects["stutter_chop"] = {
+            "start_at": round(_lerp(0.50, 0.80, aggression), 3),
+            "total_beats": 16,
+            "final_div": 16
+        }
+    else:
+        effects["stutter_chop"] = None
+
+    # Tension snare roll
+    if d.get("use_tension_snare", False):
+        effects["tension_snare"] = {
+            "start_at": round(_lerp(0.40, 0.70, aggression), 3),
+            "bars": 4
+        }
+    else:
+        effects["tension_snare"] = None
+
+    # Sidechain pump
+    if d.get("use_sidechain_pump", False):
+        effects["sidechain_pump"] = {
+            "start_at": round(_lerp(0.30, 0.60, aggression), 3),
+            "depth": round(_lerp(0.4, 0.8, aggression), 2)
+        }
+    else:
+        effects["sidechain_pump"] = None
+
+    # Filter sweep blend
+    if d.get("use_filter_sweep_blend", False):
+        effects["filter_sweep_blend"] = {
+            "start_at": 0.0,
+            "chunks": 48
+        }
+    else:
+        effects["filter_sweep_blend"] = None
 
     # 4-Stem Mashup
     if d.get("use_stem_mashup", False):

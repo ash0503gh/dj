@@ -157,7 +157,7 @@ def call_jev_system_one(
     questions = {
         "technique": {
             "type": "choice",
-            "instructions": "Which transition technique produces the most seamless, dancefloor-ready mix?",
+            "instructions": "Which transition technique produces the most crowd-driving, dancefloor-ready mix?",
             "criteria": {
                 "bass_swap": "Harmonically compatible keys with low vocal clash risk over 16 or 32 bars; equal-power Linkwitz-Riley low-end swap.",
                 "echo_freeze": "High vocal presence clash or dissonant key mismatch; freeze 3/4 delay exit on Beat 1.",
@@ -165,7 +165,21 @@ def call_jev_system_one(
                 "vinyl_brake": "Turntable motor stop deceleration to cleanly reset key clash.",
                 "spinback": "Vinyl reverse scrub into sudden impact boom on Beat 1.",
                 "noise_riser": "White noise riser swell with 1-beat silence gap before drop.",
-                "hard_cut": "Extreme tempo difference (> 15 BPM) or sudden breakdown drop on Beat 1."
+                "hard_cut": "Extreme tempo difference (> 15 BPM) or sudden breakdown drop on Beat 1.",
+                "power_cut": "Abrupt silence gap then slam into incoming track on Beat 1; high-energy crowd surprise.",
+                "fake_drop": "Build tension with riser + snare roll, 2-beat silence, then massive drop; peak-time bomb.",
+                "silence_drop": "Extended 4-beat silence after fade-out, then massive impact drop; anticipation builder.",
+                "rewind": "Vinyl rewind pull-up effect, brief pause, incoming track drops fresh; DJ showmanship move.",
+                "double_drop": "Both tracks drop simultaneously on Beat 1; high-energy layered impact for similar BPM tracks.",
+                "beatmash_drop": "Rapid 1/2→1/4→1/8→1/16 beat stutter with HPF sweep, silence gap, then slam drop.",
+                "backspin_slam": "Aggressive vinyl backspin into sub-bass boom impact on incoming Beat 1.",
+                "tension_riser": "Snare roll + noise riser + sidechain pump build, 1-beat silence, then massive drop.",
+                "stutter_edit": "1/16th beat chops with HPF sweep crossfading into incoming track; glitch aesthetic.",
+                "filter_sweep": "HPF sweeps up on outgoing while LPF sweeps down on incoming; smooth equal-power crossover.",
+                "echo_dissolve": "Increasing echo feedback melts outgoing into ambient wash while incoming fades in underneath.",
+                "acapella_mashup": "Vocal mid-band from outgoing layered over incoming instrumental; mashup effect.",
+                "vocal_chop": "Vocal stutters from outgoing chopped over incoming beat; bridge element.",
+                "drum_swap": "Drums/percussion swap first with 3-band EQ crossover, melody follows later."
             }
         },
         "transition_bars": {
@@ -249,7 +263,21 @@ def call_jev_system_one(
                 "vinyl_brake": "⚡ Turntable Motor Brake & Drop",
                 "spinback": "💫 Vinyl Reverse Spinback & Drop",
                 "noise_riser": "📈 White Noise Build & 1-Beat Silence Drop",
-                "hard_cut": "✂️ Hard Cut (Beat 1 Snap)"
+                "hard_cut": "✂️ Hard Cut (Beat 1 Snap)",
+                "power_cut": "⚡ Power Cut: Silence → Slam",
+                "fake_drop": "💣 Fake Drop: Build → Silence → BOOM",
+                "silence_drop": "🔇 Silence Drop: 4-Beat Pause → Impact",
+                "rewind": "🔄 DJ Rewind Pull-Up",
+                "double_drop": "💥💥 Double Drop: Both Decks Slam",
+                "beatmash_drop": "🎛️ Beatmash Stutter → Drop",
+                "backspin_slam": "🌀 Backspin Slam Impact",
+                "tension_riser": "📈 Tension Build: Snare + Noise → Drop",
+                "stutter_edit": "✂️ Stutter Edit Crossfade",
+                "filter_sweep": "🔊 Filter Sweep Crossover",
+                "echo_dissolve": "🌊 Echo Dissolve Melt",
+                "acapella_mashup": "🎤 Acapella Over Beat Mashup",
+                "vocal_chop": "🎵 Vocal Chop Bridge",
+                "drum_swap": "🥁 Drum Swap Crossover",
             }
 
             tech_rationales = {
@@ -259,7 +287,21 @@ def call_jev_system_one(
                 "vinyl_brake": f"Jev recommended a turntable motor-stop to mask harmonic dissonance and highlight the incoming groove drop.",
                 "spinback": f"Jev selected an aggressive vinyl spinback into a sub-bass boom on the downbeat.",
                 "noise_riser": f"Jev selected a sidechained white noise riser with anticipation gap before the drop.",
-                "hard_cut": f"Jev recommended a razor-sharp 0ms cut on Beat 1 due to the wide tempo/acoustic disparity."
+                "hard_cut": f"Jev recommended a razor-sharp 0ms cut on Beat 1 due to the wide tempo/acoustic disparity.",
+                "power_cut": f"Jev selected an abrupt power cut with silence gap for maximum crowd surprise into Deck {deck_in_num}.",
+                "fake_drop": f"Jev chose a fake drop build with snare roll tension and silence gap before slamming Deck {deck_in_num}.",
+                "silence_drop": f"Jev selected an extended silence drop for maximum anticipation before Deck {deck_in_num} impact.",
+                "rewind": f"Jev recommended a vinyl rewind pull-up to reset energy and slam Deck {deck_in_num} fresh.",
+                "double_drop": f"Jev chose to slam both decks simultaneously for a layered double-drop impact.",
+                "beatmash_drop": f"Jev selected progressive beat-mash stutter (1/2→1/16) building into Deck {deck_in_num} drop.",
+                "backspin_slam": f"Jev selected aggressive backspin into sub-bass boom on Deck {deck_in_num} Beat 1.",
+                "tension_riser": f"Jev chose full tension build (snare + noise + sidechain) before Deck {deck_in_num} drop.",
+                "stutter_edit": f"Jev selected glitch stutter edit crossfade for a creative blend into Deck {deck_in_num}.",
+                "filter_sweep": f"Jev chose a smooth HPF/LPF filter sweep crossover between decks.",
+                "echo_dissolve": f"Jev selected echo dissolve to melt Deck {deck_out_num} into ambient wash under Deck {deck_in_num}.",
+                "acapella_mashup": f"Jev chose to float Deck {deck_out_num} vocals over Deck {deck_in_num} instrumental for a mashup effect.",
+                "vocal_chop": f"Jev selected vocal chop stutters from Deck {deck_out_num} over Deck {deck_in_num} beat.",
+                "drum_swap": f"Jev chose a 3-band drum-first swap: percussion crosses before melody.",
             }
 
             return {
@@ -348,99 +390,275 @@ def generate_local_acoustic_strategy(
         idx_pi = np.argmin(np.abs(np.array(phrases_in) - cue_in))
         cue_in = float(phrases_in[idx_pi])
         
-    # Strategy Decision Tree
-    # 1. Dual Vocal Clash
+    # Strategy Decision Tree (22 techniques across 5 styles)
+    energy_out = ac_out.get('energy', 0.5)
+    energy_in = ac_in.get('energy', 0.5)
+
+    # 1. Dual Vocal Clash — use echo techniques or acapella mashup
     if vocal_out_detected and vocal_in_detected:
-        tech = "echo_freeze"
-        bars = 8
-        confidence = 0.98
-        headline = "❄️ 8-Bar Echo Freeze & Drop on the 1"
-        rationale = (
-            f"Both tracks carry singing vocals during the transition ({vocal_out_score*100:.0f}% in Deck {deck_out_num} outro & "
-            f"{vocal_in_score*100:.0f}% in Deck {deck_in_num} intro). Echo Freeze cuts Deck {deck_out_num} on Beat 1 with a 4s tape delay throw, "
-            f"completely preventing vocal and lyrical collision."
-        )
-        steps = [
-            f"1. Let Deck {deck_out_num} play into the phrase at {cue_out:.1f}s.",
-            f"2. Hit Trigger Transition on Beat 1 of the 16-bar phrase.",
-            f"3. 3/4-beat delay captures the final vocal word while Deck {deck_in_num} drops with full low-end punch."
-        ]
-        pro_tip = f"Let Deck {deck_out_num}'s delay tail wash into the background as Deck {deck_in_num}'s main hook enters."
-        vocal_duck = False
+        if delta_bpm <= 5.0 and is_harmonic:
+            tech = "acapella_mashup"
+            bars = 16
+            confidence = 0.95
+            headline = "🎤 Acapella Mashup: Vocals Over Incoming Beat"
+            rationale = (
+                f"Both tracks have vocals but harmonic compatibility ({info_out.get('camelot', '??')} → {info_in.get('camelot', '??')}) "
+                f"allows floating Deck {deck_out_num}'s vocal mid-band over Deck {deck_in_num}'s instrumental for a mashup effect."
+            )
+            steps = [
+                f"1. Mid-band (300-3500Hz) extracted from Deck {deck_out_num} at {cue_out:.1f}s.",
+                f"2. Deck {deck_in_num} instrumental plays underneath with vocal ducking.",
+                f"3. Deck {deck_out_num} vocal fades out at 60% through transition."
+            ]
+            pro_tip = "Works best when outgoing vocals carry a memorable hook."
+            vocal_duck = True
+        else:
+            tech = "echo_freeze"
+            bars = 8
+            confidence = 0.98
+            headline = "❄️ 8-Bar Echo Freeze & Drop on the 1"
+            rationale = (
+                f"Both tracks carry singing vocals ({vocal_out_score*100:.0f}% out, {vocal_in_score*100:.0f}% in). "
+                f"Echo Freeze cuts Deck {deck_out_num} on Beat 1 with a 4s tape delay throw, preventing vocal collision."
+            )
+            steps = [
+                f"1. Let Deck {deck_out_num} play into the phrase at {cue_out:.1f}s.",
+                f"2. Trigger on Beat 1 of the 16-bar phrase.",
+                f"3. 3/4-beat delay captures final vocal while Deck {deck_in_num} drops with full low-end."
+            ]
+            pro_tip = f"Let Deck {deck_out_num}'s delay tail wash into the background as Deck {deck_in_num}'s hook enters."
+            vocal_duck = False
 
     # 2. Vocal Outro into Clean Groove
     elif vocal_out_detected and not vocal_in_detected and delta_bpm <= 8.0:
-        tech = "bass_swap"
-        bars = 16
-        confidence = 0.96
-        headline = "💥 16-Bar Bass Swap & Vocal Ducking Blend"
+        if vocal_out_score > 0.6 and is_harmonic:
+            tech = "vocal_chop"
+            bars = 8
+            confidence = 0.93
+            headline = "🎵 Vocal Chop Bridge Into Drop"
+            rationale = (
+                f"Strong vocals in Deck {deck_out_num} ({vocal_out_score*100:.0f}%). Vocal chop stutters create "
+                f"a rhythmic bridge element over Deck {deck_in_num}'s incoming beat."
+            )
+            steps = [
+                f"1. Extract vocal mid-band from Deck {deck_out_num} last 2 beats.",
+                f"2. Stutter chop at 1/8th divisions over 8 beats.",
+                f"3. Deck {deck_in_num} fades in underneath from 30% to full."
+            ]
+            pro_tip = "The vocal chops add instant energy recognition from the crowd."
+            vocal_duck = False
+        else:
+            tech = "bass_swap"
+            bars = 16
+            confidence = 0.96
+            headline = "💥 16-Bar Bass Swap & Vocal Ducking Blend"
+            rationale = (
+                f"Deck {deck_out_num} outro carries vocals ({vocal_out_score*100:.0f}%) while Deck {deck_in_num} opens with clean rhythm ({perc_in}). "
+                f"16-bar Linkwitz-Riley Bass Swap with Smart Vocal Ducking."
+            )
+            steps = [
+                f"1. Crossfader glides toward Deck {deck_in_num}.",
+                f"2. Deck {deck_out_num} mid-range ducked by -8dB to prevent masking.",
+                f"3. Bar 8 Beat 1: instant 10ms Bass Swap transfers sub-energy."
+            ]
+            pro_tip = f"Keep Deck {deck_in_num} highs clear until bass drop at bar 8."
+            vocal_duck = True
+
+    # 3. Extreme Tempo Disparity (> 15 BPM) — hard cut or rewind
+    elif delta_bpm > 15.0:
+        tech = "rewind"
+        bars = 4
+        confidence = 0.92
+        headline = "🔄 DJ Rewind Pull-Up & Fresh Drop"
         rationale = (
-            f"Deck {deck_out_num} outro carries vocals ({vocal_out_score*100:.0f}%) while Deck {deck_in_num} opens with a clean rhythm groove ({perc_in}). "
-            f"16-bar Linkwitz-Riley Bass Swap with Smart Vocal Ducking lets Deck {deck_out_num}'s vocals float gracefully over Deck {deck_in_num}'s drums."
+            f"Extreme tempo gap (Δ{delta_bpm:.1f} BPM). Vinyl rewind resets crowd expectation, "
+            f"brief pause, then Deck {deck_in_num} drops at native {bpm_in:.1f} BPM."
         )
         steps = [
-            f"1. Crossfader starts centered or gliding toward Deck {deck_in_num}.",
-            f"2. Deck {deck_out_num} mid-range is automatically ducked by -8dB to prevent frequency masking.",
-            f"3. At Bar 8 (Beat 32), instant 10ms Bass Swap transfers sub-energy to Deck {deck_in_num} on the downbeat."
+            f"1. Vinyl rewind FX at {cue_out:.1f}s (1.5s reverse acceleration).",
+            "2. 0.3s silence gap for anticipation.",
+            f"3. Deck {deck_in_num} drops cold at {bpm_in:.1f} BPM."
         ]
-        pro_tip = f"Keep Deck {deck_in_num} high-frequencies clear until the bass drop at bar 8."
-        vocal_duck = True
+        pro_tip = "Rewinds work best when the crowd knows the track — instant recognition moment."
+        vocal_duck = False
 
-    # 3. High Tempo Disparity (> 10 BPM)
+    # 4. High Tempo Disparity (10-15 BPM) — power cut or echo freeze
     elif delta_bpm > 10.0:
-        tech = "echo_freeze"
-        bars = 8
-        confidence = 0.94
-        headline = "❄️ Echo Freeze & Native Tempo Drop"
-        rationale = (
-            f"Wide tempo gap (Δ{delta_bpm:.1f} BPM: {bpm_out:.1f} → {bpm_in:.1f} BPM). Echo Freeze washes out Deck {deck_out_num} "
-            f"with ambient reverb, allowing Deck {deck_in_num} to drop at its native speed without awkward tempo friction."
-        )
-        steps = [
-            f"1. Quantize transition trigger to the 4-bar phrase end at {cue_out:.1f}s.",
-            f"2. 4-second delay wash masks tempo discontinuity.",
-            f"3. Deck {deck_in_num} drops at native {bpm_in:.1f} BPM on Beat 1."
-        ]
-        pro_tip = "A 1-beat silence before Deck 2 kick increases crowd anticipation by 200%."
-        vocal_duck = False
+        if energy_in > 0.6:
+            tech = "power_cut"
+            bars = 4
+            confidence = 0.93
+            headline = "⚡ Power Cut: Silence → Slam"
+            rationale = (
+                f"Wide tempo gap (Δ{delta_bpm:.1f} BPM) with high incoming energy. "
+                f"Power cut creates 2-beat silence then slams Deck {deck_in_num} on Beat 1 with sub-boom."
+            )
+            steps = [
+                f"1. Hard kill Deck {deck_out_num} with 15ms fade at {cue_out:.1f}s.",
+                "2. 2-beat silence gap builds instant anticipation.",
+                f"3. Deck {deck_in_num} slams with 80Hz sub-boom impact."
+            ]
+            pro_tip = "The silence makes the drop hit 10x harder than any blend could."
+            vocal_duck = False
+        else:
+            tech = "echo_dissolve"
+            bars = 8
+            confidence = 0.92
+            headline = "🌊 Echo Dissolve Into New Tempo"
+            rationale = (
+                f"Wide tempo gap (Δ{delta_bpm:.1f} BPM). Echo dissolve melts Deck {deck_out_num} into ambient wash, "
+                f"Deck {deck_in_num} fades in underneath at native tempo."
+            )
+            steps = [
+                f"1. Echo feedback captures last 3s of Deck {deck_out_num}.",
+                "2. 6s echo tail with volume decay to ambient level.",
+                f"3. Deck {deck_in_num} rises from 30% to full under the wash."
+            ]
+            pro_tip = "Works beautifully for genre switches (EDM → Afro House)."
+            vocal_duck = False
 
-    # 4. Melodic Breakdown to Driving 4/4 Beat
+    # 5. Melodic Breakdown to Driving 4/4 — tension riser or fake drop
     elif perc_out == "melodic_breakdown" and perc_in == "driving_4_4":
-        tech = "noise_riser"
-        bars = 16
-        confidence = 0.93
-        headline = "📈 4-Bar White Noise HPF Riser & Tension Drop"
-        rationale = (
-            f"Deck {deck_out_num} is in a melodic breakdown while Deck {deck_in_num} features driving 4/4 percussion. "
-            f"4-bar sidechained white noise riser builds high-frequency tension before dropping Deck {deck_in_num} cold on Beat 1."
-        )
-        steps = [
-            f"1. Engage HPF sweep on Deck {deck_out_num} from 100Hz up to 2.5kHz.",
-            "2. Sidechained white noise sweeps up to 8.5kHz with rhythmic 4/4 pumping.",
-            f"3. Final 1-beat drop gap of silence before Deck {deck_in_num} drops on Beat 1."
-        ]
-        pro_tip = "Cut all low EQ completely during the riser build."
-        vocal_duck = False
+        if energy_in > 0.7:
+            tech = "fake_drop"
+            bars = 8
+            confidence = 0.94
+            headline = "💣 Fake Drop: Build → Silence → BOOM"
+            rationale = (
+                f"Deck {deck_out_num} breakdown + Deck {deck_in_num} high-energy 4/4. "
+                f"Fake drop builds with snare roll + noise riser, 2-beat silence, then massive slam."
+            )
+            steps = [
+                f"1. HPF sweep + noise riser build over 8 bars.",
+                "2. Snare roll accelerates to 32nd notes.",
+                "3. 2-beat silence gap, then Deck 2 drops with sub-boom."
+            ]
+            pro_tip = "The fake drop is the single most crowd-driving technique in festival DJ'ing."
+            vocal_duck = False
+        else:
+            tech = "tension_riser"
+            bars = 8
+            confidence = 0.93
+            headline = "📈 Tension Build: Snare + Noise → Drop"
+            rationale = (
+                f"Deck {deck_out_num} melodic breakdown into Deck {deck_in_num} 4/4 groove. "
+                f"Full tension build with snare roll, noise riser, and sidechain pump."
+            )
+            steps = [
+                f"1. HPF sweep on Deck {deck_out_num} from 35Hz to 4kHz.",
+                "2. Noise riser + snare roll accelerating over 8 bars.",
+                "3. Sidechain pump adds rhythmic tension. 1-beat silence → drop."
+            ]
+            pro_tip = "Cut all low EQ during the riser build for maximum bass impact on drop."
+            vocal_duck = False
 
-    # 5. Dissonant Key Tension
+    # 6. Dissonant Key + Medium Tempo Gap — backspin slam or spinback
     elif not is_harmonic and delta_bpm >= 4.0:
-        tech = "spinback"
-        bars = 8
+        tech = "backspin_slam"
+        bars = 4
         confidence = 0.91
-        headline = "💫 Vinyl Spinback & Sub-Drop Impact"
+        headline = "🌀 Backspin Slam Impact"
         rationale = (
-            f"Harmonic tension ({info_out.get('camelot', '??')} vs {info_in.get('camelot', '??')}). Vinyl spinback cleanly resets "
-            f"tonal memory with an accelerated reverse scrub and sub-drop impact."
+            f"Harmonic tension ({info_out.get('camelot', '??')} vs {info_in.get('camelot', '??')}). "
+            f"Aggressive backspin resets tonal memory with sub-boom slam into Deck {deck_in_num}."
         )
         steps = [
-            f"1. Deck {deck_out_num} reverse scrub accelerates with rising HPF drag.",
-            "2. Fast exponential volume fade cuts Deck 1 at 1.2s.",
-            f"3. Deck {deck_in_num} drops on Beat 1 with instant 40Hz sub-impact boom."
+            f"1. 1s backspin from Deck {deck_out_num} at {cue_out:.1f}s.",
+            f"2. Sub-boom impact on Deck {deck_in_num} Beat 1.",
+            "3. Full-frequency drop with no harmonic overlap."
         ]
-        pro_tip = "Trigger on the final beat of a 16-bar phrase for maximum festival impact."
+        pro_tip = "Trigger on the final beat of a 16-bar phrase for maximum impact."
         vocal_duck = False
 
-    # 6. Harmonically Compatible 4/4 Beat
+    # 7. Dissonant Key but Close Tempo — stutter edit
+    elif not is_harmonic and delta_bpm < 4.0:
+        tech = "stutter_edit"
+        bars = 8
+        confidence = 0.90
+        headline = "✂️ Stutter Edit Crossfade"
+        rationale = (
+            f"Keys clash ({info_out.get('camelot', '??')} vs {info_in.get('camelot', '??')}) but tempo is close. "
+            f"Stutter edit chops mask harmonic content while crossfading to Deck {deck_in_num}."
+        )
+        steps = [
+            f"1. 1/16th beat chops on Deck {deck_out_num} with HPF sweep.",
+            f"2. Deck {deck_in_num} fades in underneath.",
+            "3. Crossfade completes as stutter intensity peaks."
+        ]
+        pro_tip = "The rapid chops destroy harmonic content naturally — no key clash possible."
+        vocal_duck = False
+
+    # 8. Similar BPM, High Energy Both — double drop or beatmash
+    elif delta_bpm <= 3.0 and energy_out > 0.6 and energy_in > 0.6:
+        if is_harmonic:
+            tech = "double_drop"
+            bars = 4
+            confidence = 0.94
+            headline = "💥💥 Double Drop: Both Decks Slam"
+            rationale = (
+                f"Similar BPM (Δ{delta_bpm:.1f}) and harmonic keys — both tracks can slam simultaneously. "
+                f"Layered impact with Deck {deck_out_num} fading out over 4 bars."
+            )
+            steps = [
+                f"1. HPF build on Deck {deck_out_num} + noise riser over 4 bars.",
+                "2. Both tracks drop on Beat 1 simultaneously.",
+                f"3. Deck {deck_out_num} fades out over 4 bars, Deck {deck_in_num} takes over."
+            ]
+            pro_tip = "Double drops are the ultimate festival move — use sparingly for maximum impact."
+            vocal_duck = False
+        else:
+            tech = "beatmash_drop"
+            bars = 4
+            confidence = 0.92
+            headline = "🎛️ Beatmash Stutter → Drop"
+            rationale = (
+                f"High energy both sides, close BPM. Progressive beat-mash stutter "
+                f"(1/2→1/16) builds to maximum tension before Deck {deck_in_num} drop."
+            )
+            steps = [
+                "1. 16-beat stutter mash: divisions accelerate 1/2→1/4→1/8→1/16.",
+                "2. HPF sweep 60Hz→4kHz during stutter.",
+                f"3. 1-beat silence gap, Deck {deck_in_num} slams with sub-boom."
+            ]
+            pro_tip = "The accelerating stutter creates irresistible physical tension."
+            vocal_duck = False
+
+    # 9. Matching Groove, Harmonic — bass swap, filter sweep, or drum swap
+    elif is_harmonic and delta_bpm <= 5.0:
+        if perc_out == perc_in == "driving_4_4":
+            tech = "drum_swap"
+            bars = 16
+            confidence = 0.93
+            headline = "🥁 Drum Swap: Percussion First, Melody Follows"
+            rationale = (
+                f"Matching 4/4 grooves with harmonic keys. 3-band drum swap crosses percussion first, "
+                f"melody follows 8 bars later for a smooth takeover."
+            )
+            steps = [
+                "1. Low-end swaps at 50% through transition.",
+                "2. High-end (drums/hats) crosses early, melody follows.",
+                f"3. Full handoff to Deck {deck_in_num} by bar 16."
+            ]
+            pro_tip = "The drum swap sounds like a professional club DJ hand-mixing two tracks live."
+            vocal_duck = True
+        else:
+            tech = "filter_sweep"
+            bars = 16
+            confidence = 0.94
+            headline = "🔊 Filter Sweep Crossover"
+            rationale = (
+                f"Harmonic match ({info_out.get('camelot', '??')} → {info_in.get('camelot', '??')}) and close BPM. "
+                f"HPF sweeps up on Deck {deck_out_num} while LPF sweeps down on Deck {deck_in_num} — equal-power crossover."
+            )
+            steps = [
+                f"1. HPF sweep on Deck {deck_out_num} from 35Hz up to ceiling.",
+                f"2. LPF sweep on Deck {deck_in_num} from ceiling down to 35Hz.",
+                "3. 48-chunk equal-power sin/cos crossover."
+            ]
+            pro_tip = "Filter sweeps are the workhorse of underground DJ'ing — smooth and groovy."
+            vocal_duck = True
+
+    # 10. Default fallback — bass swap
     else:
         tech = "bass_swap"
         bars = 16
@@ -448,14 +666,14 @@ def generate_local_acoustic_strategy(
         headline = "💥 16-Bar Bass Swap & Filter Sweep"
         rationale = (
             f"Harmonic alignment ({info_out.get('camelot', '??')} → {info_in.get('camelot', '??')}) and matching groove (Δ{delta_bpm:.1f} BPM). "
-            f"16-bar Linkwitz-Riley low-end swap ensures seamless dancefloor momentum with continuous tempo ramping."
+            f"16-bar Linkwitz-Riley low-end swap ensures seamless dancefloor momentum."
         )
         steps = [
             f"1. Phase lock Deck {deck_in_num} to Deck {deck_out_num}'s 4/4 downbeats.",
-            f"2. Continuous smooth tempo ramp aligns {bpm_out:.1f} to {bpm_in:.1f} BPM.",
-            f"3. Swap Low-EQ on Bar 8 Beat 1 with 1/2 beat reverb washout on Deck {deck_out_num} exit."
+            f"2. Smooth tempo ramp aligns {bpm_out:.1f} to {bpm_in:.1f} BPM.",
+            f"3. Swap Low-EQ on Bar 8 Beat 1 with reverb washout on Deck {deck_out_num} exit."
         ]
-        pro_tip = f"If Camelot lock is enabled, Deck {deck_in_num} will be shifted by {rec_pitch_shift:+d} semitones for 100% harmonic resonance."
+        pro_tip = f"Camelot lock shifts Deck {deck_in_num} by {rec_pitch_shift:+d} semitones for harmonic resonance."
         vocal_duck = True
 
     return {
@@ -530,17 +748,43 @@ INCOMING TRACK (Deck {deck_in_num}):
 - Intro Percussion Style: {info_in.get('acoustic_profile', {}).get('intro_percussion', 'driving_4_4')}
 - Suggested Intro Cue: {info_in.get('suggested_cue_intro', 0.0):.1f}s
 
-Available DJ Techniques:
-- "bass_swap": 16-bar or 32-bar Linkwitz-Riley low-end swap on Beat 1 with smart vocal ducking and tempo ramp.
-- "echo_freeze": 8-bar 3/4-beat tape delay freeze wash and drop on Beat 1 (best for vocal clashes or wide tempo gap).
-- "loop_roll": 16-bar stutter loop division with rising HPF sweep.
-- "vinyl_brake": 8-bar turntable deceleration into drop impact (great for resetting harmonic dissonance).
-- "spinback": 8-bar vinyl reverse scrub with sub-drop boom on Beat 1.
-- "noise_riser": 16-bar sidechained white noise swell with 1-beat silence gap before drop.
+Available DJ Techniques (5 style categories):
+
+SMOOTH: gradual, groove-preserving
+- "bass_swap": 16/32-bar Linkwitz-Riley low-end swap with vocal ducking and tempo ramp.
+- "filter_sweep": HPF sweeps up outgoing, LPF sweeps down incoming; equal-power crossover.
+- "drum_swap": 3-band EQ crossover; drums swap first, melody follows.
+- "stutter_edit": 1/16th beat chops with HPF sweep crossfading into incoming.
+
+BUILD: rising tension into climax
+- "loop_roll": Stutter loop division with rising HPF sweep.
+- "noise_riser": White noise swell with 1-beat silence gap before drop.
+- "tension_riser": Snare roll + noise + sidechain pump build, silence, then drop.
+- "beatmash_drop": 1/2→1/4→1/8→1/16 stutter mash with HPF sweep, silence, slam.
+
+BOLD: confident, assertive moves
+- "spinback": Vinyl reverse scrub with sub-drop boom on Beat 1.
+- "hard_cut": Razor-sharp 0ms cut on Beat 1.
+- "rewind": Vinyl rewind pull-up, brief pause, incoming drops fresh.
+- "backspin_slam": Aggressive backspin into sub-bass boom impact.
+- "acapella_mashup": Vocal mid-band from outgoing over incoming instrumental.
+- "vocal_chop": Vocal stutters from outgoing chopped over incoming beat.
+
+BOMB: peak-time crowd exploders
+- "power_cut": Abrupt silence gap then slam on Beat 1.
+- "fake_drop": Build + snare roll, 2-beat silence, massive drop.
+- "silence_drop": Extended 4-beat silence, then massive impact.
+- "double_drop": Both tracks drop simultaneously on Beat 1.
+- "festival_drop": Full festival build with noise riser and sub-boom.
+
+DRAMATIC: emotional, atmospheric
+- "echo_freeze": 3/4-beat tape delay freeze wash and drop on Beat 1.
+- "vinyl_brake": Turntable motor-stop deceleration into drop.
+- "echo_dissolve": Echo feedback melts outgoing into ambient wash.
 
 Return valid JSON with these exact fields:
 {{
-  "recommended_technique": "bass_swap" | "echo_freeze" | "loop_roll" | "vinyl_brake" | "spinback" | "noise_riser",
+  "recommended_technique": "bass_swap" | "echo_freeze" | "loop_roll" | "vinyl_brake" | "spinback" | "noise_riser" | "hard_cut" | "power_cut" | "fake_drop" | "silence_drop" | "rewind" | "double_drop" | "beatmash_drop" | "backspin_slam" | "tension_riser" | "stutter_edit" | "filter_sweep" | "echo_dissolve" | "acapella_mashup" | "vocal_chop" | "drum_swap" | "festival_drop",
   "recommended_bars": 8 | 16 | 32,
   "confidence": 0.90 - 0.99,
   "suggested_outgoing_cue": float,
