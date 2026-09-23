@@ -343,6 +343,100 @@ def call_jev_system_one(
         print(f"Jev System One call failed ({e}).")
         return None, str(e)
 
+def _compute_eq_sculpt(tech: str, vocal_out: bool, vocal_in: bool,
+                       energy_out: float, energy_in: float) -> Dict[str, Any]:
+    """Compute per-band EQ sculpting parameters based on technique and track analysis."""
+    blend_techs = {"bass_swap", "filter_sweep", "stutter_edit", "drum_swap",
+                   "double_drop", "echo_dissolve", "vocal_chop", "acapella_mashup"}
+    build_techs = {"fake_drop", "tension_riser", "beatmash_drop", "noise_riser",
+                   "loop_roll", "festival_drop"}
+    cut_techs = {"power_cut", "silence_drop", "rewind", "backspin_slam",
+                 "hard_cut", "spinback", "vinyl_brake", "echo_freeze"}
+
+    if tech in blend_techs:
+        bass_swap_at = 0.5
+        hi_in_speed = 0.35
+        if vocal_out and vocal_in:
+            hi_in_speed = 0.2
+            bass_swap_at = 0.4
+        elif energy_in > 0.7:
+            bass_swap_at = 0.3
+            hi_in_speed = 0.15
+        return {
+            "mode": "blend",
+            "band_order": "hi_first" if hi_in_speed < 0.3 else "balanced",
+            "bass_swap_at": round(bass_swap_at, 2),
+            "hi_in_speed": round(hi_in_speed, 2),
+            "vocal_duck_db": 8.0 if (vocal_out and vocal_in) else 0.0,
+            "outgoing_hpf_sweep": False,
+        }
+    elif tech in build_techs:
+        return {
+            "mode": "build_slam",
+            "band_order": "bass_last",
+            "outgoing_hpf_sweep": True,
+            "hpf_start_hz": 35.0,
+            "hpf_end_hz": 3500.0 if energy_out > 0.6 else 2000.0,
+            "incoming_bass_ramp": 0.5,
+            "vocal_duck_db": 0.0,
+        }
+    elif tech in cut_techs:
+        return {
+            "mode": "cut",
+            "band_order": "instant",
+            "outgoing_hpf_sweep": True,
+            "hpf_start_hz": 35.0,
+            "hpf_end_hz": 1500.0,
+            "vocal_duck_db": 0.0,
+        }
+    return {"mode": "default", "band_order": "balanced"}
+
+
+def _compute_color_fx(tech: str, bpm: float, energy: float) -> Dict[str, Any]:
+    """Compute Color FX parameters (HPF/LPF sweep, echo, flanger, reverb) per technique."""
+    delay_ms = round(60000.0 / bpm / 2) if bpm > 0 else 250
+
+    if tech in {"echo_dissolve", "echo_freeze"}:
+        return {
+            "echo": {"delay_ms": delay_ms, "feedback": 0.65, "wet": 0.5},
+            "reverb": {"size": 0.7, "wet": 0.3},
+            "hpf_sweep": False,
+            "lpf_sweep": False,
+            "flanger": None,
+        }
+    elif tech in {"filter_sweep"}:
+        return {
+            "echo": None,
+            "reverb": None,
+            "hpf_sweep": {"start_hz": 35, "end_hz": 8000, "duration_bars": 8},
+            "lpf_sweep": {"start_hz": 18000, "end_hz": 200, "duration_bars": 8},
+            "flanger": None,
+        }
+    elif tech in {"fake_drop", "tension_riser", "beatmash_drop", "festival_drop"}:
+        return {
+            "echo": {"delay_ms": delay_ms, "feedback": 0.3, "wet": 0.2},
+            "reverb": {"size": 0.5, "wet": 0.15},
+            "hpf_sweep": {"start_hz": 35, "end_hz": 3500, "duration_bars": 8},
+            "lpf_sweep": False,
+            "flanger": {"rate_hz": 0.5, "depth": 0.3} if energy > 0.6 else None,
+        }
+    elif tech in {"spinback", "backspin_slam", "rewind"}:
+        return {
+            "echo": {"delay_ms": delay_ms, "feedback": 0.4, "wet": 0.25},
+            "reverb": {"size": 0.3, "wet": 0.1},
+            "hpf_sweep": False,
+            "lpf_sweep": False,
+            "flanger": None,
+        }
+    return {
+        "echo": None,
+        "reverb": None,
+        "hpf_sweep": False,
+        "lpf_sweep": False,
+        "flanger": None,
+    }
+
+
 def generate_local_acoustic_strategy(
     info_out: Dict[str, Any],
     info_in: Dict[str, Any],
@@ -676,6 +770,9 @@ def generate_local_acoustic_strategy(
         pro_tip = f"Camelot lock shifts Deck {deck_in_num} by {rec_pitch_shift:+d} semitones for harmonic resonance."
         vocal_duck = True
 
+    eq_sculpt = _compute_eq_sculpt(tech, vocal_out_detected, vocal_in_detected, energy_out, energy_in)
+    color_fx = _compute_color_fx(tech, bpm_out, energy_out)
+
     return {
         "engine_source": "Local Physical Acoustic Engine",
         "direction": direction,
@@ -688,6 +785,8 @@ def generate_local_acoustic_strategy(
         "suggested_incoming_cue": round(cue_in, 2),
         "pitch_shift_semitones": rec_pitch_shift,
         "vocal_ducking": vocal_duck,
+        "eq_sculpt": eq_sculpt,
+        "color_fx": color_fx,
         "ai_headline": headline,
         "strategic_rationale": rationale,
         "tactical_steps": steps,
@@ -799,7 +898,24 @@ Return valid JSON with these exact fields:
     "Step 3..."
   ],
   "pro_tip": "One high-level pro performance tip for the dancefloor",
-  "vocal_clash_risk": "SAFE" | "MODERATE" | "HIGH"
+  "vocal_clash_risk": "SAFE" | "MODERATE" | "HIGH",
+  "eq_sculpt": {{
+    "mode": "blend" | "build_slam" | "cut",
+    "band_order": "hi_first" | "bass_last" | "instant" | "balanced",
+    "bass_swap_at": 0.0-1.0,
+    "hi_in_speed": 0.0-1.0,
+    "vocal_duck_db": 0.0-12.0,
+    "outgoing_hpf_sweep": boolean,
+    "hpf_start_hz": 35.0,
+    "hpf_end_hz": 1500.0-8000.0
+  }},
+  "color_fx": {{
+    "echo": {{"delay_ms": int, "feedback": 0.0-0.8, "wet": 0.0-1.0}} | null,
+    "reverb": {{"size": 0.0-1.0, "wet": 0.0-1.0}} | null,
+    "hpf_sweep": {{"start_hz": int, "end_hz": int, "duration_bars": int}} | false,
+    "lpf_sweep": {{"start_hz": int, "end_hz": int, "duration_bars": int}} | false,
+    "flanger": {{"rate_hz": float, "depth": 0.0-1.0}} | null
+  }}
 }}
 """
         gemini_result, gemini_err = call_gemini_api(prompt, resolved_key, model_name=model_name)

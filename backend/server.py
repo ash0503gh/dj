@@ -661,6 +661,75 @@ async def generate_demo_tracks_endpoint():
         "message": "Local-first mode active. Select local tracks or drop audio files onto Deck 1 and Deck 2."
     })
 
+@app.post("/api/cue-preview")
+async def cue_preview(
+    file_id: str = Form(...),
+    cue_sec: Optional[float] = Form(None),
+    bars: int = Form(4),
+    bpm: Optional[float] = Form(None),
+    eq_hi: float = Form(1.0),
+    eq_mid: float = Form(1.0),
+    eq_low: float = Form(1.0),
+    hpf: float = Form(0.0),
+    lpf: float = Form(0.0),
+):
+    """PFL / headphone CUE preview: renders a short segment from cue point with EQ sculpting."""
+    import urllib.parse, librosa
+    from .dj_engine import split_3band
+    decoded = urllib.parse.unquote(file_id)
+    path = os.path.join(UPLOAD_DIR, decoded)
+    if not os.path.exists(path):
+        path = os.path.join(UPLOAD_DIR, file_id)
+        if not os.path.exists(path):
+            raise HTTPException(status_code=404, detail=f"Track not found: {file_id}")
+
+    y, sr_native = librosa.load(path, sr=None, mono=False)
+    if y.ndim == 1:
+        y = np.vstack([y, y])
+    sr = sr_native
+
+    an = ANALYSIS_CACHE.get(decoded) or ANALYSIS_CACHE.get(file_id) or {}
+    track_bpm = bpm or an.get("bpm", 120.0)
+    spb = 60.0 / track_bpm
+
+    if cue_sec is None:
+        cue_sec = an.get("cue_point", 0.0)
+
+    start_sample = int(cue_sec * sr)
+    preview_samples = int(bars * 4 * spb * sr)
+    segment = y[:, start_sample:start_sample + preview_samples]
+    if segment.shape[1] == 0:
+        raise HTTPException(status_code=400, detail="Cue point beyond track length")
+
+    if eq_hi != 1.0 or eq_mid != 1.0 or eq_low != 1.0:
+        low, mid, high = split_3band(segment, sr)
+        segment = low * eq_low + mid * eq_mid + high * eq_hi
+
+    if hpf > 0.0:
+        from scipy.signal import butter, sosfilt
+        freq = max(20.0, min(hpf, sr * 0.45))
+        sos = butter(4, freq, btype='high', fs=sr, output='sos')
+        segment = sosfilt(sos, segment, axis=1)
+
+    if lpf > 0.0:
+        from scipy.signal import butter, sosfilt
+        freq = max(20.0, min(lpf, sr * 0.45))
+        sos = butter(4, freq, btype='low', fs=sr, output='sos')
+        segment = sosfilt(sos, segment, axis=1)
+
+    preview_name = f"pfl_preview_{uuid.uuid4().hex[:8]}.wav"
+    preview_path = os.path.join(OUTPUT_DIR, preview_name)
+    sf.write(preview_path, segment.T, sr, subtype="PCM_16")
+
+    return JSONResponse(content={
+        "status": "success",
+        "audio_url": f"/api/outputs/{urllib.parse.quote(preview_name)}",
+        "cue_sec": cue_sec,
+        "duration_sec": segment.shape[1] / sr,
+        "bpm": track_bpm,
+        "eq": {"hi": eq_hi, "mid": eq_mid, "low": eq_low},
+    })
+
 # Mount frontend files
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 

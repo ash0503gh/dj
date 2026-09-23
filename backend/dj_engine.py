@@ -37,6 +37,155 @@ from .audio_dsp import (
 )
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY
 
+def eq_sculpt_blend(s1: np.ndarray, s2: np.ndarray, sr: int,
+                    bass_swap_at: float = 0.5, hi_in_speed: float = 0.35,
+                    vocal_duck: bool = True, vocal_duck_db: float = 8.0) -> np.ndarray:
+    """3-band EQ sculpted blend: hi arrives first, bass swaps with equal-power crossover."""
+    N = min(s1.shape[1], s2.shape[1])
+    s1 = s1[:, :N]
+    s2 = s2[:, :N]
+    low_1, mid_1, high_1 = split_3band(s1, sr)
+    low_2, mid_2, high_2 = split_3band(s2, sr)
+
+    if vocal_duck and vocal_duck_db > 0:
+        mid_1 = apply_vocal_ducking(mid_1, mid_2, sr, max_duck_db=vocal_duck_db)
+
+    swap = int(bass_swap_at * N)
+    hi_full = int(hi_in_speed * N)
+
+    high_f1 = np.ones(N)
+    high_f1[:swap] = np.linspace(1.0, 0.85, swap)
+    high_f1[swap:] = np.linspace(0.85, 0.0, N - swap) ** 1.5
+    high_f2 = np.ones(N)
+    high_f2[:hi_full] = np.linspace(0.25, 1.0, hi_full) ** 1.2
+
+    mid_f1 = np.ones(N)
+    mid_f1[:swap] = np.linspace(1.0, 0.90, swap)
+    mid_f1[swap:] = np.linspace(0.90, 0.0, N - swap) ** 1.8
+    mid_f2 = np.ones(N)
+    mid_f2[:swap] = np.linspace(0.38, 0.65, swap)
+    mid_f2[swap:] = 1.0
+
+    xw = min(int(8 * N / 32), N // 3)
+    xs = max(0, swap - xw // 2)
+    xe = min(N, xs + xw)
+    aw = xe - xs
+    low_f1 = np.ones(N)
+    low_f1[xe:] = 0.0
+    low_f2 = np.zeros(N)
+    low_f2[xe:] = 1.0
+    if aw > 0:
+        k = np.linspace(0, 1, aw)
+        low_f1[xs:xe] = np.cos(k * np.pi * 0.5)
+        low_f2[xs:xe] = np.sin(k * np.pi * 0.5)
+
+    return ((low_1 * low_f1 + low_2 * low_f2) +
+            (mid_1 * mid_f1 + mid_2 * mid_f2) +
+            (high_1 * high_f1 + high_2 * high_f2))
+
+
+def compute_dynamic_eq_params(
+    y_out: np.ndarray, y_in: np.ndarray, sr: int,
+    info_out: Dict[str, Any], info_in: Dict[str, Any],
+    technique: str,
+) -> Dict[str, Any]:
+    """
+    Analyze actual audio at transition zone to compute per-pair EQ blend parameters.
+    Returns dict with bass_swap_at, hi_in_speed, vocal_duck, vocal_duck_db,
+    hpf_end_hz, incoming_bass_ramp.
+    """
+    from scipy.signal import welch
+
+    N = min(y_out.shape[1], y_in.shape[1], sr * 30)
+    seg_out = y_out[:, :N].mean(axis=0)
+    seg_in = y_in[:, :N].mean(axis=0)
+
+    nperseg = min(4096, N)
+    freqs, psd_out = welch(seg_out, fs=sr, nperseg=nperseg)
+    _, psd_in = welch(seg_in, fs=sr, nperseg=nperseg)
+
+    bass_mask = freqs < 200
+    mid_mask = (freqs >= 200) & (freqs < 4000)
+    hi_mask = freqs >= 4000
+
+    bass_out = np.sum(psd_out[bass_mask]) + 1e-12
+    bass_in = np.sum(psd_in[bass_mask]) + 1e-12
+    mid_out = np.sum(psd_out[mid_mask]) + 1e-12
+    mid_in = np.sum(psd_in[mid_mask]) + 1e-12
+    hi_out = np.sum(psd_out[hi_mask]) + 1e-12
+    hi_in_pwr = np.sum(psd_in[hi_mask]) + 1e-12
+
+    bass_ratio = bass_in / bass_out
+    mid_ratio = mid_in / mid_out
+    hi_ratio = hi_in_pwr / hi_out
+
+    ac_out = info_out.get('acoustic_profile', {})
+    ac_in = info_in.get('acoustic_profile', {})
+    vocal_out = ac_out.get('vocal_detected_outro', False)
+    vocal_in = ac_in.get('vocal_detected_intro', False)
+    vocal_score_out = ac_out.get('outro_vocal_score', 0.0)
+    vocal_score_in = ac_in.get('intro_vocal_score', 0.0)
+    energy_out = ac_out.get('energy', 0.5)
+    energy_in = ac_in.get('energy', 0.5)
+
+    camelot_info = check_camelot_compatibility(
+        info_out.get('camelot', '8A'), info_in.get('camelot', '8A'))
+    is_harmonic = camelot_info['is_harmonically_compatible']
+
+    if bass_ratio > 1.5:
+        bass_swap_at = 0.35
+    elif bass_ratio < 0.6:
+        bass_swap_at = 0.6
+    else:
+        bass_swap_at = 0.5
+
+    if energy_in > 0.7:
+        bass_swap_at = max(0.2, bass_swap_at - 0.1)
+
+    if hi_ratio > 2.0:
+        hi_in_speed = 0.45
+    elif hi_ratio < 0.5:
+        hi_in_speed = 0.15
+    else:
+        hi_in_speed = 0.3
+
+    if not is_harmonic:
+        hi_in_speed = max(0.1, hi_in_speed - 0.1)
+        bass_swap_at = max(0.2, bass_swap_at - 0.1)
+
+    should_duck = vocal_out and vocal_in
+    duck_db = 0.0
+    if should_duck:
+        overlap_intensity = (vocal_score_out + vocal_score_in) / 2.0
+        duck_db = min(12.0, 4.0 + overlap_intensity * 12.0)
+        hi_in_speed = max(0.1, hi_in_speed - 0.1)
+
+    hpf_end = 1500.0
+    if energy_out > 0.7:
+        hpf_end = 2500.0 + (energy_out - 0.7) * 5000.0
+    elif energy_out < 0.3:
+        hpf_end = 800.0
+
+    incoming_bass_ramp = 0.5
+    if bass_ratio > 1.5:
+        incoming_bass_ramp = 0.3
+    elif bass_ratio < 0.6:
+        incoming_bass_ramp = 0.7
+
+    return {
+        'bass_swap_at': round(float(np.clip(bass_swap_at, 0.15, 0.75)), 3),
+        'hi_in_speed': round(float(np.clip(hi_in_speed, 0.05, 0.6)), 3),
+        'vocal_duck': should_duck,
+        'vocal_duck_db': round(float(duck_db), 1),
+        'hpf_end_hz': round(float(np.clip(hpf_end, 600, 8000)), 0),
+        'incoming_bass_ramp': round(float(np.clip(incoming_bass_ramp, 0.2, 0.8)), 2),
+        'bass_ratio': round(float(bass_ratio), 2),
+        'mid_ratio': round(float(mid_ratio), 2),
+        'hi_ratio': round(float(hi_ratio), 2),
+        'is_harmonic': is_harmonic,
+    }
+
+
 def soft_limit(y: np.ndarray, threshold: float = 0.95) -> np.ndarray:
     """Soft knee saturation / limiter to avoid digital clipping."""
     max_val = np.max(np.abs(y))
@@ -212,6 +361,14 @@ def ai_analyze_and_recommend_transition(
     if energy_mgr:
         best["set_energy"] = energy_mgr.get_state()
 
+    from .ai_advisor import _compute_eq_sculpt, _compute_color_fx
+    energy_out = ac_1.get('energy', 0.5)
+    energy_in = ac_2.get('energy', 0.5)
+    best["eq_sculpt"] = _compute_eq_sculpt(
+        best["recommended_technique"], vocal_outro_1, vocal_intro_2, energy_out, energy_in)
+    best["color_fx"] = _compute_color_fx(
+        best["recommended_technique"], bpm_1, energy_out)
+
     return best
 
 def render_pro_transition(
@@ -281,7 +438,18 @@ def render_pro_transition(
         
     seconds_per_beat_1 = 60.0 / bpm_1
     seconds_per_beat_2 = 60.0 / bpm_2
-    
+
+    # Compute per-pair dynamic EQ parameters from actual audio content
+    s1_cue = int(cue_1_sec * sr)
+    s2_cue = int(cue_2_sec * sr)
+    eq_zone_out = y1[:, max(0, s1_cue - int(16 * seconds_per_beat_1 * sr)):s1_cue]
+    eq_zone_in = y2[:, s2_cue:s2_cue + int(16 * seconds_per_beat_2 * sr)]
+    if eq_zone_out.shape[1] > 0 and eq_zone_in.shape[1] > 0:
+        eq_p = compute_dynamic_eq_params(eq_zone_out, eq_zone_in, sr, info_1, info_2, selected_technique)
+    else:
+        eq_p = {'bass_swap_at': 0.5, 'hi_in_speed': 0.3, 'vocal_duck': False,
+                'vocal_duck_db': 0.0, 'hpf_end_hz': 1500.0, 'incoming_bass_ramp': 0.5}
+
     # -------------------------------------------------------------
     # TECHNIQUE 1: ECHO FREEZE & DROP ON THE 1
     # -------------------------------------------------------------
@@ -519,9 +687,13 @@ def render_pro_transition(
     # TECHNIQUE 7: POWER CUT (Silence Gap → Slam)
     # -------------------------------------------------------------
     elif selected_technique == "power_cut":
-        if progress_cb: progress_cb(0.40, "Rendering power cut: silence gap → slam drop...")
+        if progress_cb: progress_cb(0.40, "Rendering power cut: HPF sweep → silence → slam drop...")
         s1_cut_sample = int(cue_1_sec * sr)
         s1_pre = y1[:, :s1_cut_sample].copy()
+
+        sweep_len = min(int(2 * seconds_per_beat_1 * sr), s1_pre.shape[1])
+        if sweep_len > 0:
+            s1_pre[:, -sweep_len:] = apply_hpf_sweep(s1_pre[:, -sweep_len:], sr, 35.0, eq_p['hpf_end_hz'])
 
         fade_len = int(0.015 * sr)
         if s1_pre.shape[1] > fade_len:
@@ -560,7 +732,7 @@ def render_pro_transition(
         s1_pre_build = y1[:, :max(0, s1_cut_sample - build_samples)]
 
         s1_build = y1[:, max(0, s1_cut_sample - build_samples):s1_cut_sample].copy()
-        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, 3500.0)
+        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, eq_p['hpf_end_hz'])
 
         noise = apply_noise_riser(sr, bpm=bpm_1, bars=build_bars)
         n_len = min(s1_build.shape[1], noise.shape[1])
@@ -577,15 +749,22 @@ def render_pro_transition(
         s2_in_sample = int(cue_2_sec * sr)
         s2_play = y2[:, s2_in_sample:]
 
+        sculpt_len = min(int(4 * spb * sr), s2_play.shape[1])
+        low_2, mid_2, high_2 = split_3band(s2_play[:, :sculpt_len], sr)
+        bass_ramp_exp = eq_p['incoming_bass_ramp']
+        bass_in = np.linspace(0.0, 1.0, sculpt_len) ** bass_ramp_exp
+        s2_sculpted = low_2 * bass_in + mid_2 + high_2
+        s2_with_impact = np.copy(s2_play)
+        s2_with_impact[:, :sculpt_len] = s2_sculpted
+
         t_boom = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
         boom_freq = 80.0 * np.exp(-t_boom * 12.0) + 30.0
         boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 3.5) * 0.6
         boom_stereo = np.vstack([boom, boom])
-        s2_with_boom = np.copy(s2_play)
-        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
-        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+        b_len = min(boom_stereo.shape[1], s2_with_impact.shape[1])
+        s2_with_impact[:, :b_len] += boom_stereo[:, :b_len]
 
-        master_mix = np.hstack([s1_pre_build, s1_build, s2_with_boom])
+        master_mix = np.hstack([s1_pre_build, s1_build, s2_with_impact])
         mix_start_sec = max(0, cue_1_sec - build_samples / sr)
         mix_swap_sec = cue_1_sec
         mix_end_sec = cue_1_sec + 4.0
@@ -594,9 +773,13 @@ def render_pro_transition(
     # TECHNIQUE 9: SILENCE DROP (Extended Silence → Massive Drop)
     # -------------------------------------------------------------
     elif selected_technique == "silence_drop":
-        if progress_cb: progress_cb(0.40, "Rendering silence drop: 4-beat pause → massive impact...")
+        if progress_cb: progress_cb(0.40, "Rendering silence drop: HPF sweep → silence → massive impact...")
         s1_cut_sample = int(cue_1_sec * sr)
         s1_pre = y1[:, :s1_cut_sample].copy()
+
+        sweep_len = min(int(4 * seconds_per_beat_1 * sr), s1_pre.shape[1])
+        if sweep_len > 0:
+            s1_pre[:, -sweep_len:] = apply_hpf_sweep(s1_pre[:, -sweep_len:], sr, 35.0, eq_p['hpf_end_hz'])
 
         fade_len = int(0.5 * sr)
         if s1_pre.shape[1] > fade_len:
@@ -626,9 +809,13 @@ def render_pro_transition(
     # TECHNIQUE 10: REWIND / PULL-UP
     # -------------------------------------------------------------
     elif selected_technique == "rewind":
-        if progress_cb: progress_cb(0.40, "Rendering vinyl rewind pull-up...")
+        if progress_cb: progress_cb(0.40, "Rendering vinyl rewind: HPF sweep → pull-up...")
         s1_cut_sample = int(cue_1_sec * sr)
-        s1_pre = y1[:, :s1_cut_sample]
+        s1_pre = y1[:, :s1_cut_sample].copy()
+
+        sweep_len = min(int(2 * seconds_per_beat_1 * sr), s1_pre.shape[1])
+        if sweep_len > 0:
+            s1_pre[:, -sweep_len:] = apply_hpf_sweep(s1_pre[:, -sweep_len:], sr, 35.0, eq_p['hpf_end_hz'])
 
         rewind_source = s1_pre[:, max(0, s1_cut_sample - int(2 * sr)):].copy()
         rewind_audio = apply_rewind_fx(rewind_source, sr, duration_sec=1.5)
@@ -656,7 +843,7 @@ def render_pro_transition(
         s1_cut_sample = int(cue_1_sec * sr)
         s1_pre = y1[:, :max(0, s1_cut_sample - build_samples)]
         s1_build = y1[:, max(0, s1_cut_sample - build_samples):s1_cut_sample].copy()
-        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, 2500.0)
+        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, eq_p['hpf_end_hz'])
 
         noise = apply_noise_riser(sr, bpm=bpm_1, bars=build_bars)
         n_len = min(s1_build.shape[1], noise.shape[1])
@@ -667,16 +854,10 @@ def render_pro_transition(
 
         s1_drop = y1[:, s1_cut_sample:]
         drop_len = min(s1_drop.shape[1], s2_drop.shape[1], int(16 * spb * sr))
-        mixed_drop = s1_drop[:, :drop_len] * 0.65 + s2_drop[:, :drop_len] * 0.65
+        mixed_drop = eq_sculpt_blend(s1_drop[:, :drop_len], s2_drop[:, :drop_len], sr,
+                                     bass_swap_at=eq_p['bass_swap_at'], hi_in_speed=eq_p['hi_in_speed'],
+                                     vocal_duck=eq_p['vocal_duck'], vocal_duck_db=eq_p['vocal_duck_db'])
         s2_tail = s2_drop[:, drop_len:]
-
-        fade_out = np.linspace(1.0, 0.0, min(int(4 * spb * sr), drop_len)) ** 1.5
-        s1_in_drop = s1_drop[:, :len(fade_out)]
-        s1_in_drop *= fade_out
-
-        mixed_drop[:, :len(fade_out)] = s1_in_drop + s2_drop[:, :len(fade_out)]
-        if drop_len > len(fade_out):
-            mixed_drop[:, len(fade_out):] = s2_drop[:, len(fade_out):drop_len]
 
         master_mix = np.hstack([s1_pre, s1_build, mixed_drop, s2_tail])
         mix_start_sec = max(0, cue_1_sec - build_samples / sr)
@@ -693,7 +874,7 @@ def render_pro_transition(
         mash_source = y1[:, max(0, s1_cut_sample - int(spb * sr)):s1_cut_sample].copy()
 
         mash_audio = apply_stutter_chop(mash_source, sr, bpm_1, total_beats=16, final_div=16)
-        mash_audio = apply_hpf_sweep(mash_audio, sr, 60.0, 4000.0)
+        mash_audio = apply_hpf_sweep(mash_audio, sr, 60.0, eq_p['hpf_end_hz'])
 
         s1_pre = y1[:, :max(0, s1_cut_sample - int(spb * sr))]
 
@@ -703,14 +884,20 @@ def render_pro_transition(
         s2_in_sample = int(cue_2_sec * sr)
         s2_play = y2[:, s2_in_sample:]
 
+        sculpt_len = min(int(4 * spb * sr), s2_play.shape[1])
+        low_2, mid_2, high_2 = split_3band(s2_play[:, :sculpt_len], sr)
+        bass_in = np.linspace(0.0, 1.0, sculpt_len) ** eq_p['incoming_bass_ramp']
+        s2_sculpted = low_2 * bass_in + mid_2 + high_2
+        s2_with_impact = np.copy(s2_play)
+        s2_with_impact[:, :sculpt_len] = s2_sculpted
+
         t_boom = np.linspace(0, 0.8, int(0.8 * sr), endpoint=False)
         boom = np.sin(2 * np.pi * np.cumsum(75.0 * np.exp(-t_boom * 14.0) + 32.0) / sr) * np.exp(-t_boom * 5.0) * 0.55
         boom_stereo = np.vstack([boom, boom])
-        s2_with_boom = np.copy(s2_play)
-        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
-        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+        b_len = min(boom_stereo.shape[1], s2_with_impact.shape[1])
+        s2_with_impact[:, :b_len] += boom_stereo[:, :b_len]
 
-        master_mix = np.hstack([s1_pre, mash_audio, silence, s2_with_boom])
+        master_mix = np.hstack([s1_pre, mash_audio, silence, s2_with_impact])
         mix_start_sec = max(0, cue_1_sec - spb)
         mix_swap_sec = cue_1_sec + mash_audio.shape[1] / sr
         mix_end_sec = mix_swap_sec + spb + 4.0
@@ -719,9 +906,14 @@ def render_pro_transition(
     # TECHNIQUE 13: BACKSPIN SLAM
     # -------------------------------------------------------------
     elif selected_technique == "backspin_slam":
-        if progress_cb: progress_cb(0.40, "Rendering backspin slam: aggressive reverse → impact...")
+        if progress_cb: progress_cb(0.40, "Rendering backspin slam: HPF sweep → reverse → impact...")
         s1_cut_sample = int(cue_1_sec * sr)
-        s1_pre = y1[:, :s1_cut_sample]
+        s1_pre = y1[:, :s1_cut_sample].copy()
+
+        sweep_len = min(int(2 * seconds_per_beat_1 * sr), s1_pre.shape[1])
+        if sweep_len > 0:
+            s1_pre[:, -sweep_len:] = apply_hpf_sweep(s1_pre[:, -sweep_len:], sr, 35.0, eq_p['hpf_end_hz'])
+
         spin_source = s1_pre[:, max(0, s1_cut_sample - int(2.0 * sr)):].copy()
         spin_audio = apply_spinback_fx(spin_source, sr, duration_sec=1.0)
 
@@ -753,7 +945,7 @@ def render_pro_transition(
         s1_cut_sample = int(cue_1_sec * sr)
         s1_pre = y1[:, :max(0, s1_cut_sample - build_samples)]
         s1_build = y1[:, max(0, s1_cut_sample - build_samples):s1_cut_sample].copy()
-        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, 4000.0)
+        s1_build = apply_hpf_sweep(s1_build, sr, 35.0, eq_p['hpf_end_hz'])
 
         noise = apply_noise_riser(sr, bpm=bpm_1, bars=build_bars)
         n_len = min(s1_build.shape[1], noise.shape[1])
@@ -772,15 +964,21 @@ def render_pro_transition(
         s2_in_sample = int(cue_2_sec * sr)
         s2_play = y2[:, s2_in_sample:]
 
+        sculpt_len = min(int(4 * spb * sr), s2_play.shape[1])
+        low_2, mid_2, high_2 = split_3band(s2_play[:, :sculpt_len], sr)
+        bass_in = np.linspace(0.0, 1.0, sculpt_len) ** eq_p['incoming_bass_ramp']
+        s2_sculpted = low_2 * bass_in + mid_2 + high_2
+        s2_with_impact = np.copy(s2_play)
+        s2_with_impact[:, :sculpt_len] = s2_sculpted
+
         t_boom = np.linspace(0, 1.0, int(1.0 * sr), endpoint=False)
         boom_freq = 85.0 * np.exp(-t_boom * 12.0) + 30.0
         boom = np.sin(2 * np.pi * np.cumsum(boom_freq) / sr) * np.exp(-t_boom * 3.5) * 0.6
         boom_stereo = np.vstack([boom, boom])
-        s2_with_boom = np.copy(s2_play)
-        b_len = min(boom_stereo.shape[1], s2_with_boom.shape[1])
-        s2_with_boom[:, :b_len] += boom_stereo[:, :b_len]
+        b_len = min(boom_stereo.shape[1], s2_with_impact.shape[1])
+        s2_with_impact[:, :b_len] += boom_stereo[:, :b_len]
 
-        master_mix = np.hstack([s1_pre, s1_build, s2_with_boom])
+        master_mix = np.hstack([s1_pre, s1_build, s2_with_impact])
         mix_start_sec = max(0, cue_1_sec - build_samples / sr)
         mix_swap_sec = cue_1_sec
         mix_end_sec = cue_1_sec + 4.0
@@ -789,7 +987,7 @@ def render_pro_transition(
     # TECHNIQUE 15: STUTTER EDIT (1/16th chops + incoming fade)
     # -------------------------------------------------------------
     elif selected_technique == "stutter_edit":
-        if progress_cb: progress_cb(0.40, "Rendering stutter edit: rapid chops + incoming fade-in...")
+        if progress_cb: progress_cb(0.40, "Rendering stutter edit: rapid chops + 3-band EQ blend...")
         spb = 60.0 / bpm_1
         stutter_beats = min(bars * 4, 16)
         stutter_dur = stutter_beats * spb
@@ -799,7 +997,7 @@ def render_pro_transition(
 
         stutter_source = y1[:, max(0, s1_cut_sample - int(spb * sr)):s1_cut_sample].copy()
         stutter_audio = apply_stutter_chop(stutter_source, sr, bpm_1, total_beats=stutter_beats, final_div=16)
-        stutter_audio = apply_hpf_sweep(stutter_audio, sr, 80.0, 3000.0)
+        stutter_audio = apply_hpf_sweep(stutter_audio, sr, 80.0, eq_p['hpf_end_hz'])
 
         s2_in_sample = int(cue_2_sec * sr)
         stutter_len = stutter_audio.shape[1]
@@ -808,9 +1006,9 @@ def render_pro_transition(
             s2_blend = np.hstack([s2_blend, np.zeros((2, stutter_len - s2_blend.shape[1]))])
 
         blend_len = min(stutter_len, s2_blend.shape[1])
-        fade_in = np.linspace(0, 1, blend_len) ** 1.5
-        fade_out = np.linspace(1, 0, blend_len) ** 1.2
-        mixed = stutter_audio[:, :blend_len] * fade_out + s2_blend[:, :blend_len] * fade_in
+        mixed = eq_sculpt_blend(stutter_audio[:, :blend_len], s2_blend[:, :blend_len], sr,
+                                bass_swap_at=eq_p['bass_swap_at'], hi_in_speed=eq_p['hi_in_speed'],
+                                vocal_duck=eq_p['vocal_duck'], vocal_duck_db=eq_p['vocal_duck_db'])
 
         s2_post = y2[:, s2_in_sample + stutter_len:]
 
@@ -868,10 +1066,24 @@ def render_pro_transition(
         s2_play = y2[:, s2_in_sample:]
 
         tail_len = min(echo_tail.shape[1], s2_play.shape[1])
+        low_e, mid_e, high_e = split_3band(echo_tail[:, :tail_len], sr)
+        low_2, mid_2, high_2 = split_3band(s2_play[:, :tail_len], sr)
+
+        hi_in = np.linspace(0.3, 1.0, tail_len) ** 0.8
+        mid_in = np.linspace(0.2, 1.0, tail_len)
+        bass_swap = int(tail_len * eq_p['bass_swap_at'])
+        low_in = np.zeros(tail_len)
+        low_in[bass_swap:] = np.linspace(0.0, 1.0, tail_len - bass_swap)
+        low_out = np.ones(tail_len)
+        low_out[bass_swap:] = np.linspace(1.0, 0.0, tail_len - bass_swap)
+
+        s2_sculpted = (high_2 * hi_in + mid_2 * mid_in + low_2 * low_in +
+                       high_e * 0.6 + mid_e * 0.4 + low_e * low_out * 0.5)
+
         s2_with_dissolve = np.copy(s2_play)
-        fade_in_len = min(int(2 * sr), s2_with_dissolve.shape[1])
-        s2_with_dissolve[:, :fade_in_len] *= np.linspace(0.3, 1.0, fade_in_len)
-        s2_with_dissolve[:, :tail_len] += echo_tail[:, :tail_len] * 0.6
+        s2_with_dissolve[:, :tail_len] = s2_sculpted
+        if s2_play.shape[1] > tail_len:
+            s2_with_dissolve[:, tail_len:] = s2_play[:, tail_len:]
 
         fade_len = int(0.02 * sr)
         if s1_pre.shape[1] > fade_len:
@@ -911,6 +1123,8 @@ def render_pro_transition(
 
         low_1, mid_1, high_1 = split_3band(s1_trans, sr)
         low_2, mid_2, high_2 = split_3band(s2_trans, sr)
+        if eq_p['vocal_duck'] and eq_p['vocal_duck_db'] > 0:
+            mid_1 = apply_vocal_ducking(mid_1, mid_2, sr, max_duck_db=eq_p['vocal_duck_db'])
 
         N = min_len
         half = N // 2
@@ -973,11 +1187,16 @@ def render_pro_transition(
 
         min_len = min(s1_mid.shape[1], s2_trans.shape[1])
 
+        _, s2_mid, _ = split_3band(s2_trans[:, :min_len], sr, f_low=300, f_high=3500)
+        duck_db = max(eq_p['vocal_duck_db'], 6.0)
+        s2_mid_ducked = apply_vocal_ducking(s2_mid, s1_mid[:, :min_len], sr, max_duck_db=duck_db)
+        s2_sculpted = s2_trans[:, :min_len] - s2_mid + s2_mid_ducked
+
         vocal_env = np.ones(min_len)
         fade_out_start = int(min_len * 0.6)
         vocal_env[fade_out_start:] = np.linspace(1.0, 0.0, min_len - fade_out_start)
 
-        mixed = s2_trans[:, :min_len] + s1_mid[:, :min_len] * vocal_env * 0.7
+        mixed = s2_sculpted + s1_mid[:, :min_len] * vocal_env * 0.7
 
         s2_post = y2[:, s2_in_sample + trans_samples:]
         master_mix = np.hstack([s1_pre, mixed, s2_post])
@@ -1008,8 +1227,9 @@ def render_pro_transition(
         s2_play = y2[:, s2_in_sample:]
         blend_len = min(chop_len, s2_play.shape[1])
 
-        fade_in = np.linspace(0.3, 1.0, blend_len)
-        mixed = chop_audio[:, :blend_len] * 0.5 + s2_play[:, :blend_len] * fade_in
+        mixed = eq_sculpt_blend(chop_audio[:, :blend_len], s2_play[:, :blend_len], sr,
+                                bass_swap_at=eq_p['bass_swap_at'], hi_in_speed=eq_p['hi_in_speed'],
+                                vocal_duck=eq_p['vocal_duck'], vocal_duck_db=eq_p['vocal_duck_db'])
         s2_tail = s2_play[:, blend_len:]
 
         master_mix = np.hstack([s1_pre, mixed, s2_tail])
@@ -1186,6 +1406,7 @@ def render_pro_transition(
         "output_file": os.path.basename(output_path),
         "technique": selected_technique,
         "ai_recommendation": ai_choice,
+        "eq_params": eq_p,
         "total_duration": round(total_dur, 2),
         "mix_start_sec": round(mix_start_sec, 2),
         "mix_swap_sec": round(mix_swap_sec, 2),
