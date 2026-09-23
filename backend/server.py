@@ -277,6 +277,7 @@ async def get_jev_blueprint(request: Request):
     profile_out = body.get("profile_out", {})
     profile_in = body.get("profile_in", {})
     provided_key = body.get("jev_api_key", None)
+    provided_gemini_key = body.get("gemini_api_key", None)
     audio_b64 = body.get("audio_clip_b64", None)
     audio_mime = body.get("audio_mime", "audio/wav")
     file_id_in = body.get("file_id_in", None)
@@ -295,10 +296,11 @@ async def get_jev_blueprint(request: Request):
         except Exception as slice_err:
             print(f"Server-side audio slicing note: {slice_err}")
 
-    gemini_key = get_gemini_api_key(provided_key)
+    gemini_key = get_gemini_api_key(provided_gemini_key or provided_key)
     jev_key = get_jev_api_key(provided_key)
 
     blueprint = None
+    gemini_audition_note = None
     try:
         # Priority 1: Google Gemini Multimodal Audio Audition ("AI Headphones")
         if gemini_key:
@@ -309,6 +311,7 @@ async def get_jev_blueprint(request: Request):
             if bp:
                 blueprint = bp
             elif g_err:
+                gemini_audition_note = g_err
                 print(f"Gemini audition returned note ({g_err}), falling back to Jev/Local...")
 
         # Priority 2: TypeSafe Jev System One Typed Pipeline
@@ -322,6 +325,9 @@ async def get_jev_blueprint(request: Request):
         # Priority 3: Local Resilient Heuristic Blueprint
         if not blueprint:
             blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
+
+        if blueprint and gemini_audition_note and "meta" in blueprint and not blueprint["meta"].get("ai_ears"):
+            blueprint["meta"]["gemini_fallback_note"] = gemini_audition_note
 
     except Exception as exc:
         print(f"Blueprint exception ({exc}), compiling resilient local fallback")

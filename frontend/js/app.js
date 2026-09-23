@@ -2294,9 +2294,9 @@ document.addEventListener('DOMContentLoaded', () => {
           if (jevKeyForBlueprint) bpPayload.jev_api_key = jevKeyForBlueprint;
           if (geminiKeyForBlueprint) bpPayload.gemini_api_key = geminiKeyForBlueprint;
 
-          // 12-second abort timeout so the UI never hangs indefinitely
+          // 18-second abort timeout so the UI never hangs indefinitely while AI auditions audio
           const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 12000);
+          const timeoutId = setTimeout(() => controller.abort(), 18000);
 
           const bpRes = await fetch('/api/jev-blueprint', {
             method: 'POST',
