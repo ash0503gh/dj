@@ -36,6 +36,10 @@ from .audio_dsp import (
     apply_sidechain_pump,
 )
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY
+from .stretch import stretch_file
+
+# Keylock stretch beyond ±8% sounds processed: past that the tracks must not overlap
+MAX_BLEND_STRETCH = 0.08
 
 def eq_sculpt_blend(s1: np.ndarray, s2: np.ndarray, sr: int,
                     bass_swap_at: float = 0.5, hi_in_speed: float = 0.35,
@@ -231,23 +235,24 @@ def ai_analyze_and_recommend_transition(
             "acoustic_analysis": extra,
         })
 
-    # --- VOCAL CLASH → dramatic exit techniques ---
+    # Club DJs blend almost every transition. Effects/cuts are for when a blend can't work:
+    # tempos too far apart to run both at one keylocked master tempo.
+    tempo_gap = abs(bpm_1 / bpm_2 - 1.0) if bpm_2 else 1.0
+    can_blend = tempo_gap <= MAX_BLEND_STRETCH
+
+    # --- VOCAL CLASH → short blend; mids swap together with the bass so vocals never overlap ---
+    if vocal_outro_1 and vocal_intro_2 and can_blend:
+        add("bass_swap", 0.97,
+            f"Both sides have vocals ({vocal_score_1*100:.0f}%/{vocal_score_2*100:.0f}%): 8-bar blend, "
+            f"incoming mids held low and swapped with the bass on the 1, so the vocals never overlap.",
+            bars=8, vocal_clash_risk="HANDLED_BY_MID_SWAP")
     if vocal_outro_1 and vocal_intro_2:
-        add("echo_freeze", 0.98,
-            f"Vocal clash ({vocal_score_1*100:.0f}%/{vocal_score_2*100:.0f}%). Echo Freeze prevents lyrical collision with 4s delay wash.",
+        add("echo_freeze", 0.80,
+            f"Vocal clash ({vocal_score_1*100:.0f}%/{vocal_score_2*100:.0f}%) alternative: echo out Deck 1 and drop Deck 2 with zero overlap.",
             bars=8, vocal_clash_risk="CRITICAL")
-        add("power_cut", 0.90,
-            f"Vocal clash — power cut: 0.5s silence gap slams Deck 2 with zero overlap.",
-            bars=8)
-        add("rewind", 0.85,
-            f"Vocal clash — vinyl rewind snaps attention, resets harmonic memory before Deck 2.",
-            bars=8)
-        add("echo_dissolve", 0.82,
-            f"Vocal clash — echo dissolve melts Deck 1 into infinite delay feedback, fading naturally.",
-            bars=8)
 
     # --- VOCAL OUTRO + CLEAN INTRO → blend techniques ---
-    if vocal_outro_1 and not vocal_intro_2 and delta_bpm <= 8.0:
+    if vocal_outro_1 and not vocal_intro_2 and can_blend:
         add("bass_swap", 0.96,
             f"Deck 1 vocals ({vocal_score_1*100:.0f}%) over Deck 2's clean {perc_intro_2} groove. Bass swap with vocal ducking.",
             bars=16)
@@ -259,67 +264,40 @@ def ai_analyze_and_recommend_transition(
                 f"Frequency-domain crossover — HPF sweeps Deck 1 up while LPF brings Deck 2 down.",
                 bars=16)
 
-    # --- EXTREME TEMPO GAP ---
-    if delta_bpm > 18.0:
-        add("hard_cut", 0.96,
-            f"Extreme tempo gap (Δ{delta_bpm:.1f} BPM). Instant 0ms cut on Beat 1.",
-            bars=8, tempo_friction="EXTREME")
-        add("power_cut", 0.92,
-            f"Tempo gap (Δ{delta_bpm:.1f} BPM). 0.5s silence gap then slam Deck 2.",
-            bars=8)
-        add("fake_drop", 0.85,
-            f"Tempo gap — fake drop: build tension with riser, cut to silence, THEN slam Deck 2.",
-            bars=8)
-
-    # --- WIDE TEMPO GAP ---
-    if 10.0 < delta_bpm <= 18.0:
+    # --- TEMPO GAP TOO WIDE TO BLEND → overlap-free exits (tempo resets on the drop) ---
+    if not can_blend:
         add("echo_freeze", 0.95,
-            f"Wide tempo gap (Δ{delta_bpm:.1f} BPM). Echo freeze masks discontinuity.",
+            f"Tempo gap {tempo_gap*100:.0f}% (Δ{delta_bpm:.1f} BPM) is too wide to run both tracks at one tempo: "
+            f"echo out Deck 1 and drop Deck 2 on the 1 at its own tempo.",
+            bars=8, tempo_friction="EXTREME" if tempo_gap > 0.15 else "WIDE")
+        add("hard_cut", 0.90,
+            f"Tempo gap {tempo_gap*100:.0f}%: clean cut on a phrase boundary, no overlap.",
             bars=8)
-        add("silence_drop", 0.88,
-            f"Wide tempo gap — 2-beat silence for maximum anticipation before tempo reset.",
-            bars=8)
-        add("backspin_slam", 0.85,
-            f"Wide tempo gap — backspin reverse spin into hard slam on Beat 1.",
+        add("spinback", 0.82,
+            f"Tempo gap {tempo_gap*100:.0f}%: spinback resets the room before Deck 2.",
             bars=8)
 
-    # --- BREAKDOWN → DROP ---
+    # --- BREAKDOWN → DROP: a build is an option, not the default ---
     if perc_outro_1 == "melodic_breakdown" and perc_intro_2 == "driving_4_4":
-        add("tension_riser", 0.94,
-            f"Breakdown → drop: 8-bar snare roll + filter sweep + noise riser builds massive anticipation.",
+        add("festival_drop", 0.80,
+            f"Breakdown → drop: build (roll + riser) and slam Deck 2 on the 1.",
             bars=16)
-        add("fake_drop", 0.90,
-            f"Breakdown → drop: fake drop builds tension, cuts to silence, THEN slams Deck 2.",
-            bars=16)
-        add("festival_drop", 0.88,
-            f"Breakdown → drop: full festival build (HPF + loop roll + noise riser → silence → boom).",
-            bars=16)
-        add("noise_riser", 0.86,
-            f"Breakdown → drop: 4-bar white noise riser with sidechain pumping.",
+        add("noise_riser", 0.78,
+            f"Breakdown → drop: 4-bar white noise riser into Deck 2.",
             bars=16)
 
-    # --- KEY CLASH ---
-    if not is_harmonic and delta_bpm >= 4.0:
-        add("spinback", 0.90,
-            f"Key clash ({info_1['camelot']}→{info_2['camelot']}). Vinyl spinback resets tonal memory.",
+    # --- KEY CLASH → short blend so the harmonies barely overlap ---
+    if not is_harmonic and can_blend:
+        add("bass_swap", 0.90,
+            f"Key clash ({info_1['camelot']}→{info_2['camelot']}): 8-bar blend with the mids swapped on the 1, "
+            f"keeping the clashing harmony overlap to a minimum.",
             bars=8)
-        add("backspin_slam", 0.87,
-            f"Key clash — backspin slam: aggressive reverse into sub-bass impact.",
-            bars=8)
-        add("rewind", 0.83,
-            f"Key clash — rewind pull-up: crowd-engaging reset before Deck 2.",
+        add("echo_freeze", 0.78,
+            f"Key clash alternative: echo out Deck 1, no harmonic overlap at all.",
             bars=8)
 
-    if not is_harmonic and delta_bpm < 4.0:
-        add("vinyl_brake", 0.88,
-            f"Key clash ({info_1['camelot']}→{info_2['camelot']}). Motor-off brake resets tension.",
-            bars=8)
-        add("echo_dissolve", 0.84,
-            f"Key clash — echo dissolve: delay feedback melts Deck 1 away naturally.",
-            bars=8)
-
-    # --- HARMONIC + CLOSE TEMPO → smooth/build techniques ---
-    if is_harmonic and delta_bpm <= 8.0:
+    # --- HARMONIC + CLOSE TEMPO → long blend ---
+    if is_harmonic and can_blend:
         add("bass_swap", 0.96,
             f"Harmonic match ({info_1['camelot']}→{info_2['camelot']}), Δ{delta_bpm:.1f} BPM. Smooth bass swap.",
             bars=32)
@@ -341,8 +319,8 @@ def ai_analyze_and_recommend_transition(
 
     # Fallback
     if not candidates:
-        add("festival_drop", 0.86,
-            f"Generic energy transition: build → silence → sub-bass impact drop.",
+        add("bass_swap", 0.86,
+            f"Phrase-aligned 16-bar blend with a bass swap on the 1.",
             bars=16)
 
     # --- ENERGY ARC RE-RANKING ---
@@ -351,13 +329,16 @@ def ai_analyze_and_recommend_transition(
             energy_score = energy_mgr.score_technique(c["recommended_technique"])
             c["energy_score"] = energy_score
             c["confidence"] = min(0.99, c["confidence"] * (0.5 + energy_score * 0.5))
-        candidates.sort(key=lambda x: x["confidence"], reverse=True)
+    candidates.sort(key=lambda x: x["confidence"], reverse=True)
 
     best = candidates[0]
-    best["alternatives"] = [
-        {"technique": c["recommended_technique"], "confidence": round(c["confidence"], 2)}
-        for c in candidates[1:4]
-    ]
+    seen = {best["recommended_technique"]}
+    alternatives = []
+    for c in candidates[1:]:
+        if c["recommended_technique"] not in seen and len(alternatives) < 3:
+            seen.add(c["recommended_technique"])
+            alternatives.append({"technique": c["recommended_technique"], "confidence": round(c["confidence"], 2)})
+    best["alternatives"] = alternatives
     if energy_mgr:
         best["set_energy"] = energy_mgr.get_state()
 
@@ -371,6 +352,24 @@ def ai_analyze_and_recommend_transition(
 
     return best
 
+def scale_track_times(info: Dict[str, Any], ratio: float) -> Dict[str, Any]:
+    """Analysis of a track played `ratio` x faster: every time divides by ratio, BPM multiplies."""
+    out = dict(info)
+    out['bpm'] = info['bpm'] * ratio
+    out['duration'] = info.get('duration', 0.0) / ratio
+    for key in ('beat_times', 'downbeat_times', 'phrase_8_times', 'phrase_16_times',
+                'phrase_32_times', 'drop_times', 'section_boundaries'):
+        if info.get(key):
+            out[key] = [t / ratio for t in info[key]]
+    for key in ('suggested_cue_intro', 'suggested_cue_outro'):
+        if info.get(key) is not None:
+            out[key] = info[key] / ratio
+    if info.get('section_map'):
+        out['section_map'] = [dict(s, time=s['time'] / ratio, duration=s['duration'] / ratio)
+                              for s in info['section_map']]
+    return out
+
+
 def render_pro_transition(
     track_1_path: str,
     track_2_path: str,
@@ -382,15 +381,29 @@ def render_pro_transition(
     use_stems: bool = False,
     custom_cue_1: Optional[float] = None,
     custom_cue_2: Optional[float] = None,
-    progress_cb = None
+    progress_cb = None,
+    info_1: Optional[Dict[str, Any]] = None,
+    info_2: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Renders a professional DJ mix transitioning from Track 1 to Track 2 using the specified technique.
+    Pass cached analyses as info_1 / info_2 to skip re-analyzing both tracks.
     """
     if progress_cb: progress_cb(0.05, "Analyzing audio tracks...")
-    
-    info_1 = analyze_track(track_1_path)
-    info_2 = analyze_track(track_2_path)
+
+    info_1 = info_1 or analyze_track(track_1_path)
+    info_2 = info_2 or analyze_track(track_2_path)
+
+    # One master tempo: Track 2 is keylock-stretched to Track 1's BPM for the WHOLE render,
+    # so both tracks run at the same tempo throughout the overlap and nothing jumps after it.
+    tempo_ratio = float(info_1['bpm']) / float(info_2['bpm'])
+    if abs(tempo_ratio - 1.0) > 0.0005 and 0.8 <= tempo_ratio <= 1.25:
+        if progress_cb: progress_cb(0.10, f"Keylock-stretching Track 2 to {info_1['bpm']:.2f} BPM...")
+        track_2_path = stretch_file(track_2_path, round(tempo_ratio, 6),
+                                    os.path.join(os.path.dirname(output_path), "stretch"))
+        info_2 = scale_track_times(info_2, tempo_ratio)
+        if custom_cue_2 is not None:
+            custom_cue_2 = custom_cue_2 / tempo_ratio
     
     # Resolve AI Auto Recommendation
     ai_choice = ai_analyze_and_recommend_transition(info_1, info_2)
@@ -1304,7 +1317,9 @@ def render_pro_transition(
                 elif avg_bass > 0.45:
                     bass_swap_ratio = 0.4
 
-        swap_sample = int(bass_swap_ratio * min_trans_len)
+        # The swap lands on the 1: snap to the nearest bar line of the blend
+        bar_samples = 4 * seconds_per_beat_1 * sr
+        swap_sample = int(round(bass_swap_ratio * min_trans_len / bar_samples) * bar_samples)
         swap_sample = min(swap_sample, min_trans_len - 100)
 
         # Check for vocal presence in outgoing exit zone
@@ -1344,11 +1359,10 @@ def render_pro_transition(
         mid_fade_2[:swap_sample] = np.linspace(mid_start, 0.65, swap_sample)
         mid_fade_2[swap_sample:] = 1.0
 
-        # 3. Low frequencies: punchy equal-power crossover (2 bars wide, not the full blend)
-        xfade_beats = 8
-        xfade_width = int(xfade_beats * seconds_per_beat_1 * sr)
-        xfade_width = min(xfade_width, N // 3)
-        xfade_start = max(0, swap_sample - xfade_width // 2)
+        # 3. Low frequencies: isolator-style swap in 30 ms ending exactly on the downbeat,
+        #    so only one kick and one bassline ever play (no double-bass mud)
+        xfade_width = int(0.03 * sr)
+        xfade_start = max(0, swap_sample - xfade_width)
         xfade_end = min(N, xfade_start + xfade_width)
         actual_width = xfade_end - xfade_start
 

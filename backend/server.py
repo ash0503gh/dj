@@ -17,8 +17,9 @@ import uvicorn
 import numpy as np
 import soundfile as sf
 
-from .audio_analyzer import analyze_track, check_camelot_compatibility
+from .audio_analyzer import analyze_track, check_camelot_compatibility, build_grid_times, ANALYSIS_VERSION
 from .dj_engine import render_pro_transition
+from .stretch import stretch_file
 from .stem_separator import separate_with_demucs, separate_fast_spectral
 from .ai_advisor import generate_ai_dj_strategy
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
@@ -29,6 +30,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 STEMS_DIR = os.path.join(BASE_DIR, "stems")
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 CACHE_FILE = os.path.join(UPLOAD_DIR, "analysis_cache.json")
+STRETCH_DIR = os.path.join(OUTPUT_DIR, "stretch")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -64,6 +66,26 @@ def save_cache_to_disk():
         print("Failed to save analysis cache:", e)
 
 load_cache_from_disk()
+
+
+def get_cached_analysis(file_id: str) -> Optional[dict]:
+    """Cached analysis for an uploaded file, re-analyzing entries written by an older
+    analyzer version (v1 grids only covered the first 90 s). None if the file is missing."""
+    cached = ANALYSIS_CACHE.get(file_id)
+    if cached and cached.get("analysis_version") == ANALYSIS_VERSION:
+        return cached
+    path = os.path.join(UPLOAD_DIR, file_id)
+    if not os.path.exists(path):
+        return cached
+    an = analyze_track(path)
+    for keep in ("title", "deck", "audio_url"):
+        if cached and keep in cached:
+            an[keep] = cached[keep]
+    an["file_id"] = file_id
+    ANALYSIS_CACHE[file_id] = an
+    save_cache_to_disk()
+    return an
+
 
 # Set-level energy manager (single instance per server, reset per set)
 ENERGY_MGR: Optional[SetEnergyManager] = None
@@ -143,7 +165,7 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
             target_id = unquoted
 
     if target_id in ANALYSIS_CACHE:
-        data = dict(ANALYSIS_CACHE[target_id])
+        data = dict(get_cached_analysis(target_id))
         data["deck"] = deck
         data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
         return JSONResponse(content={"status": "success", "track": data})
@@ -227,17 +249,8 @@ async def get_ai_recommendation(file_id_1: str, file_id_2: str, direction: str =
     if not os.path.exists(track_1_path) or not os.path.exists(track_2_path):
         raise HTTPException(status_code=404, detail="Tracks not found")
 
-    an1 = ANALYSIS_CACHE.get(file_id_1)
-    if not an1 or "acoustic_profile" not in an1:
-        an1 = analyze_track(track_1_path)
-        an1["file_id"] = file_id_1
-        ANALYSIS_CACHE[file_id_1] = an1
-
-    an2 = ANALYSIS_CACHE.get(file_id_2)
-    if not an2 or "acoustic_profile" not in an2:
-        an2 = analyze_track(track_2_path)
-        an2["file_id"] = file_id_2
-        ANALYSIS_CACHE[file_id_2] = an2
+    an1 = get_cached_analysis(file_id_1)
+    an2 = get_cached_analysis(file_id_2)
 
     from .dj_engine import ai_analyze_and_recommend_transition
     if direction == "2_to_1":
@@ -396,7 +409,7 @@ async def get_ai_strategy_endpoint(
     fid2 = urllib.parse.unquote(file_id_2)
 
     # 1. Resolve Track 1 Profile
-    an1 = ANALYSIS_CACHE.get(fid1) or ANALYSIS_CACHE.get(file_id_1)
+    an1 = get_cached_analysis(fid1) or get_cached_analysis(file_id_1)
     if not an1:
         p1 = os.path.join(UPLOAD_DIR, fid1)
         if not os.path.exists(p1):
@@ -436,7 +449,7 @@ async def get_ai_strategy_endpoint(
         }
 
     # 2. Resolve Track 2 Profile
-    an2 = ANALYSIS_CACHE.get(fid2) or ANALYSIS_CACHE.get(file_id_2)
+    an2 = get_cached_analysis(fid2) or get_cached_analysis(file_id_2)
     if not an2:
         p2 = os.path.join(UPLOAD_DIR, fid2)
         if not os.path.exists(p2):
@@ -543,7 +556,9 @@ async def render_mix(
             harmonic_lock=harmonic_lock,
             use_stems=use_stems,
             custom_cue_1=out_cue,
-            custom_cue_2=in_cue
+            custom_cue_2=in_cue,
+            info_1=get_cached_analysis(os.path.basename(out_path)),
+            info_2=get_cached_analysis(os.path.basename(in_path)),
         )
         result["mix_url"] = f"/api/outputs/{mix_id}"
         result["direction"] = direction
@@ -601,6 +616,62 @@ async def get_audio(filename: str):
         "Cache-Control": "public, max-age=86400"
     }
     return FileResponse(path, media_type=media, headers=headers)
+
+@app.get("/api/stretched/{file_id:path}")
+def get_stretched(file_id: str, ratio: float):
+    """The track at `ratio` x tempo with pitch unchanged (keylock), as FLAC.
+    Plain `def` so FastAPI runs the ffmpeg render in its threadpool."""
+    import urllib.parse
+    path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(file_id))
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
+    if not 0.8 <= ratio <= 1.25:
+        raise HTTPException(status_code=400, detail="ratio must be within 0.8 - 1.25")
+    out = stretch_file(path, round(ratio, 6), STRETCH_DIR)
+    return FileResponse(out, media_type="audio/flac",
+                        headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+
+
+@app.post("/api/score-transition")
+async def score_transition_endpoint(
+    stems: UploadFile = File(...),
+    start_sec: float = Form(...),
+    end_sec: float = Form(...),
+    beat_sec: float = Form(...),
+):
+    """Score a rendered transition. `stems` is a 2-channel WAV: ch0 = outgoing deck, ch1 = incoming deck."""
+    import io
+    from .transition_metrics import score_transition
+    data, sr = sf.read(io.BytesIO(await stems.read()), dtype='float32')
+    if data.ndim != 2 or data.shape[1] != 2:
+        raise HTTPException(status_code=400, detail="stems must be a 2-channel WAV (outgoing, incoming)")
+    return JSONResponse(content={"status": "success",
+                                 "metrics": score_transition(data[:, 0], data[:, 1], sr, start_sec, end_sec, beat_sec)})
+
+
+@app.post("/api/grid-adjust")
+async def grid_adjust(request: Request):
+    """Manual grid correction, persisted in the analysis cache.
+    shift_ms: move the whole grid; shift_beats: move the downbeat; shift_bars: move the phrase start."""
+    body = await request.json()
+    file_id = body.get("file_id", "")
+    an = ANALYSIS_CACHE.get(file_id)
+    if not an or "grid" not in an:
+        raise HTTPException(status_code=404, detail="No analyzed grid for this track")
+    grid = dict(an["grid"])
+    shift_s = float(body.get("shift_ms", 0.0)) / 1000.0
+    grid["first_beat"] = round(grid["first_beat"] + shift_s, 5)
+    grid["downbeat_offset"] = (grid["downbeat_offset"] + int(body.get("shift_beats", 0))) % 4
+    grid["phrase_offset_bars"] = (grid["phrase_offset_bars"] + int(body.get("shift_bars", 0))) % 32
+    an["grid"] = grid
+    an.update(build_grid_times(grid, an["duration"]))
+    for key in ("suggested_cue_intro", "suggested_cue_outro"):
+        an[key] = round(an[key] + shift_s, 3)
+    save_cache_to_disk()
+    fields = ("grid", "beat_times", "downbeat_times", "phrase_8_times", "phrase_16_times",
+              "phrase_32_times", "suggested_cue_intro", "suggested_cue_outro")
+    return JSONResponse(content={"status": "success", "track": {k: an[k] for k in fields}})
+
 
 @app.get("/api/outputs/{filename:path}")
 async def get_output(filename: str):

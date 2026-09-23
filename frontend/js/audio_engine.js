@@ -3,26 +3,262 @@
  * Powers real-time interactive decks, 3-band EQs, Color FX sweeps, VU meters, and crossfader.
  */
 
+/**
+ * BufferTransport - sample-accurate deck transport on the AudioContext clock.
+ *
+ * Drop-in for the HTMLAudioElement the decks used before (currentTime, duration,
+ * playbackRate, play/pause, events), but:
+ *  - start/stop are scheduled with AudioBufferSourceNode.start(when, offset), so two decks
+ *    started from the same clock stay locked with no PLL;
+ *  - positions are computed from ctx.currentTime (no coarse/jittery element clock);
+ *  - it can play a keylocked (server time-stretched) copy of the track: `tempoRatio` = how
+ *    many times faster than native it runs. `currentTime` is always NATIVE track time, so
+ *    beat grids and waveforms stay valid whatever buffer is playing.
+ *  - playbackRate is vinyl-style (pitch follows), used for manual tempo moves and FX.
+ */
+class BufferTransport {
+  constructor(ctx, output) {
+    this.ctx = ctx;
+    this.output = output;
+    this.nativeBuffer = null;
+    this.buffer = null;
+    this.tempoRatio = 1.0;
+    this.src = '';
+    this.seeking = false;
+    this.error = null;
+    this._rate = 1.0;
+    this._node = null;       // { src, gain }
+    this._paused = true;
+    this._pos = 0;           // native seconds at _t0 (or while paused)
+    this._t0 = 0;            // ctx time the current node starts playing
+    this._listeners = {};
+    this._loadToken = 0;
+    this.loaded = Promise.resolve(null);
+  }
+
+  addEventListener(type, fn, opts) {
+    (this._listeners[type] = this._listeners[type] || []).push({ fn, once: !!(opts && opts.once) });
+  }
+
+  removeEventListener(type, fn) {
+    this._listeners[type] = (this._listeners[type] || []).filter(l => l.fn !== fn);
+  }
+
+  _emit(type) {
+    const ls = this._listeners[type] || [];
+    this._listeners[type] = ls.filter(l => !l.once);
+    ls.forEach(l => { try { l.fn({ type, target: this }); } catch (e) { console.error(e); } });
+  }
+
+  /** Fetch + decode a track. Resolves with the AudioBuffer (also emitted as 'loadedmetadata'). */
+  load(url) {
+    const token = ++this._loadToken;
+    this._stopNode(this.ctx.currentTime);
+    this._paused = true;
+    this._pos = 0;
+    this.src = url;
+    this.nativeBuffer = this.buffer = null;
+    this.tempoRatio = 1.0;
+    this.loaded = fetch(url)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
+      .then(ab => this.ctx.decodeAudioData(ab))
+      .then(buf => {
+        if (token !== this._loadToken) return null;
+        this.nativeBuffer = this.buffer = buf;
+        this._emit('loadedmetadata');
+        return buf;
+      })
+      .catch(err => {
+        if (token === this._loadToken) { this.error = err; this._emit('error'); }
+        return null;
+      });
+    return this.loaded;
+  }
+
+  get duration() { return this.nativeBuffer ? this.nativeBuffer.duration : NaN; }
+  get paused() { return this._paused; }
+
+  /** Native track time at ctx time `t` (for a running deck, extrapolated at the current rate). */
+  timeAt(t) {
+    if (this._paused) return this._pos;
+    const dt = Math.max(0, t - this._t0);
+    return Math.min(this.duration || Infinity, this._pos + dt * this._rate * this.tempoRatio);
+  }
+
+  /** ctx time at which the deck will reach native time `native` (running decks only). */
+  ctxTimeAt(native) {
+    return this._t0 + (native - this._pos) / (this._rate * this.tempoRatio);
+  }
+
+  get currentTime() { return this.timeAt(this.ctx.currentTime); }
+  set currentTime(t) { this.seek(t); }
+
+  get playbackRate() { return this._rate; }
+  set playbackRate(r) {
+    r = Math.max(0.01, Math.min(4.0, r));
+    const now = this.ctx.currentTime;
+    if (!this._paused && now >= this._t0) {
+      this._pos = this.timeAt(now);
+      this._t0 = now;
+    }
+    this._rate = r;
+    if (this._node) this._node.src.playbackRate.setValueAtTime(r, Math.max(now, this._t0));
+  }
+
+  _startNode(when, native) {
+    if (!this.buffer) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffer;
+    src.playbackRate.value = this._rate;
+    const gain = this.ctx.createGain();
+    src.connect(gain).connect(this.output);
+    // 3 ms declick ramp (only noticeable on seeks, never on a kick)
+    gain.gain.setValueAtTime(0, when);
+    gain.gain.linearRampToValueAtTime(1, when + 0.003);
+    const offset = Math.max(0, native / this.tempoRatio);
+    const node = { src, gain };
+    src.onended = () => {
+      if (this._node === node) {
+        this._node = null;
+        this._pos = this.duration || this._pos;
+        this._paused = true;
+        this._emit('pause');
+        this._emit('ended');
+      }
+    };
+    if (offset < this.buffer.duration) src.start(when, offset);
+    this._node = node;
+  }
+
+  _stopNode(when) {
+    const node = this._node;
+    this._node = null;
+    if (!node) return;
+    try {
+      node.gain.gain.cancelScheduledValues(when);
+      node.gain.gain.setValueAtTime(node.gain.gain.value, when);
+      node.gain.gain.linearRampToValueAtTime(0, when + 0.004);
+      node.src.stop(when + 0.005);
+    } catch (e) { /* never started */ }
+  }
+
+  /** Start playing at ctx time `when` (default: now) from the current position, or from `native`. */
+  play(when = null, native = null) {
+    if (this.ctx.state === 'suspended') this.ctx.resume();
+    if (!this.buffer) return Promise.reject(new Error('No track loaded in deck'));
+    const now = this.ctx.currentTime;
+    const t = Math.max(now, when === null ? now : when);
+    const pos = native === null ? this.timeAt(t) : native;
+    this._stopNode(t);
+    this._pos = pos;
+    this._t0 = t;
+    this._paused = false;
+    this._startNode(t, pos);
+    this._emit('play');
+    return Promise.resolve();
+  }
+
+  pause() {
+    const t = this.ctx.currentTime;
+    if (this._paused) return;
+    this._pos = this.timeAt(t);
+    this._paused = true;
+    this._stopNode(t);
+    this._emit('pause');
+  }
+
+  seek(native) {
+    native = Math.max(0, Math.min(native, (this.duration || Infinity) - 0.01));
+    if (this._paused) { this._pos = native; return; }
+    this.play(null, native);
+  }
+
+  /**
+   * Switch to another rendering of the same track (e.g. a keylocked stretch) at ctx time
+   * `when` without a jump in native position. tempoRatio = how much faster than native it runs.
+   */
+  useBuffer(buffer, tempoRatio, when = null) {
+    const t = Math.max(this.ctx.currentTime + 0.02, when === null ? 0 : when);
+    if (this._paused) {
+      this.buffer = buffer;
+      this.tempoRatio = tempoRatio;
+      return;
+    }
+    const pos = this.timeAt(t);
+    this._stopNode(t);
+    this.buffer = buffer;
+    this.tempoRatio = tempoRatio;
+    this._pos = pos;
+    this._t0 = t;
+    this._startNode(t, pos);
+  }
+
+  /** Play [native, native+lenSec) of the current buffer once at ctx time `when` (loop/stutter FX). */
+  playSlice(when, native, lenSec) {
+    if (!this.buffer) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = this.buffer;
+    src.playbackRate.value = this._rate;
+    const g = this.ctx.createGain();
+    src.connect(g).connect(this.output);
+    const len = lenSec * this._rate;
+    g.gain.setValueAtTime(0, when);
+    g.gain.linearRampToValueAtTime(1, when + 0.002);
+    g.gain.setValueAtTime(1, when + Math.max(0.003, lenSec - 0.003));
+    g.gain.linearRampToValueAtTime(0, when + lenSec);
+    src.start(when, native / this.tempoRatio, len);
+    return src;
+  }
+
+  /** Mute the main (slip) playback between two ctx times, e.g. while a roll plays slices. */
+  muteBetween(t0, t1) {
+    if (!this._node) return;
+    const g = this._node.gain.gain;
+    g.setValueAtTime(1, t0);
+    g.linearRampToValueAtTime(0, t0 + 0.003);
+    g.setValueAtTime(0, t1 - 0.003);
+    g.linearRampToValueAtTime(1, t1);
+  }
+
+  unmute() {
+    if (!this._node) return;
+    const g = this._node.gain.gain;
+    const now = this.ctx.currentTime;
+    g.cancelScheduledValues(now);
+    g.setValueAtTime(g.value, now);
+    g.linearRampToValueAtTime(1, now + 0.003);
+  }
+}
+
 class DJDeckAudio {
   constructor(ctx, deckNum, destination) {
     this.ctx = ctx;
     this.deckNum = deckNum;
     this.destination = destination;
-    
-    this.audio = new Audio();
-    this.audio.crossOrigin = 'anonymous';
-    this.audio.preload = 'auto';
-    
+
+    this.source = this.ctx.createGain();
+    this.audio = new BufferTransport(this.ctx, this.source);
+
     this.audio.addEventListener('play', () => { this.isPlaying = true; });
     this.audio.addEventListener('pause', () => { this.isPlaying = false; });
     this.audio.addEventListener('ended', () => { this.isPlaying = false; });
     this.audio.addEventListener('error', () => {
-      console.warn(`Deck ${this.deckNum} audio element error:`, this.audio.error);
+      console.warn(`Deck ${this.deckNum} audio load error:`, this.audio.error);
       this.isPlaying = false;
     });
-    
-    this.source = this.ctx.createMediaElementSource(this.audio);
-    
+
+    // Isolator-style bass kill for the bass swap: two cascaded high-passes parked at 10 Hz
+    // (inaudible); moved to 220 Hz they remove kick + bassline (-45 dB at 60 Hz), which a
+    // -24 dB low-shelf EQ cannot.
+    this.lowCut1 = this.ctx.createBiquadFilter();
+    this.lowCut1.type = 'highpass';
+    this.lowCut1.frequency.value = 10;
+    this.lowCut1.Q.value = 0.707;
+    this.lowCut2 = this.ctx.createBiquadFilter();
+    this.lowCut2.type = 'highpass';
+    this.lowCut2.frequency.value = 10;
+    this.lowCut2.Q.value = 0.707;
+
     // 3-Band Equalizer Nodes
     this.eqLow = this.ctx.createBiquadFilter();
     this.eqLow.type = 'lowshelf';
@@ -228,8 +464,10 @@ class DJDeckAudio {
     this.stemGainOther.gain.value = 1.0;
 
     // Connect audio signal chain:
-    // Source -> EQLow -> EQMid -> EQHigh
-    this.source.connect(this.eqLow);
+    // Source -> Bass Isolator -> EQLow -> EQMid -> EQHigh
+    this.source.connect(this.lowCut1);
+    this.lowCut1.connect(this.lowCut2);
+    this.lowCut2.connect(this.eqLow);
     this.eqLow.connect(this.eqMid);
     this.eqMid.connect(this.eqHigh);
 
@@ -352,39 +590,24 @@ class DJDeckAudio {
     }, (tailSec + 0.5) * 1000);
   }
 
+  /** Fetch + decode into the deck. Resolves with the native AudioBuffer (null on failure). */
   loadTrack(url) {
-    if (url.startsWith('blob:') || url.startsWith('data:')) {
-      this.audio.removeAttribute('crossorigin');
-    } else {
-      this.audio.crossOrigin = 'anonymous';
-    }
-    this.audio.src = url;
-    this.audio.load();
     this.cuePosition = 0;
     this.isPlaying = false;
+    this.audioBuffer = null;
+    return this.audio.load(url).then(buf => {
+      if (buf) this.audioBuffer = buf;
+      return buf;
+    });
   }
 
-  play() {
-    if (this.ctx.state === 'suspended') {
-      this.ctx.resume();
-    }
-    if (!this.audio.src || this.audio.src === window.location.href) {
+  /** Start now, or sample-accurately at ctx time `when` (optionally from native time `native`). */
+  play(when = null, native = null) {
+    if (!this.audio.buffer) {
       this.isPlaying = false;
-      return Promise.reject(new Error("No track loaded in deck"));
+      return Promise.reject(new Error("No track loaded in deck (still decoding?)"));
     }
-    const p = this.audio.play();
-    if (p && typeof p.then === 'function') {
-      return p.then(() => {
-        this.isPlaying = true;
-      }).catch(err => {
-        this.isPlaying = false;
-        console.warn(`Deck ${this.deckNum} playback prevented:`, err);
-        throw err;
-      });
-    } else {
-      this.isPlaying = true;
-      return Promise.resolve();
-    }
+    return this.audio.play(when, native);
   }
 
   pause() {
@@ -595,61 +818,56 @@ class DJDeckAudio {
     }, (fadeSec + 0.5) * 1000);
   }
 
-  // --- LOOP ROLL: Accelerating stutter via audio seeking with anti-click gain envelope ---
-  triggerLoopRoll(bpm = 128.0, totalBars = 4, onComplete = null) {
+  // --- Scheduled slice repeats (loop roll / beat masher): every repeat is placed on the audio
+  //     clock, so the stutter stays exactly on the grid. Main playback keeps running muted
+  //     underneath (slip mode) and comes back in time when the roll ends. ---
+  _scheduleRepeats(t0, totalSec, spb, divAt) {
+    const anchor = this.audio.timeAt(t0);
+    this._rollSources = [];
+    let t = t0;
+    while (t < t0 + totalSec - 1e-4) {
+      const div = divAt((t - t0) / totalSec);
+      const len = Math.min(div * spb, t0 + totalSec - t);
+      const src = this.audio.playSlice(t, anchor, len);
+      if (src) this._rollSources.push(src);
+      t += div * spb;
+    }
+    this.audio.muteBetween(t0, t0 + totalSec);
+  }
+
+  _cancelRepeats() {
+    const now = this.ctx.currentTime;
+    (this._rollSources || []).forEach(s => { try { s.stop(now); } catch (e) {} });
+    this._rollSources = [];
+    this.audio.unmute();
+  }
+
+  // --- LOOP ROLL: accelerating 1 bar -> 1/16 beat repeats ---
+  triggerLoopRoll(bpm = 128.0, totalBars = 4, onComplete = null, when = null) {
     const spb = 60.0 / bpm;
     const totalSec = totalBars * 4 * spb;
-    const anchor = this.audio.currentTime;
-    const startPerf = performance.now();
+    const t0 = Math.max(this.ctx.currentTime + 0.01, when === null ? 0 : when);
     this._loopRollActive = true;
+    this._scheduleRepeats(t0, totalSec, spb, p =>
+      p < 0.25 ? 4 : p < 0.45 ? 2 : p < 0.65 ? 1 : p < 0.80 ? 0.5 : 0.25);
 
-    const rollFrame = () => {
-      if (!this._loopRollActive) return;
-      const elapsed = (performance.now() - startPerf) / 1000;
-      if (elapsed >= totalSec) {
-        this._loopRollActive = false;
-        const ct = this.ctx.currentTime;
-        this.faderGain.gain.cancelScheduledValues(ct);
-        this.faderGain.gain.setValueAtTime(1.0, ct);
-        if (onComplete) onComplete();
-        return;
-      }
+    // HPF sweep for tension riser feel
+    this.filterHPF.frequency.cancelScheduledValues(t0);
+    this.filterHPF.frequency.setValueAtTime(20, t0);
+    this.filterHPF.frequency.exponentialRampToValueAtTime(2500, t0 + totalSec);
 
-      const progress = elapsed / totalSec;
-      let divBeats;
-      if (progress < 0.25) divBeats = 4;
-      else if (progress < 0.45) divBeats = 2;
-      else if (progress < 0.65) divBeats = 1;
-      else if (progress < 0.80) divBeats = 0.5;
-      else divBeats = 0.25;
-
-      const loopLen = divBeats * spb;
-      if (this.audio.currentTime > anchor + loopLen) {
-        const ct = this.ctx.currentTime;
-        this.faderGain.gain.setValueAtTime(this.faderGain.gain.value, ct);
-        this.faderGain.gain.linearRampToValueAtTime(0.001, ct + 0.004);
-        this.audio.currentTime = anchor;
-        this.faderGain.gain.setValueAtTime(0.001, ct + 0.005);
-        this.faderGain.gain.linearRampToValueAtTime(1.0, ct + 0.009);
-      }
-
-      requestAnimationFrame(rollFrame);
-    };
-
-    // Also apply HPF sweep for tension riser feel
-    const now = this.ctx.currentTime;
-    this.filterHPF.frequency.cancelScheduledValues(now);
-    this.filterHPF.frequency.setValueAtTime(20, now);
-    this.filterHPF.frequency.exponentialRampToValueAtTime(2500, now + totalSec);
-
-    requestAnimationFrame(rollFrame);
+    clearTimeout(this._rollTimer);
+    this._rollTimer = setTimeout(() => {
+      this._loopRollActive = false;
+      if (onComplete) onComplete();
+    }, (t0 + totalSec - this.ctx.currentTime) * 1000);
   }
 
   cancelLoopRoll() {
     this._loopRollActive = false;
+    clearTimeout(this._rollTimer);
+    this._cancelRepeats();
     const now = this.ctx.currentTime;
-    this.faderGain.gain.cancelScheduledValues(now);
-    this.faderGain.gain.setValueAtTime(1.0, now);
     this.filterHPF.frequency.cancelScheduledValues(now);
     this.filterHPF.frequency.setValueAtTime(20, now);
   }
@@ -690,39 +908,22 @@ class DJDeckAudio {
   triggerBeatMasher(bpm = 128.0, division = '1/16', totalBars = 2, onComplete = null) {
     const spb = 60.0 / bpm;
     const divBeats = (division === '1/32') ? 0.125 : ((division === '1/16') ? 0.25 : ((division === '1/8') ? 0.5 : 1.0));
-    const sliceSec = divBeats * spb;
     const totalSec = totalBars * 4 * spb;
-    const anchor = this.audio.currentTime;
-    const startPerf = performance.now();
+    const t0 = this.ctx.currentTime + 0.01;
     this._beatMasherActive = true;
-
-    const masherFrame = () => {
-      if (!this._beatMasherActive) return;
-      const elapsed = (performance.now() - startPerf) / 1000;
-      if (elapsed >= totalSec) {
-        this._beatMasherActive = false;
-        const ct = this.ctx.currentTime;
-        this.faderGain.gain.cancelScheduledValues(ct);
-        this.faderGain.gain.setValueAtTime(1.0, ct);
-        if (onComplete) onComplete();
-        return;
-      }
-
-      if (this.audio.currentTime > anchor + sliceSec) {
-        const ct = this.ctx.currentTime;
-        this.faderGain.gain.setValueAtTime(this.faderGain.gain.value, ct);
-        this.faderGain.gain.linearRampToValueAtTime(0.001, ct + 0.003);
-        this.audio.currentTime = anchor;
-        this.faderGain.gain.setValueAtTime(0.001, ct + 0.004);
-        this.faderGain.gain.linearRampToValueAtTime(1.0, ct + 0.008);
-      }
-      requestAnimationFrame(masherFrame);
-    };
-    requestAnimationFrame(masherFrame);
+    this._scheduleRepeats(t0, totalSec, spb, () => divBeats);
+    clearTimeout(this._masherTimer);
+    this._masherTimer = setTimeout(() => {
+      this._beatMasherActive = false;
+      if (onComplete) onComplete();
+    }, totalSec * 1000);
   }
 
   cancelBeatMasher() {
+    if (!this._beatMasherActive) return;
     this._beatMasherActive = false;
+    clearTimeout(this._masherTimer);
+    this._cancelRepeats();
   }
 
   // --- TURNTABLE PITCH BEND ---
@@ -806,6 +1007,13 @@ class DJDeckAudio {
     this.flangerWetGain.gain.setValueAtTime(0.0, now);
     this.flangerFeedback.gain.cancelScheduledValues(now);
     this.flangerFeedback.gain.setValueAtTime(0.0, now);
+    [this.lowCut1, this.lowCut2].forEach(f => {
+      f.frequency.cancelScheduledValues(now);
+      f.frequency.setValueAtTime(10, now);
+    });
+    clearTimeout(this._rollTimer);
+    clearTimeout(this._masherTimer);
+    this._cancelRepeats();
     this._loopRollActive = false;
     this._echoEngaged = false;
     this._flangerEngaged = false;

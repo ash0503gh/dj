@@ -229,6 +229,13 @@
           <button id="d1-btn-play" class="btn-transport btn-play">▶ PLAY</button>
           <button id="d1-btn-sync" class="btn-transport btn-sync">SYNC</button>
         </div>
+        <div class="grid-nudge-strip" data-deck="1">
+          <span class="grid-nudge-label">GRID</span>
+          <button class="btn-grid" data-shift-ms="-5" title="Move beat grid 5 ms earlier">◀ 5ms</button>
+          <button class="btn-grid" data-shift-ms="5" title="Move beat grid 5 ms later">5ms ▶</button>
+          <button class="btn-grid" data-shift-beats="1" title="Downbeat is on the wrong beat: move the 1 by one beat">1 ▶ BEAT</button>
+          <button class="btn-grid" data-shift-bars="1" title="Phrases start on the wrong bar: move phrase start by one bar">PHRASE ▶ BAR</button>
+        </div>
       </section>
 
       <!-- CENTER MIXER & TRANSITION ENGINE -->
@@ -571,6 +578,13 @@
           <button id="d2-btn-play" class="btn-transport btn-play">▶ PLAY</button>
           <button id="d2-btn-sync" class="btn-transport btn-sync">SYNC</button>
         </div>
+        <div class="grid-nudge-strip" data-deck="2">
+          <span class="grid-nudge-label">GRID</span>
+          <button class="btn-grid" data-shift-ms="-5" title="Move beat grid 5 ms earlier">◀ 5ms</button>
+          <button class="btn-grid" data-shift-ms="5" title="Move beat grid 5 ms later">5ms ▶</button>
+          <button class="btn-grid" data-shift-beats="1" title="Downbeat is on the wrong beat: move the 1 by one beat">1 ▶ BEAT</button>
+          <button class="btn-grid" data-shift-bars="1" title="Phrases start on the wrong bar: move phrase start by one bar">PHRASE ▶ BAR</button>
+        </div>
       </section>
     </main>
 
@@ -744,9 +758,10 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=10.7"></script>
-  <script src="/js/jog_wheel.js?v=10.7"></script>
-  <script src="/js/waveform.js?v=10.7"></script>
-  <script src="/js/app.js?v=10.7"></script>
+  <script src="/js/audio_engine.js?v=11.0"></script>
+  <script src="/js/mix_planner.js?v=11.0"></script>
+  <script src="/js/jog_wheel.js?v=11.0"></script>
+  <script src="/js/waveform.js?v=11.0"></script>
+  <script src="/js/app.js?v=11.0"></script>
 </body>
 </html>

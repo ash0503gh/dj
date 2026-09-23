@@ -64,10 +64,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const phaseCursor = document.getElementById('phase-cursor');
   const phaseStatus = document.getElementById('phase-status');
 
-  // Closed-Loop Phase-Lock Loop (PLL) State
+  // Beat-sync state
   let isDeck1SyncLocked = false;
   let isDeck2SyncLocked = false;
-  let isTransitionPhaseLocked = false;
 
   // AI Live Card
   const aiRecTechnique = document.getElementById('ai-rec-technique');
@@ -138,7 +137,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const phraseHudProgress = document.getElementById('phrase-hud-progress');
   const togglePhraseLock = document.getElementById('toggle-phrase-lock');
   const toggleVocalDuck = document.getElementById('toggle-vocal-duck');
-  const toggleNeuralStems = document.getElementById('toggle-neural-stems');
 
   // Modals
   const mixModal = document.getElementById('mix-modal');
@@ -298,6 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAIRecCard();
     fetchAIStrategy();
     updateTransitionOverlay();
+    prefetchIncoming();
   }
 
   function toggleTransitionDirection() {
@@ -471,18 +470,12 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     targetAudio.addEventListener('loadedmetadata', onMeta, { once: true });
 
-    // 3. Fast client-side decoding for true duration and high-res RGB waveform
+    // 3. The deck already decodes the file once (loadTrackIntoDeck): reuse it for the RGB waveform
     try {
-      const reader = new FileReader();
-      reader.onload = async (e) => {
+      const targetDeck = (deckNum === 1) ? engine.deck1 : engine.deck2;
+      targetDeck.audio.loaded.then((audioBuffer) => {
         try {
-          const arrayBuffer = e.target.result;
-          if (engine.ctx.state === 'suspended') {
-            await engine.ctx.resume();
-          }
-          const audioBuffer = await engine.ctx.decodeAudioData(arrayBuffer.slice(0));
-          const targetDeck = (deckNum === 1) ? engine.deck1 : engine.deck2;
-          targetDeck.audioBuffer = audioBuffer;
+          if (!audioBuffer) return;
           const trueDur = audioBuffer.duration;
           
           const numBins = Math.min(12000, Math.max(3600, Math.floor(trueDur * 60)));
@@ -552,10 +545,9 @@ document.addEventListener('DOMContentLoaded', () => {
             }
           }
         } catch (decErr) {
-          console.warn('Client-side audio decode error (using acoustic synthesizer):', decErr);
+          console.warn('Client-side waveform error (using acoustic synthesizer):', decErr);
         }
-      };
-      reader.readAsArrayBuffer(file);
+      });
     } catch (readErr) {
       console.warn('File read error:', readErr);
     }
@@ -586,6 +578,11 @@ document.addEventListener('DOMContentLoaded', () => {
           currentTrack.suggested_cue_intro = sTrack.suggested_cue_intro || currentTrack.suggested_cue_intro;
           currentTrack.suggested_cue_outro = sTrack.suggested_cue_outro || currentTrack.suggested_cue_outro;
           currentTrack.acoustic_profile = sTrack.acoustic_profile || currentTrack.acoustic_profile;
+          currentTrack.file_id = sTrack.file_id || currentTrack.file_id;
+          ['grid', 'phrase_32_times', 'drop_times', 'section_boundaries', 'section_map'].forEach(k => {
+            if (sTrack[k]) currentTrack[k] = sTrack[k];
+          });
+          currentTrack.hot_cues = computeTrackHotCues(currentTrack);
           if (sTrack.waveform) {
             currentTrack.waveform = sTrack.waveform;
           }
@@ -608,6 +605,7 @@ document.addEventListener('DOMContentLoaded', () => {
             fetchAIStrategy();
           }
           transitionStatusBanner.textContent = `${deckName}: ANALYSIS COMPLETE (${currentTrack.bpm.toFixed(1)} BPM, ${currentTrack.camelot})`;
+          prefetchIncoming();
         }
       }
     } catch (err) {
@@ -699,13 +697,6 @@ document.addEventListener('DOMContentLoaded', () => {
         d1PhraseVal.textContent = `${phrases} PHRASES`;
       }
       engine.deck1.loadTrack(track.audio_url);
-      if (!engine.deck1.audioBuffer && track.audio_url) {
-        fetch(track.audio_url)
-          .then(res => res.arrayBuffer())
-          .then(ab => engine.ctx.decodeAudioData(ab))
-          .then(abuf => { engine.deck1.audioBuffer = abuf; })
-          .catch(e => console.warn('PFL Deck 1 background decode note:', e));
-      }
       wave1.loadTrack(track);
       if (track.bpm && !isNaN(track.bpm)) {
         masterBpmEl.textContent = track.bpm.toFixed(2);
@@ -726,13 +717,6 @@ document.addEventListener('DOMContentLoaded', () => {
         d2PhraseVal.textContent = `${phrases} PHRASES`;
       }
       engine.deck2.loadTrack(track.audio_url);
-      if (!engine.deck2.audioBuffer && track.audio_url) {
-        fetch(track.audio_url)
-          .then(res => res.arrayBuffer())
-          .then(ab => engine.ctx.decodeAudioData(ab))
-          .then(abuf => { engine.deck2.audioBuffer = abuf; })
-          .catch(e => console.warn('PFL Deck 2 background decode note:', e));
-      }
       wave2.loadTrack(track);
     }
     if (track1Data && track2Data) {
@@ -742,6 +726,7 @@ document.addEventListener('DOMContentLoaded', () => {
     updateHarmonicCompatibility();
     updateAIRecCard();
     updateTransitionOverlay();
+    prefetchIncoming();
   }
 
   // --- Quick Select Dropdowns ---
@@ -900,141 +885,6 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ═══════════════════════════════════════════════════
-  // CONTENT-AWARE TRANSITION INTELLIGENCE
-  // Uses section_map from backend analysis to make DJ decisions
-  // ═══════════════════════════════════════════════════
-
-  function getSectionAt(track, time) {
-    if (!track || !track.section_map || track.section_map.length === 0) return null;
-    for (let i = track.section_map.length - 1; i >= 0; i--) {
-      if (track.section_map[i].time <= time) return track.section_map[i];
-    }
-    return track.section_map[0];
-  }
-
-  function getSectionsInRange(track, startTime, endTime) {
-    if (!track || !track.section_map) return [];
-    return track.section_map.filter(s => s.time >= startTime && s.time < endTime);
-  }
-
-  function findBestTransitionPoint(outTrack, currentTime, bars) {
-    if (!outTrack || !outTrack.section_map || outTrack.section_map.length < 4) return null;
-
-    const spb = 60.0 / outTrack.bpm;
-    const blendDuration = bars * 4 * spb;
-    const phrases = (bars >= 16 && outTrack.phrase_16_times && outTrack.phrase_16_times.length > 0)
-      ? outTrack.phrase_16_times
-      : (outTrack.phrase_8_times || []);
-
-    const candidates = phrases.filter(pt => pt > currentTime + 1.0 && pt < outTrack.duration - blendDuration);
-    if (candidates.length === 0) return null;
-
-    let bestTime = candidates[0];
-    let bestScore = -Infinity;
-
-    for (const pt of candidates) {
-      const sec = getSectionAt(outTrack, pt);
-      if (!sec) continue;
-
-      let score = 0;
-
-      // Prefer declining energy (leaving a drop/chorus)
-      const nextSec = getSectionAt(outTrack, pt + blendDuration * 0.5);
-      if (nextSec && nextSec.energy < sec.energy) score += 20;
-
-      // Prefer sections without vocals (clean exit)
-      if (!sec.has_vocals) score += 30;
-      score -= sec.vocal_score * 20;
-
-      // Prefer lower bass energy (easier to swap bass)
-      score += (1.0 - sec.bass_energy) * 15;
-
-      // Prefer breakdown/outro sections
-      if (sec.section_type === 'breakdown') score += 25;
-      if (sec.section_type === 'outro') score += 20;
-      if (sec.section_type === 'buildup') score += 10;
-      if (sec.section_type === 'drop') score -= 15;
-
-      // Penalty for being too far from current position (prefer sooner transitions)
-      const waitSec = pt - currentTime;
-      if (waitSec > 30) score -= (waitSec - 30) * 0.5;
-
-      if (score > bestScore) {
-        bestScore = score;
-        bestTime = pt;
-      }
-    }
-
-    return bestTime;
-  }
-
-  function detectVocalOverlap(outTrack, outTime, inTrack, inTime, blendDuration) {
-    if (!outTrack?.section_map || !inTrack?.section_map) return false;
-
-    const outSections = getSectionsInRange(outTrack, outTime, outTime + blendDuration);
-    const inSections = getSectionsInRange(inTrack, inTime, inTime + blendDuration);
-
-    const outVocal = outSections.some(s => s.has_vocals && s.vocal_score > 0.35);
-    const inVocal = inSections.some(s => s.has_vocals && s.vocal_score > 0.35);
-
-    return outVocal && inVocal;
-  }
-
-  function computeAdaptiveEQParams(outTrack, outStartTime, inTrack, inStartTime, blendDuration) {
-    const params = {
-      bassSwapStart: 0.28,
-      bassSwapEnd: 0.72,
-      inHiFullAt: 0.25,
-      inMidFullAt: 0.60,
-      outMidDuckStart: 0.25,
-      outHiDissolveStart: 0.35,
-      vocalDuckDepth: -5.0
-    };
-
-    if (!outTrack?.section_map || !inTrack?.section_map) return params;
-
-    const inIntroSections = getSectionsInRange(inTrack, inStartTime, inStartTime + blendDuration * 0.5);
-    const outExitSections = getSectionsInRange(outTrack, outStartTime, outStartTime + blendDuration);
-
-    // Nudge bass swap timing based on incoming bass density (small shifts only)
-    const inAvgBass = inIntroSections.length > 0
-      ? inIntroSections.reduce((s, x) => s + x.bass_energy, 0) / inIntroSections.length
-      : 0.33;
-    if (inAvgBass < 0.2) {
-      params.bassSwapStart = 0.32;
-      params.bassSwapEnd = 0.75;
-    } else if (inAvgBass > 0.45) {
-      params.bassSwapStart = 0.24;
-      params.bassSwapEnd = 0.68;
-    }
-
-    // If incoming has strong highs early, bring them in slightly faster
-    const inAvgHigh = inIntroSections.length > 0
-      ? inIntroSections.reduce((s, x) => s + x.high_energy, 0) / inIntroSections.length
-      : 0.33;
-    if (inAvgHigh > 0.4) {
-      params.inHiFullAt = 0.18;
-    }
-
-    // If outgoing has vocals in exit zone, nudge ducking (gentle adjustments)
-    const outHasVocals = outExitSections.some(s => s.has_vocals);
-    if (outHasVocals) {
-      params.outMidDuckStart = 0.22;
-      params.vocalDuckDepth = -6.0;
-    }
-
-    // If incoming has strong mids AND outgoing has vocals, slightly delay incoming mids
-    const inAvgMid = inIntroSections.length > 0
-      ? inIntroSections.reduce((s, x) => s + x.mid_energy, 0) / inIntroSections.length
-      : 0.33;
-    if (inAvgMid > 0.45 && outHasVocals) {
-      params.inMidFullAt = 0.65;
-    }
-
-    return params;
-  }
-
-  // ═══════════════════════════════════════════════════
   // JEV AUTONOMOUS DJ BRAIN: Client-Side Audio Profiling
   // ═══════════════════════════════════════════════════
   function profileTrackForJev(deckNum) {
@@ -1135,28 +985,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     return profile;
-  }
-
-  // ═══════════════════════════════════════════════════
-  // JEV BLUEPRINT: Generic Keyframe Interpolator
-  // ═══════════════════════════════════════════════════
-  function interpolateKeyframes(keyframes, progress) {
-    if (!keyframes || keyframes.length === 0) return 0;
-    if (progress <= keyframes[0][0]) return keyframes[0][1];
-    if (progress >= keyframes[keyframes.length - 1][0])
-      return keyframes[keyframes.length - 1][1];
-    for (let i = 0; i < keyframes.length - 1; i++) {
-      const [p0, v0] = keyframes[i];
-      const [p1, v1] = keyframes[i + 1];
-      if (progress >= p0 && progress <= p1) {
-        const t = (p1 - p0) > 0 ? (progress - p0) / (p1 - p0) : 0;
-        // Quintic smootherstep: 6t^5 - 15t^4 + 10t^3
-        const ct = Math.max(0, Math.min(1, t));
-        const s = ct * ct * ct * (ct * (ct * 6 - 15) + 10);
-        return v0 + (v1 - v0) * s;
-      }
-    }
-    return keyframes[keyframes.length - 1][1];
   }
 
   // ═══════════════════════════════════════════════════
@@ -1272,332 +1100,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ═══════════════════════════════════════════════════
-  // JEV BLUEPRINT: Transition Executor
-  // ═══════════════════════════════════════════════════
-  let _blueprintAnimFrame = null;
-  let _blueprintAborted = false;
-  let _blueprintManual = false;
-
-  function executeBlueprintTransition(blueprint, outDeck, inDeck, outTrack, inTrack,
-                                      outDeckNum, inDeckNum, isDir1to2,
-                                      outBtnPlay, inBtnPlay, outFilter, inPitchVal) {
-    const bp = blueprint;
-    const bars = bp.meta.transition_bars;
-    const bpm = outTrack.bpm || bp.meta.bpm || 128;
-    const beatDurationMs = (60.0 / bpm) * 1000;
-    const totalTransMs = bars * 4 * beatDurationMs;
-
-    _blueprintAborted = false;
-    _blueprintManual = false;
-
-    // Show abort/manual buttons
-    const btnAbort = document.getElementById('btn-abort-transition');
-    const btnManual = document.getElementById('btn-manual-override');
-    if (btnAbort) btnAbort.style.display = 'inline-block';
-    if (btnManual) btnManual.style.display = 'inline-block';
-
-    // Crossfader: LOCKED PERMANENTLY AT 50% CENTER
-    if (crossfader) {
-      crossfader.value = 50;
-    }
-    engine.setCrossfader(50, 'club');
-
-    // Initial EQ state from first keyframe values
-    applyDeckEQ(inDeckNum, 'hi', bp.keyframes.incoming_eq_high[0][1]);
-    applyDeckEQ(inDeckNum, 'mid', bp.keyframes.incoming_eq_mid[0][1]);
-    applyDeckEQ(inDeckNum, 'low', bp.keyframes.incoming_eq_low[0][1]);
-    applyDeckEQ(outDeckNum, 'hi', 0);
-    applyDeckEQ(outDeckNum, 'mid', 0);
-    applyDeckEQ(outDeckNum, 'low', 0);
-
-    // Initial channel faders: Incoming starts at 0% silence, Outgoing at 100%
-    inDeck.setVolume(0);
-    const inFaderInitEl = (inDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
-    if (inFaderInitEl) inFaderInitEl.value = 0;
-
-    // Ensure Outgoing Deck is playing
-    if (!outDeck.isPlaying) {
-      outDeck.play();
-      if (outBtnPlay) {
-        outBtnPlay.classList.add('playing');
-        outBtnPlay.textContent = '⏸ PAUSE';
-      }
-    }
-
-    // Tempo sync & phase-aligned cue
-    const syncRate = outTrack.bpm / inTrack.bpm;
-    inDeck.setPlaybackRate(syncRate);
-    if (inPitchVal) inPitchVal.textContent = `${((syncRate - 1) * 100).toFixed(1)}%`;
-
-    // CUE SNAPPING: Snap cleanly on Beat 1 of chosen Hot Cue with ZERO jog spin/drag
-    const targetCueTime = (bp.meta && bp.meta.chosen_cue_time !== undefined && bp.meta.chosen_cue_time !== null)
-      ? bp.meta.chosen_cue_time
-      : (inTrack.suggested_cue_intro || 0);
-
-    inDeck.audio.currentTime = targetCueTime;
-    const inWave = (inDeckNum === 1) ? wave1 : wave2;
-    if (inWave) inWave.setTime(targetCueTime);
-    isTransitionPhaseLocked = true;
-
-    inDeck.play();
-    if (inBtnPlay) {
-      inBtnPlay.classList.add('playing');
-      inBtnPlay.textContent = '⏸ PAUSE';
-    }
-
-    const startTime = performance.now();
-    const fxState = {};
-
-    // Live HUD for blueprint active blocks
-    const blockLabels = {
-      bass_swap: '🔊 BASS SWAP', echo_wash: '🔁 ECHO WASH', hpf_sweep: '📡 HPF SWEEP',
-      loop_roll: '🌀 LOOP ROLL', noise_riser: '📈 NOISE RISER', vinyl_brake: '⚡ VINYL BRAKE',
-      rewind: '🔄 REWIND', stutter_chop: '✂️ STUTTER', tension_snare: '🥁 SNARE ROLL',
-      sidechain_pump: '💓 SIDECHAIN', filter_sweep_blend: '🔊 FILTER SWEEP',
-      predrop_gap: '⏸ PRE-DROP GAP', drop_impact: '💥 DROP IMPACT', vocal_ducking: '🎤 VOCAL DUCK',
-      stem_mashup: '🎛️ STEM MASH', flanger: '🌀 FLANGER', beat_masher: '⚡ MASHER', pitch_bend: '💿 PITCH BEND'
-    };
-    const activeBlocks = bp.meta.active_blocks || [];
-    const activeLabel = activeBlocks.length > 0
-      ? activeBlocks.map(b => blockLabels[b] || b.toUpperCase()).join(' + ')
-      : 'SEAMLESS BLEND';
-
-    // Immediate HUD update on beat 1 launch
-    const cueNameInit = (bp.meta && bp.meta.cue_target_name) ? bp.meta.cue_target_name : 'INTRO';
-    if (transitionStatusBanner) {
-      transitionStatusBanner.textContent = `⚡ JEV MIX: ${activeLabel} ➔ ${cueNameInit} (BAR 1/${bars} • 0%)`;
-    }
-
-    function updateBlueprintFrame() {
-      if (_blueprintAborted || !isTransitioning) return;
-      if (_blueprintManual) return;  // DJ took manual control
-
-      const now = performance.now();
-      const elapsed = now - startTime;
-      const p = Math.min(1.0, elapsed / totalTransMs);
-
-      // ─── Apply all keyframed parameters ───
-      applyDeckEQ(inDeckNum, 'hi', interpolateKeyframes(bp.keyframes.incoming_eq_high, p));
-      applyDeckEQ(inDeckNum, 'mid', interpolateKeyframes(bp.keyframes.incoming_eq_mid, p));
-      applyDeckEQ(inDeckNum, 'low', interpolateKeyframes(bp.keyframes.incoming_eq_low, p));
-      applyDeckEQ(outDeckNum, 'hi', interpolateKeyframes(bp.keyframes.outgoing_eq_high, p));
-      applyDeckEQ(outDeckNum, 'mid', interpolateKeyframes(bp.keyframes.outgoing_eq_mid, p));
-      applyDeckEQ(outDeckNum, 'low', interpolateKeyframes(bp.keyframes.outgoing_eq_low, p));
-
-      // HPF sweep on outgoing
-      const hpfHz = interpolateKeyframes(bp.keyframes.outgoing_hpf_hz, p);
-      outDeck.filterHPF.frequency.setValueAtTime(Math.max(20, hpfHz), outDeck.ctx.currentTime);
-      if (outFilter) {
-        const filterVal = Math.floor(Math.min(50, (hpfHz / 4000) * 50));
-        outFilter.value = filterVal;
-      }
-
-      // Crossfader: LOCKED PERMANENTLY AT 50% CENTER
-      if (typeof crossfader !== 'undefined') {
-        crossfader.value = 50;
-      }
-      engine.setCrossfader(50, 'club');
-
-      // Independent Vertical Channel Volume Faders
-      const inFaderNorm = interpolateKeyframes(bp.keyframes.incoming_fader, p);
-      const outFaderNorm = interpolateKeyframes(bp.keyframes.outgoing_fader, p);
-
-      inDeck.setVolume(inFaderNorm * 100);
-      outDeck.setVolume(outFaderNorm * 100);
-
-      const inFaderEl = (inDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
-      const outFaderEl = (outDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
-      if (inFaderEl) inFaderEl.value = Math.round(inFaderNorm * 100);
-      if (outFaderEl) outFaderEl.value = Math.round(outFaderNorm * 100);
-
-      // PLL phase lock (pitch nudging only, zero audio seeking during transition)
-      if (typeof applyPhaseLockLoop === 'function') {
-        const tempoRamp = Math.abs(outTrack.bpm - inTrack.bpm) > 0.5;
-        const baseRate = tempoRamp
-          ? (syncRate + (1.0 - syncRate) * (p * p * p * (p * (p * 6 - 15) + 10)))
-          : syncRate;
-        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate, false);
-      }
-
-      // Trigger effects at their blueprint-specified progress points
-      triggerBlueprintEffects(bp, p, fxState, outDeck, inDeck, outTrack);
-
-      // ─── Live HUD ───
-      const currentBar = Math.floor(p * bars) + 1;
-      const pctDone = Math.round(p * 100);
-      const cueName = (bp.meta && bp.meta.cue_target_name) ? bp.meta.cue_target_name : 'INTRO';
-      if (transitionStatusBanner) {
-        transitionStatusBanner.textContent = `⚡ JEV MIX: ${activeLabel} ➔ ${cueName} (BAR ${currentBar}/${bars} • ${pctDone}%)`;
-      }
-
-      // ─── Completion or continue ───
-      if (p < 1.0) {
-        _blueprintAnimFrame = requestAnimationFrame(updateBlueprintFrame);
-      } else {
-        cleanupBlueprintTransition(bp, fxState, outDeck, inDeck, outTrack, inTrack,
-                                    outDeckNum, inDeckNum, outBtnPlay, inBtnPlay,
-                                    outFilter, inPitchVal);
-      }
-    }
-
-    _blueprintAnimFrame = requestAnimationFrame(updateBlueprintFrame);
+  function hideTransitionButtons() {
+    ['btn-abort-transition', 'btn-manual-override'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) b.style.display = 'none';
+    });
   }
 
   // ═══════════════════════════════════════════════════
-  // JEV BLUEPRINT: Cleanup after completion
+  // Abort: cancel everything scheduled, keep whichever deck is carrying the room
   // ═══════════════════════════════════════════════════
-  function cleanupBlueprintTransition(bp, fxState, outDeck, inDeck, outTrack, inTrack,
-                                       outDeckNum, inDeckNum, outBtnPlay, inBtnPlay,
-                                       outFilter, inPitchVal) {
-    // Disengage effects
-    if (fxState.echoEngaged) outDeck.disengageSubtleEcho(2.0);
-    if (fxState.vocalDucked) outDeck.unduckMids();
-    if (fxState.loopRollStarted) outDeck.cancelLoopRoll();
-    if (fxState.flangerEngaged) outDeck.disengageFlanger(1.0);
-    if (fxState.beatMasherStarted) outDeck.cancelBeatMasher();
-    if (fxState.pitchBendStarted) outDeck.resetPitchBend();
-    fxState.vinylBrakeStarted = false;
-
-    // Reset EQs
-    resetDeckEQs(outDeckNum);
-    resetDeckEQs(inDeckNum);
-
-    // Reset outgoing filter
-    if (outFilter) { outFilter.value = 0; }
-    outDeck.setColorFilter(0);
-    outDeck.filterHPF.frequency.setValueAtTime(20, outDeck.ctx.currentTime);
-
-    // Stop outgoing deck & zero its channel fader
-    outDeck.pause();
-    outDeck.setVolume(0);
-    const outFaderEl = (outDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
-    if (outFaderEl) outFaderEl.value = 0;
-
-    if (outBtnPlay) {
-      outBtnPlay.classList.remove('playing');
-      outBtnPlay.textContent = '▶ PLAY';
-    }
-
-    // Ensure live incoming deck has 100% volume
-    inDeck.setVolume(100);
-    const inFaderEl = (inDeckNum === 1) ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
-    if (inFaderEl) inFaderEl.value = 100;
-
-    // Reset incoming to natural rate
-    inDeck.setPlaybackRate(1.0);
-    if (inPitchVal) inPitchVal.textContent = '0.0%';
-
-    // Keep crossfader centered at 50%
-    if (typeof crossfader !== 'undefined') crossfader.value = 50;
-    engine.setCrossfader(50, 'club');
-
-    // Hide abort/manual buttons
-    const btnAbort = document.getElementById('btn-abort-transition');
-    const btnManual = document.getElementById('btn-manual-override');
-    if (btnAbort) btnAbort.style.display = 'none';
-    if (btnManual) btnManual.style.display = 'none';
-
-    isTransitionPhaseLocked = false;
-
-    // Reuse existing finishTransition for direction flip and modal
-    finishTransition(Promise.resolve({ status: 'blueprint_complete' }));
-  }
-
-  // ═══════════════════════════════════════════════════
-  // JEV BLUEPRINT: Abort Handler
-  // ═══════════════════════════════════════════════════
-  function abortBlueprintTransition() {
-    _blueprintAborted = true;
-    if (_blueprintAnimFrame) {
-      cancelAnimationFrame(_blueprintAnimFrame);
-      _blueprintAnimFrame = null;
-    }
-
-    // Snap everything back to neutral
+  function abortTransition() {
+    const t = activeTransition;
+    if (!t) return;
+    clearTransitionTimers(t);
+    activeTransition = null;
+    const now = engine.ctx.currentTime;
+    const keepOut = t.outDeck.isPlaying && t.outDeck.faderGain.gain.value > 0.05;
+    const [keep, drop, keepNum, dropBtn] = keepOut
+      ? [t.outDeck, t.inDeck, t.outDeckNum, t.inBtnPlay]
+      : [t.inDeck, t.outDeck, t.inDeckNum, t.outBtnPlay];
+    drop.pause();
+    setPlayUI(dropBtn, false);
+    [engine.deck1, engine.deck2].forEach(d => {
+      d.resetAllFX();
+      MixPlanner.neutral(d, now, d === keep ? 1 : 0);
+    });
     resetDeckEQs(1);
     resetDeckEQs(2);
-    engine.deck1.filterHPF.frequency.setValueAtTime(20, engine.ctx.currentTime);
-    engine.deck2.filterHPF.frequency.setValueAtTime(20, engine.ctx.currentTime);
-    engine.deck1.setColorFilter(0);
-    engine.deck2.setColorFilter(0);
-    engine.deck1.unduckMids();
-    engine.deck2.unduckMids();
-    try { engine.deck1.cancelLoopRoll(); } catch(e) {}
-    try { engine.deck2.cancelLoopRoll(); } catch(e) {}
-    try { engine.deck1.disengageSubtleEcho(0.5); } catch(e) {}
-    try { engine.deck2.disengageSubtleEcho(0.5); } catch(e) {}
-    try { engine.deck1.disengageFlanger(0.5); } catch(e) {}
-    try { engine.deck2.disengageFlanger(0.5); } catch(e) {}
-    try { engine.deck1.cancelBeatMasher(); } catch(e) {}
-    try { engine.deck2.cancelBeatMasher(); } catch(e) {}
-    try { engine.deck1.resetPitchBend(); } catch(e) {}
-    try { engine.deck2.resetPitchBend(); } catch(e) {}
-    try { engine.deck1.resetStems(); } catch(e) {}
-    try { engine.deck2.resetStems(); } catch(e) {}
-    engine.deck1.setPlaybackRate(1.0);
-    engine.deck2.setPlaybackRate(1.0);
-
-    // Crossfader remains at 50%
-    if (typeof crossfader !== 'undefined') crossfader.value = 50;
-    engine.setCrossfader(50, 'club');
-
-    // Pause incoming deck that was launched during transition; keep outgoing deck live at 100%
-    const isDir1to2 = (transitionDirection === '1_to_2');
-    const incomingDeck = isDir1to2 ? engine.deck2 : engine.deck1;
-    const incomingBtn = isDir1to2 ? document.getElementById('d2-btn-play') : document.getElementById('d1-btn-play');
-    if (incomingDeck) {
-      incomingDeck.pause();
-    }
-    if (incomingBtn) {
-      incomingBtn.classList.remove('playing');
-      incomingBtn.textContent = '▶ PLAY';
-    }
-
-    // Restore volume faders
-    const outFaderEl = isDir1to2 ? document.getElementById('d1-vol-fader') : document.getElementById('d2-vol-fader');
-    const inFaderEl = isDir1to2 ? document.getElementById('d2-vol-fader') : document.getElementById('d1-vol-fader');
-    if (outFaderEl) outFaderEl.value = 100;
-    if (inFaderEl) inFaderEl.value = 100;
-    engine.deck1.setVolume(100);
-    engine.deck2.setVolume(100);
-
-    // Reset filter sliders
-    const f1 = document.getElementById('d1-filter');
-    const f2 = document.getElementById('d2-filter');
-    if (f1) f1.value = 0;
-    if (f2) f2.value = 0;
-
+    [1, 2].forEach(n => {
+      const fader = document.getElementById(`d${n}-vol-fader`);
+      if (fader) fader.value = n === keepNum ? 100 : 0;
+      const f = document.getElementById(`d${n}-filter`);
+      if (f) f.value = 0;
+    });
     isTransitioning = false;
-    isTransitionPhaseLocked = false;
-    if (btnTriggerTransition) btnTriggerTransition.classList.remove('in-transition');
-    transitionStatusBanner.textContent = '🛑 TRANSITION ABORTED — Full rollback to original playing deck.';
-
-    // Hide buttons
-    const btnAbort = document.getElementById('btn-abort-transition');
-    const btnManual = document.getElementById('btn-manual-override');
-    if (btnAbort) btnAbort.style.display = 'none';
-    if (btnManual) btnManual.style.display = 'none';
+    btnTriggerTransition.classList.remove('in-transition');
+    phraseHud.classList.add('hidden');
+    hideTransitionButtons();
+    transitionStatusBanner.textContent = `🛑 TRANSITION ABORTED: DECK ${keepNum} STAYS LIVE`;
   }
 
   // ═══════════════════════════════════════════════════
-  // JEV BLUEPRINT: Manual Override Handler
+  // Manual override: stop the automation, leave every knob where it is, DJ takes over
   // ═══════════════════════════════════════════════════
   function manualOverrideTransition() {
-    _blueprintManual = true;
-    if (_blueprintAnimFrame) {
-      cancelAnimationFrame(_blueprintAnimFrame);
-      _blueprintAnimFrame = null;
-    }
-
-    if (transitionStatusBanner) {
-      transitionStatusBanner.textContent = '🎛️ MANUAL MODE — You have full control. Both decks playing.';
-    }
-
-    // Hide manual button, change abort to show
-    const btnManual = document.getElementById('btn-manual-override');
-    if (btnManual) btnManual.style.display = 'none';
-    // Keep abort visible so DJ can still fully abort
+    const t = activeTransition;
+    if (!t) return;
+    clearTransitionTimers(t);
+    activeTransition = null;
+    const now = engine.ctx.currentTime;
+    MixPlanner.holdAutomation(t.outDeck, now);
+    MixPlanner.holdAutomation(t.inDeck, now);
+    isTransitioning = false;
+    btnTriggerTransition.classList.remove('in-transition');
+    phraseHud.classList.add('hidden');
+    hideTransitionButtons();
+    transitionStatusBanner.textContent = '🎛️ MANUAL MODE: automation stopped, both decks playing. Faders and EQs are yours.';
   }
 
   async function fetchAIStrategy() {
@@ -1921,13 +1480,13 @@ document.addEventListener('DOMContentLoaded', () => {
         transitionStatusBanner.textContent = 'DECK 1: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
         return;
       }
+      let when = null, startPos = null;
       if (isDeck1SyncLocked && engine.deck2.isPlaying && track1Data && track2Data) {
-        const m = getDeckPhase(track2Data, engine.deck2.audio.currentTime);
-        const s = getDeckPhase(track1Data, engine.deck1.audio.currentTime);
-        engine.deck1.audio.currentTime = s.currentBeat + (m.phase * s.beatDuration);
+        when = engine.ctx.currentTime + 0.05;
+        startPos = alignedPosition(engine.deck2, track2Data, engine.deck1, track1Data, when);
       }
       try {
-        await engine.deck1.play();
+        await engine.deck1.play(when, startPos);
         d1BtnPlay.classList.add('playing');
         d1BtnPlay.textContent = '⏸ PAUSE';
       } catch (err) {
@@ -1949,13 +1508,13 @@ document.addEventListener('DOMContentLoaded', () => {
         transitionStatusBanner.textContent = 'DECK 2: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
         return;
       }
+      let when = null, startPos = null;
       if (isDeck2SyncLocked && engine.deck1.isPlaying && track1Data && track2Data) {
-        const m = getDeckPhase(track1Data, engine.deck1.audio.currentTime);
-        const s = getDeckPhase(track2Data, engine.deck2.audio.currentTime);
-        engine.deck2.audio.currentTime = s.currentBeat + (m.phase * s.beatDuration);
+        when = engine.ctx.currentTime + 0.05;
+        startPos = alignedPosition(engine.deck1, track1Data, engine.deck2, track2Data, when);
       }
       try {
-        await engine.deck2.play();
+        await engine.deck2.play(when, startPos);
         d2BtnPlay.classList.add('playing');
         d2BtnPlay.textContent = '⏸ PAUSE';
       } catch (err) {
@@ -1980,59 +1539,47 @@ document.addEventListener('DOMContentLoaded', () => {
     d2BtnPlay.textContent = '▶ PLAY';
   });
 
-  // --- REAL-TIME CLOSED-LOOP PHASE-LOCK LOOP (PLL) ENGINE ---
-  function getDeckPhase(trackData, currentTime) {
-    if (!trackData || !trackData.beat_times || trackData.beat_times.length === 0) {
-      const spb = 60.0 / (trackData ? trackData.bpm : 128.0);
-      const beatNum = Math.floor(currentTime / spb);
-      return {
-        phase: (currentTime % spb) / spb,
-        currentBeat: beatNum * spb,
-        nextBeat: (beatNum + 1) * spb,
-        beatDuration: spb
-      };
-    }
-    const beats = trackData.beat_times;
-    let low = 0, high = beats.length - 1;
-    while (low <= high) {
-      const mid = (low + high) >> 1;
-      if (beats[mid] <= currentTime) {
-        low = mid + 1;
-      } else {
-        high = mid - 1;
-      }
-    }
-    const idx = Math.max(0, high);
-    const bCur = beats[idx];
-    const bNext = (idx + 1 < beats.length) ? beats[idx + 1] : (bCur + (60.0 / trackData.bpm));
-    const beatDur = Math.max(0.001, bNext - bCur);
-    const phase = (currentTime - bCur) / beatDur;
-    return {
-      phase: Math.max(0.0, Math.min(1.0, phase)),
-      currentBeat: bCur,
-      nextBeat: bNext,
-      beatDuration: beatDur
-    };
+  // --- BEAT SYNC: fitted grids + one audio clock. Decks started from the same clock at the
+  //     same tempo stay locked, so there is no PLL nudging the pitch around. ---
+
+  /** Native position for `slaveDeck` whose beat phase matches `masterDeck` at ctx time `when`. */
+  function alignedPosition(masterDeck, masterTrack, slaveDeck, slaveTrack, when) {
+    const m = MixPlanner.beatPhase(masterTrack, masterDeck.audio.timeAt(when));
+    const s = MixPlanner.beatPhase(slaveTrack, slaveDeck.audio.timeAt(when));
+    return s.beatTime + m.phase * s.period;
   }
 
-  function computePhaseError(masterTrack, masterTime, slaveTrack, slaveTime) {
-    const m = getDeckPhase(masterTrack, masterTime);
-    const s = getDeckPhase(slaveTrack, slaveTime);
-
+  function computePhaseError(masterDeck, masterTrack, slaveDeck, slaveTrack) {
+    const now = engine.ctx.currentTime;
+    const m = MixPlanner.beatPhase(masterTrack, masterDeck.audio.timeAt(now));
+    const s = MixPlanner.beatPhase(slaveTrack, slaveDeck.audio.timeAt(now));
     let phaseDiff = s.phase - m.phase;
     if (phaseDiff > 0.5) phaseDiff -= 1.0;
     if (phaseDiff < -0.5) phaseDiff += 1.0;
+    const beatSec = 60.0 / MixPlanner.deckBpm(masterTrack, masterDeck);
+    return { phaseDiff, errorMs: phaseDiff * beatSec * 1000 };
+  }
 
-    const errorMs = phaseDiff * m.beatDuration * 1000;
-    return {
-      phaseDiff,
-      errorMs,
-      masterBeat: m.currentBeat,
-      slaveBeat: s.currentBeat,
-      masterBeatDuration: m.beatDuration,
-      slaveBeatDuration: s.beatDuration,
-      beatDuration: m.beatDuration
-    };
+  function setPitchReadout(deckNum) {
+    const deck = (deckNum === 1) ? engine.deck1 : engine.deck2;
+    const el = (deckNum === 1) ? d1PitchVal : d2PitchVal;
+    const pct = (MixPlanner.deckSpeed(deck) - 1) * 100;
+    if (el) el.textContent = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+  }
+
+  /** SYNC: match the other deck's effective tempo exactly, then snap phase on the audio clock. */
+  function engageSync(slaveNum) {
+    const slaveDeck = (slaveNum === 1) ? engine.deck1 : engine.deck2;
+    const masterDeck = (slaveNum === 1) ? engine.deck2 : engine.deck1;
+    const slaveTrack = (slaveNum === 1) ? track1Data : track2Data;
+    const masterTrack = (slaveNum === 1) ? track2Data : track1Data;
+    const rate = MixPlanner.deckBpm(masterTrack, masterDeck) / (slaveTrack.bpm * slaveDeck.audio.tempoRatio);
+    slaveDeck.setPlaybackRate(rate);
+    setPitchReadout(slaveNum);
+    if (masterDeck.isPlaying && slaveDeck.isPlaying) {
+      const when = engine.ctx.currentTime + 0.05;
+      slaveDeck.play(when, alignedPosition(masterDeck, masterTrack, slaveDeck, slaveTrack, when));
+    }
   }
 
   function updatePhaseMeterHUD(errorMs) {
@@ -2057,90 +1604,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  function applyPhaseLockLoop(masterDeck, masterTrack, slaveDeck, slaveTrack, baseSyncRate, allowMicroSeek = true) {
-    if (!masterTrack || !slaveTrack) return;
-    const tMaster = masterDeck.audio.currentTime;
-    const tSlave = slaveDeck.audio.currentTime;
-
-    const { phaseDiff, errorMs } = computePhaseError(masterTrack, tMaster, slaveTrack, tSlave);
-
-    // 1. Gross error: micro-seek ONLY when explicitly allowed (never during active transitions to avoid rotating track)
-    if (allowMicroSeek && Math.abs(errorMs) > 80 && !slaveDeck.audio.seeking) {
-      const m = getDeckPhase(masterTrack, tMaster);
-      const s = getDeckPhase(slaveTrack, tSlave);
-      const targetTime = s.currentBeat + (m.phase * s.beatDuration);
-      if (Math.abs(targetTime - tSlave) > 0.04) {
-        slaveDeck.audio.currentTime = targetTime;
-        updatePhaseMeterHUD(0);
-        return;
+  [[1, d1BtnSync], [2, d2BtnSync]].forEach(([deckNum, btn]) => {
+    btn.addEventListener('click', () => {
+      if (!track1Data || !track2Data) return;
+      const isNowActive = !btn.classList.contains('active');
+      btn.classList.toggle('active', isNowActive);
+      if (deckNum === 1) isDeck1SyncLocked = isNowActive;
+      else isDeck2SyncLocked = isNowActive;
+      if (isNowActive) {
+        engageSync(deckNum);
+        transitionStatusBanner.textContent = `🎯 DECK ${deckNum} BEAT SYNC LOCKED (TEMPO MATCHED, PHASE SNAPPED ON THE AUDIO CLOCK)`;
+      } else {
+        transitionStatusBanner.textContent = `DECK ${deckNum} BEAT SYNC DISENGAGED`;
       }
-    }
-
-    // 2. Proportional Pitch Nudge (proportional closed-loop rate steering)
-    let activeRate = baseSyncRate;
-    if (Math.abs(errorMs) > 2.0) {
-      const kP = 0.45; // Proportional feedback gain
-      const correction = 1.0 - (phaseDiff * kP);
-      const clamped = Math.max(0.92, Math.min(1.08, correction));
-      activeRate = baseSyncRate * clamped;
-    }
-    slaveDeck.setPlaybackRate(activeRate);
-
-    // Real-time pitch readout feedback
-    if (slaveDeck === engine.deck1 && d1PitchVal) {
-      d1PitchVal.textContent = `${((activeRate - 1) * 100).toFixed(1)}%`;
-    } else if (slaveDeck === engine.deck2 && d2PitchVal) {
-      d2PitchVal.textContent = `${((activeRate - 1) * 100).toFixed(1)}%`;
-    }
-
-    // 3. Update Visual Phase Meter HUD
-    updatePhaseMeterHUD(errorMs);
-  }
-
-  d1BtnSync.addEventListener('click', () => {
-    if (!track1Data || !track2Data) return;
-    const isNowActive = !d1BtnSync.classList.contains('active');
-    d1BtnSync.classList.toggle('active', isNowActive);
-    isDeck1SyncLocked = isNowActive;
-
-    if (isNowActive) {
-      const baseRate = track2Data.bpm / track1Data.bpm;
-      engine.deck1.setPlaybackRate(baseRate);
-      d1PitchVal.textContent = `${((baseRate - 1) * 100).toFixed(1)}%`;
-
-      // Instant Phase Snap to Deck 2's Beat
-      if (engine.deck2.isPlaying) {
-        const m = getDeckPhase(track2Data, engine.deck2.audio.currentTime);
-        const s = getDeckPhase(track1Data, engine.deck1.audio.currentTime);
-        engine.deck1.audio.currentTime = s.currentBeat + (m.phase * s.beatDuration);
-      }
-      transitionStatusBanner.textContent = '🎯 DECK 1 BEAT SYNC LOCKED (CLOSED-LOOP PLL ACTIVE)';
-    } else {
-      transitionStatusBanner.textContent = 'DECK 1 BEAT SYNC DISENGAGED';
-    }
-  });
-
-  d2BtnSync.addEventListener('click', () => {
-    if (!track1Data || !track2Data) return;
-    const isNowActive = !d2BtnSync.classList.contains('active');
-    d2BtnSync.classList.toggle('active', isNowActive);
-    isDeck2SyncLocked = isNowActive;
-
-    if (isNowActive) {
-      const baseRate = track1Data.bpm / track2Data.bpm;
-      engine.deck2.setPlaybackRate(baseRate);
-      d2PitchVal.textContent = `${((baseRate - 1) * 100).toFixed(1)}%`;
-
-      // Instant Phase Snap to Deck 1's Beat
-      if (engine.deck1.isPlaying) {
-        const m = getDeckPhase(track1Data, engine.deck1.audio.currentTime);
-        const s = getDeckPhase(track2Data, engine.deck2.audio.currentTime);
-        engine.deck2.audio.currentTime = s.currentBeat + (m.phase * s.beatDuration);
-      }
-      transitionStatusBanner.textContent = '🎯 DECK 2 BEAT SYNC LOCKED (CLOSED-LOOP PLL ACTIVE)';
-    } else {
-      transitionStatusBanner.textContent = 'DECK 2 BEAT SYNC DISENGAGED';
-    }
+    });
   });
 
   // Tempo sliders
@@ -2151,7 +1628,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const pct = parseFloat(e.target.value);
     engine.deck1.setPlaybackRate(1 + (pct / 100));
-    d1PitchVal.textContent = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+    setPitchReadout(1);
   });
   d2TempoFader.addEventListener('input', (e) => {
     if (isDeck2SyncLocked) {
@@ -2160,7 +1637,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     const pct = parseFloat(e.target.value);
     engine.deck2.setPlaybackRate(1 + (pct / 100));
-    d2PitchVal.textContent = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
+    setPitchReadout(2);
   });
 
   // --- Master 3-Band EQ & Kill Engine ---
@@ -2333,12 +1810,48 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // ─── Manual beat-grid correction (persisted in the server's analysis cache) ───
+  document.querySelectorAll('.grid-nudge-strip').forEach(strip => {
+    const deckNum = parseInt(strip.dataset.deck, 10);
+    strip.querySelectorAll('.btn-grid').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const track = (deckNum === 1) ? track1Data : track2Data;
+        if (!track || !track.grid) {
+          transitionStatusBanner.textContent = `DECK ${deckNum}: NO ANALYZED GRID YET`;
+          return;
+        }
+        try {
+          const res = await fetch('/api/grid-adjust', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              file_id: track.file_id,
+              shift_ms: parseFloat(btn.dataset.shiftMs || 0),
+              shift_beats: parseInt(btn.dataset.shiftBeats || 0, 10),
+              shift_bars: parseInt(btn.dataset.shiftBars || 0, 10),
+            }),
+          });
+          if (!res.ok) throw new Error(`Server returned ${res.status}`);
+          const data = await res.json();
+          Object.assign(track, data.track);
+          track.hot_cues = computeTrackHotCues(track);
+          (deckNum === 1 ? wave1 : wave2).loadTrack(track);
+          const g = track.grid;
+          transitionStatusBanner.textContent = `DECK ${deckNum} GRID: first beat ${(g.first_beat * 1000).toFixed(1)} ms, ` +
+            `downbeat on beat ${g.downbeat_offset + 1}, phrases from bar ${g.phrase_offset_bars + 1}`;
+        } catch (e) {
+          transitionStatusBanner.textContent = `DECK ${deckNum} GRID ADJUST FAILED: ${e.message}`;
+        }
+      });
+    });
+  });
+
   // ─── Jev Blueprint: Abort & Manual Override Buttons ───
   const btnAbortTransition = document.getElementById('btn-abort-transition');
   const btnManualOverride = document.getElementById('btn-manual-override');
   if (btnAbortTransition) {
     btnAbortTransition.addEventListener('click', () => {
-      abortBlueprintTransition();
+      abortTransition();
     });
   }
   if (btnManualOverride) {
@@ -2348,7 +1861,104 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- THE PRO TRANSITION PERFORMANCE ---
-  btnTriggerTransition.addEventListener('click', async () => {
+  // Planned on the fitted beat grid (mix_planner.js), executed on the audio clock: the incoming
+  // deck starts with AudioBufferSourceNode.start(T) and every fader/EQ move is AudioParam
+  // automation relative to T. Timers only drive the UI and one-shot FX.
+  const CUT_TECHNIQUES = new Set(['echo_freeze', 'vinyl_brake', 'spinback', 'noise_riser',
+                                  'loop_roll', 'festival_drop', 'hard_cut']);
+  let activeTransition = null;
+
+  function camelotCompatible(a, b) {
+    if (!a || !b) return true;
+    const na = parseInt(a, 10), nb = parseInt(b, 10);
+    const d = (nb - na + 12) % 12;
+    return na === nb || (a.slice(-1) === b.slice(-1) && (d === 1 || d === 11));
+  }
+
+  // Keylocked (server time-stretched) copies of tracks, keyed by file and tempo ratio
+  const stretchCache = new Map();
+  function stretchedBuffer(track, ratio) {
+    ratio = Math.round(ratio * 1e6) / 1e6;
+    const key = `${track.file_id}@${ratio}`;
+    if (!stretchCache.has(key)) {
+      if (stretchCache.size >= 3) stretchCache.delete(stretchCache.keys().next().value);
+      stretchCache.set(key, fetch(`/api/stretched/${encodeURIComponent(track.file_id)}?ratio=${ratio}`)
+        .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
+        .then(ab => engine.ctx.decodeAudioData(ab))
+        .catch(err => {
+          console.warn('Keylock stretch unavailable (vinyl tempo fallback):', err);
+          stretchCache.delete(key);
+          return null;
+        }));
+    }
+    return stretchCache.get(key);
+  }
+
+  /** Start rendering the next incoming track at the current master tempo before it's needed. */
+  function prefetchIncoming() {
+    if (!track1Data || !track2Data || isTransitioning) return;
+    const isDir1to2 = (transitionDirection === '1_to_2');
+    const outTrack = isDir1to2 ? track1Data : track2Data;
+    const inTrack = isDir1to2 ? track2Data : track1Data;
+    if (!inTrack.grid || !outTrack.grid) return;
+    const ratio = MixPlanner.deckBpm(outTrack, isDir1to2 ? engine.deck1 : engine.deck2) / inTrack.bpm;
+    if (Math.abs(ratio - 1) >= 0.0005 && Math.abs(ratio - 1) <= MixPlanner.MAX_STRETCH) {
+      stretchedBuffer(inTrack, ratio);
+    }
+  }
+
+  function setPlayUI(btn, playing) {
+    btn.classList.toggle('playing', playing);
+    btn.textContent = playing ? '⏸ PAUSE' : '▶ PLAY';
+  }
+
+  function atCtx(t, ctxTime, fn) {
+    t.timers.push(setTimeout(fn, Math.max(0, (ctxTime - engine.ctx.currentTime) * 1000)));
+  }
+
+  function clearTransitionTimers(t) {
+    t.timers.forEach(clearTimeout);
+    t.intervals.forEach(clearInterval);
+  }
+
+  /** Optional AI blueprint. Never blocks: used only if it arrives before the planned start. */
+  function requestBlueprint(t, timeoutMs) {
+    const profileOut = profileTrackForJev(t.outDeckNum);
+    const profileIn = profileTrackForJev(t.inDeckNum);
+    if (!profileOut || !profileIn) return Promise.resolve(null);
+    const cueTime = t.plan.inStartNative;
+    const payload = {
+      profile_out: profileOut,
+      profile_in: profileIn,
+      audio_clip_b64: t.inDeck.sliceAuditionWavBase64(cueTime, 10.0, 16000),
+      audio_mime: 'audio/wav',
+      file_id_in: t.inTrack.file_id,
+      cue_time: cueTime,
+    };
+    const jevKey = jevKeyInput ? jevKeyInput.value.trim() : '';
+    const geminiKey = geminiKeyInput ? geminiKeyInput.value.trim() : '';
+    if (jevKey) payload.jev_api_key = jevKey;
+    if (geminiKey) payload.gemini_api_key = geminiKey;
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), timeoutMs);
+    return fetch('/api/jev-blueprint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    })
+      .then(r => (r.ok ? r.json() : null))
+      .then(d => {
+        const bp = d && d.status === 'success' ? d.blueprint : null;
+        if (bp && bp.meta && bp.meta.audition_heard && auditionFeedbackText) {
+          auditionFeedbackText.textContent = `🎧 HEARD: ${bp.meta.audition_heard}`;
+        }
+        return bp && bp.keyframes ? bp : null;
+      })
+      .catch(() => null);
+  }
+
+  btnTriggerTransition.addEventListener('click', () => {
     unlockAudio();
     if (!track1Data || !track2Data) {
       alert('Please load both Deck 1 and Deck 2 first!');
@@ -2356,953 +1966,276 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (isTransitioning) return;
 
-    isTransitioning = true;
-    btnTriggerTransition.classList.add('in-transition');
-
     const isDir1to2 = (transitionDirection === '1_to_2');
-    const outTrack = isDir1to2 ? track1Data : track2Data;
-    const inTrack = isDir1to2 ? track2Data : track1Data;
-    const outDeck = isDir1to2 ? engine.deck1 : engine.deck2;
-    const inDeck = isDir1to2 ? engine.deck2 : engine.deck1;
-    const outDeckNum = isDir1to2 ? 1 : 2;
-    const inDeckNum = isDir1to2 ? 2 : 1;
-    const outBtnPlay = isDir1to2 ? d1BtnPlay : d2BtnPlay;
-    const inBtnPlay = isDir1to2 ? d2BtnPlay : d1BtnPlay;
-    const outFilter = isDir1to2 ? d1Filter : d2Filter;
-    const inPitchVal = isDir1to2 ? d2PitchVal : d1PitchVal;
-    const outDeckName = isDir1to2 ? 'DECK 1' : 'DECK 2';
-    const inDeckName = isDir1to2 ? 'DECK 2' : 'DECK 1';
-    // Crossfader: LOCKED PERMANENTLY AT 50% CENTER
-    if (crossfader) {
-      crossfader.value = 50;
+    const t = {
+      outTrack: isDir1to2 ? track1Data : track2Data,
+      inTrack: isDir1to2 ? track2Data : track1Data,
+      outDeck: isDir1to2 ? engine.deck1 : engine.deck2,
+      inDeck: isDir1to2 ? engine.deck2 : engine.deck1,
+      outDeckNum: isDir1to2 ? 1 : 2,
+      inDeckNum: isDir1to2 ? 2 : 1,
+      outBtnPlay: isDir1to2 ? d1BtnPlay : d2BtnPlay,
+      inBtnPlay: isDir1to2 ? d2BtnPlay : d1BtnPlay,
+      inName: isDir1to2 ? 'DECK 2' : 'DECK 1',
+      timers: [],
+      intervals: [],
+    };
+    if (!t.outDeck.audio.buffer || !t.inDeck.audio.nativeBuffer) {
+      transitionStatusBanner.textContent = 'STILL DECODING AUDIO: TRY AGAIN IN A MOMENT';
+      return;
     }
-    engine.setCrossfader(50, 'club');
 
-    let effectiveTech = selectedTechnique === 'auto'
+    isTransitioning = true;
+    activeTransition = t;
+    btnTriggerTransition.classList.add('in-transition');
+    if (crossfader) crossfader.value = 50;
+    engine.setCrossfader(50, 'club');
+    ['btn-abort-transition', 'btn-manual-override'].forEach(id => {
+      const b = document.getElementById(id);
+      if (b) b.style.display = 'inline-block';
+    });
+
+    // Blend by default. Effects/cuts only when chosen, or when the tempos are too far apart
+    // to run at one master tempo (then the tracks must not overlap at all).
+    let tech = selectedTechnique === 'auto'
       ? (currentAIRec ? currentAIRec.recommended_technique : 'bass_swap')
       : selectedTechnique;
+    const tempoGap = Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1);
+    if (!CUT_TECHNIQUES.has(tech) && tempoGap > MixPlanner.MAX_STRETCH) tech = 'echo_freeze';
+    t.tech = tech;
+    t.blend = !CUT_TECHNIQUES.has(tech);
 
-    transitionStatusBanner.textContent = `EXECUTING ${effectiveTech.toUpperCase()} (${outDeckName} ➔ ${inDeckName})...`;
-
-    const tempoRamp = document.getElementById('toggle-tempo-ramp').checked;
-    const harmonicLock = document.getElementById('toggle-harmonic').checked;
-    const neuralStems = document.getElementById('toggle-neural-stems').checked;
-    const bars = selectedBars;
-
-    // ═══════════════════════════════════════════════════
-    // JEV AUTONOMOUS BRAIN: Blueprint-driven transition
-    // When Jev is available and technique is 'auto', let Jev compose
-    // the entire transition from scratch with full parameter control.
-    // ═══════════════════════════════════════════════════
-    const jevKeyForBlueprint = jevKeyInput ? jevKeyInput.value.trim() : (localStorage.getItem('jev_api_key') || '');
-    const geminiKeyForBlueprint = geminiKeyInput ? geminiKeyInput.value.trim() : (localStorage.getItem('gemini_api_key') || '');
-    const hasAIEngine = Boolean(serverHasJev || serverHasGemini || jevKeyForBlueprint || geminiKeyForBlueprint || (aiSourceBadge && !aiSourceBadge.textContent.includes('Local')));
-    const isJevBlueprintMode = hasAIEngine && (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap');
-
-    if (isJevBlueprintMode) {
-      // Profile both tracks client-side
-      const profileOut = profileTrackForJev(outDeckNum);
-      const profileIn = profileTrackForJev(inDeckNum);
-
-      if (profileOut && profileIn) {
-        // Target Hot Cue for Background Pre-Fade Auditioning
-        const targetCueTime = (inTrack.suggested_cue_intro || 0);
-
-        // Visual AI Headphone Audition Monitor in UI
-        if (aiAuditionMonitor) {
-          aiAuditionMonitor.classList.remove('hidden');
-          if (auditionBadge) auditionBadge.textContent = `${inDeckName} @ CUE (${formatTime(targetCueTime)})`;
-          if (auditionFeedbackText) auditionFeedbackText.textContent = `🎧 Auditioning ${inTrack.title || inDeckName} in background headphones...`;
-        }
-
-        // Animate PFL Audition VU meter
-        const pflInterval = setInterval(() => {
-          if (auditionMeterFill) {
-            const vu = (engine && engine.getPflVULevel) ? engine.getPflVULevel() : Math.floor(Math.random() * 50 + 35);
-            auditionMeterFill.style.width = `${Math.min(100, Math.max(15, vu))}%`;
-          }
-        }, 80);
-
-        // Extract 10-second high-fidelity audition slice from incoming deck's AudioBuffer
-        let audioClipB64 = null;
-        if (inDeck && inDeck.sliceAuditionWavBase64) {
-          audioClipB64 = inDeck.sliceAuditionWavBase64(targetCueTime, 10.0, 16000);
-        }
-
-        transitionStatusBanner.textContent = '🎧 JEV AUDITIONING INCOMING TRACK IN HEADPHONES (PRE-FADE LISTEN)...';
-        btnTriggerTransition.classList.add('in-transition');
-        isTransitioning = true;
-
-        try {
-          const bpPayload = {
-            profile_out: profileOut,
-            profile_in: profileIn,
-            audio_clip_b64: audioClipB64,
-            audio_mime: 'audio/wav',
-            file_id_in: inTrack.file_id,
-            cue_time: targetCueTime,
-          };
-          if (jevKeyForBlueprint) bpPayload.jev_api_key = jevKeyForBlueprint;
-          if (geminiKeyForBlueprint) bpPayload.gemini_api_key = geminiKeyForBlueprint;
-
-          // 18-second abort timeout so the UI never hangs indefinitely while AI auditions audio
-          const controller = new AbortController();
-          const timeoutId = setTimeout(() => controller.abort(), 18000);
-
-          const bpRes = await fetch('/api/jev-blueprint', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(bpPayload),
-            signal: controller.signal
-          });
-          clearTimeout(timeoutId);
-          clearInterval(pflInterval);
-
-          if (!bpRes.ok) {
-            throw new Error(`Server returned ${bpRes.status}`);
-          }
-          const bpData = await bpRes.json();
-
-          if (bpData.status === 'success' && bpData.blueprint) {
-            const bp = bpData.blueprint;
-            console.log(`⚡ Jev Blueprint received: ${(bp.meta.active_blocks || []).join(' + ')} over ${bp.meta.transition_bars} bars (${bp.meta.total_pipeline_ms || 0}ms)`);
-            if (bp.meta && bp.meta.audition_heard) {
-              console.log(`🎧 Jev Headphone Audition Heard: ${bp.meta.audition_heard}`);
-              if (auditionFeedbackText) {
-                auditionFeedbackText.textContent = `🎧 HEARD: ${bp.meta.audition_heard}`;
-              }
-              transitionStatusBanner.textContent = `🎧 JEV HEARD: ${bp.meta.audition_heard}`;
-            }
-
-            // Keep audition monitor visible briefly during stage 1 to show DJ what Jev heard
-            setTimeout(() => {
-              if (aiAuditionMonitor && !isTransitioning) aiAuditionMonitor.classList.add('hidden');
-            }, 6000);
-
-            // Execute the blueprint
-            executeBlueprintTransition(
-              bp, outDeck, inDeck, outTrack, inTrack,
-              outDeckNum, inDeckNum, isDir1to2,
-              outBtnPlay, inBtnPlay, outFilter, inPitchVal
-            );
-            return;  // Blueprint path handles everything from here
-          } else {
-            console.warn('Jev blueprint failed, falling through to standard techniques');
-            transitionStatusBanner.textContent = '⚠️ Jev blueprint empty, using standard technique...';
-          }
-        } catch (bpErr) {
-          clearInterval(pflInterval);
-          if (aiAuditionMonitor) aiAuditionMonitor.classList.add('hidden');
-          console.warn('Jev blueprint fetch error:', bpErr);
-          transitionStatusBanner.textContent = '⚠️ Jev timed out/unavailable, using standard technique...';
-        }
-      }
+    // The plan is expressed in the outgoing deck's clock, so it must be running
+    if (!t.outDeck.isPlaying) {
+      t.outDeck.play();
+      setPlayUI(t.outBtnPlay, true);
     }
 
-    // Start background lossless WAV render
-    const renderPromise = (async () => {
+    const bars = selectedBars;
+    const leadIn = {
+      vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
+      festival_drop: 4 * Math.min(bars, 8),
+    }[tech] || 0;  // beats of outgoing FX before the drop
+    const beatSecNow = 60 / MixPlanner.deckBpm(t.outTrack, t.outDeck);
+    t.plan = MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars, {
+      now: engine.ctx.currentTime,
+      leadSec: t.blend ? 3.0 : leadIn * beatSecNow + 1.0,
+      blend: t.blend,
+      keyClash: !camelotCompatible(t.outTrack.camelot, t.inTrack.camelot),
+      phraseLock: togglePhraseLock ? togglePhraseLock.checked : true,
+    });
+    t.leadInSec = leadIn * t.plan.beatSec;
+    if (!t.inTrack.grid || !t.outTrack.grid) console.warn('Beat grid not analyzed yet: using an estimated grid');
+
+    // Incoming at the master tempo, keylocked (usually prefetched already)
+    t.bufferPromise = (t.blend && Math.abs(t.plan.tempoRatio - 1) >= 0.0005)
+      ? stretchedBuffer(t.inTrack, t.plan.tempoRatio)
+      : Promise.resolve(null);
+
+    // AI blueprint runs in parallel with the countdown and is dropped if it's late
+    t.blueprint = null;
+    const hasAIEngine = Boolean(serverHasJev || serverHasGemini ||
+      (jevKeyInput && jevKeyInput.value.trim()) || (geminiKeyInput && geminiKeyInput.value.trim()));
+    const budgetMs = (t.plan.startCtx - engine.ctx.currentTime - 1.0) * 1000;
+    if (t.blend && hasAIEngine && (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap') && budgetMs > 1500) {
+      requestBlueprint(t, budgetMs).then(bp => { if (activeTransition === t) t.blueprint = bp; });
+    }
+
+    // Background lossless export of the same transition
+    t.renderPromise = (async () => {
       const form = new FormData();
       form.append('file_id_1', track1Data.file_id);
       form.append('file_id_2', track2Data.file_id);
       form.append('direction', transitionDirection);
-      form.append('technique', effectiveTech);
-      form.append('bars', bars);
-      form.append('tempo_ramp', tempoRamp);
-      form.append('harmonic_lock', harmonicLock);
-      form.append('use_stems', neuralStems);
-      form.append('cue_1', isDir1to2 ? (engine.deck1.audio.currentTime || track1Data.suggested_cue_outro) : track1Data.suggested_cue_intro);
-      form.append('cue_2', isDir1to2 ? track2Data.suggested_cue_intro : (engine.deck2.audio.currentTime || track2Data.suggested_cue_outro));
-
+      form.append('technique', tech);
+      form.append('bars', t.plan.bars);
+      form.append('tempo_ramp', document.getElementById('toggle-tempo-ramp').checked);
+      form.append('harmonic_lock', document.getElementById('toggle-harmonic').checked);
+      form.append('use_stems', document.getElementById('toggle-neural-stems').checked);
+      form.append('cue_1', isDir1to2 ? t.plan.exitNative : t.plan.inStartNative);
+      form.append('cue_2', isDir1to2 ? t.plan.inStartNative : t.plan.exitNative);
       const res = await fetch('/api/render-mix', { method: 'POST', body: form });
       return await res.json();
     })();
 
-    // Ensure Outgoing Deck is playing
-    if (!outDeck.isPlaying) {
-      outDeck.play();
-      outBtnPlay.classList.add('playing');
-      outBtnPlay.textContent = '⏸ PAUSE';
-    }
+    startTransitionHud(t);
+    // Arm shortly before the first outgoing FX (or the start): from then on it's all scheduled
+    atCtx(t, t.plan.startCtx - t.leadInSec - 0.4, () => armTransition(t));
+  });
 
-    // -------------------------------------------------------------
-    // CONTENT-AWARE PHRASE LOCKING & HUD COUNTDOWN
-    // Uses section_map energy contour to pick the best exit point
-    // -------------------------------------------------------------
-    const curTime = outDeck.audio.currentTime;
-    const spb = 60.0 / outTrack.bpm;
-    const isPhraseLock = togglePhraseLock ? togglePhraseLock.checked : true;
-    let targetDropTime = null;
-
-    if (isPhraseLock) {
-      // Try content-aware selection first (uses energy, vocals, section type)
-      const smartPoint = findBestTransitionPoint(outTrack, curTime, bars);
-      if (smartPoint) {
-        targetDropTime = smartPoint;
-      } else {
-        const phrases = (bars >= 16 && outTrack.phrase_16_times && outTrack.phrase_16_times.length > 0)
-          ? outTrack.phrase_16_times
-          : (outTrack.phrase_8_times || outTrack.downbeat_times || []);
-        for (let pt of phrases) {
-          if (pt > curTime + 0.5) {
-            targetDropTime = pt;
-            break;
-          }
-        }
-      }
-    }
-
-    if (!targetDropTime && outTrack.downbeat_times && outTrack.downbeat_times.length > 0) {
-      for (let db of outTrack.downbeat_times) {
-        if (db > curTime + 0.3) {
-          targetDropTime = db;
-          break;
-        }
-      }
-    }
-
-    if (!targetDropTime) {
-      const beatNum = Math.ceil(curTime / spb);
-      const nextBarBeat = Math.ceil((beatNum + 1) / 4) * 4;
-      targetDropTime = nextBarBeat * spb;
-    }
-
-    // Auto-detect vocal overlap and switch technique if needed
-    if (effectiveTech === 'bass_swap' || effectiveTech === 'auto') {
-      const blendDur = bars * 4 * spb;
-      const introCueForCheck = getTrackIntroCue(inTrack);
-      if (detectVocalOverlap(outTrack, targetDropTime, inTrack, introCueForCheck, blendDur)) {
-        console.log('⚠️ Vocal overlap detected in blend zone — switching to echo_freeze');
-        transitionStatusBanner.textContent = '⚠️ VOCAL CLASH DETECTED — SWITCHING TO ECHO FREEZE...';
-        effectiveTech = 'echo_freeze';
-      }
-    }
-
-    const waitMs = Math.max(100, Math.min(20000, (targetDropTime - curTime) * 1000));
-    
-    // Activate CDJ-Style Phrase Countdown HUD
+  function startTransitionHud(t) {
+    const p = t.plan;
+    const total0 = Math.max(0.001, p.startCtx - engine.ctx.currentTime);
+    const label = t.blend ? `${p.bars}-BAR BLEND` : t.tech.toUpperCase().replace(/_/g, ' ');
     phraseHud.classList.remove('hidden');
-    const hudStartTime = performance.now();
-    const hudInterval = setInterval(() => {
-      const elapsedMs = performance.now() - hudStartTime;
-      const remainMs = Math.max(0, waitMs - elapsedMs);
-      const progress = Math.min(1.0, elapsedMs / waitMs);
-      
-      const remainBeats = remainMs / (spb * 1000);
-      const currentBar = Math.floor(remainBeats / 4);
-      const currentBeat = Math.floor(remainBeats % 4) + 1;
-      
-      if (remainMs <= 250) {
-        phraseHudCounter.textContent = '💥 DROP ON 1!';
-        phraseHudProgress.style.width = '100%';
+    t.intervals.push(setInterval(() => {
+      const remain = p.startCtx - engine.ctx.currentTime;
+      if (remain > 0) {
+        const beats = remain / p.beatSec;
+        phraseHudCounter.textContent = `IN ON THE 1: ${Math.floor(beats / 4)} BARS (${Math.floor(beats % 4) + 1}/4)`;
+        phraseHudProgress.style.width = `${(100 * (1 - remain / total0)).toFixed(1)}%`;
+        transitionStatusBanner.textContent = `🎯 ${label} → ${t.inName} IN ${remain.toFixed(1)}s ` +
+          `@ ${p.masterBpm.toFixed(2)} BPM${p.vocalClash ? ' (VOCAL CLASH: MIDS SWAP WITH BASS)' : ''}`;
       } else {
-        phraseHudCounter.textContent = `DROP IN ${currentBar} BARS (${currentBeat}/4)`;
-        phraseHudProgress.style.width = `${(progress * 100).toFixed(1)}%`;
-      }
-    }, 40);
-
-    transitionStatusBanner.textContent = `🎯 PHRASE LOCKED: DROPPING ON BEAT 1 IN ${(waitMs/1000).toFixed(1)}s...`;
-
-    // -------------------------------------------------------------
-    // LIVE MIXER EXECUTION BY TECHNIQUE
-    // -------------------------------------------------------------
-
-    // TECHNIQUE 1: ECHO FREEZE
-    if (effectiveTech === 'echo_freeze') {
-      setTimeout(() => {
-        clearInterval(hudInterval);
         phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `❄️ ECHO FREEZE ACTIVE: LOW ROLLED OFF & 3/4-BEAT TAPE DELAY ON ${outDeckName}...`;
+        if (t.blend && t.marks) {
+          const now = engine.ctx.currentTime;
+          const bar = Math.min(p.bars, Math.floor(-remain / (4 * p.beatSec)) + 1);
+          const stage = now < t.marks.swap ? 'HATS & MIDS IN' : 'BASS SWAPPED ON THE 1, OUTGOING OUT';
+          transitionStatusBanner.textContent =
+            `🎚️ ${t.blueprint ? 'AI BLUEPRINT' : 'BLEND'} BAR ${bar}/${p.bars}: ${stage}`;
+        }
+      }
+    }, 50));
+  }
 
-        // Smoothly roll off low end on outgoing deck without harsh kill LED
+  async function armTransition(t) {
+    if (activeTransition !== t) return;
+    const p = t.plan;
+    if (t.blend) {
+      const waitMs = Math.max(0, (p.startCtx - 0.08 - engine.ctx.currentTime) * 1000);
+      t.stretched = await Promise.race([t.bufferPromise, new Promise(r => setTimeout(() => r(null), waitMs))]);
+      if (activeTransition !== t) return;
+    }
+    // Missed the slot (busy tab)? Slide by whole bars so the start stays on a downbeat
+    const barSec = 4 * p.beatSec;
+    while (p.startCtx - t.leadInSec < engine.ctx.currentTime + 0.03) {
+      p.startCtx += barSec;
+      p.exitNative += barSec * MixPlanner.deckSpeed(t.outDeck);
+    }
+
+    const inDeck = t.inDeck;
+    inDeck.pause();
+    inDeck.setPlaybackRate(1.0);
+    if (t.blend && Math.abs(p.tempoRatio - 1) >= 0.0005) {
+      if (t.stretched) {
+        inDeck.audio.useBuffer(t.stretched, p.tempoRatio);
+      } else {
+        // Tempo still exact, but pitch follows (vinyl) until a keylocked copy is available
+        inDeck.audio.useBuffer(inDeck.audio.nativeBuffer, 1.0);
+        inDeck.audio.playbackRate = p.tempoRatio;
+        console.warn('Keylocked incoming not ready: vinyl tempo match for this transition');
+      }
+    } else {
+      inDeck.audio.useBuffer(inDeck.audio.nativeBuffer, 1.0);
+    }
+    setPitchReadout(t.inDeckNum);
+    if (t.blend) runBlend(t); else runCut(t);
+  }
+
+  function runBlend(t) {
+    const p = t.plan;
+    const T = p.startCtx;
+    t.inDeck.play(T, p.inStartNative);
+    t.marks = t.blueprint
+      ? MixPlanner.scheduleBlueprint(t.blueprint, p, t.outDeck, t.inDeck)
+      : MixPlanner.scheduleBlend(p, t.outDeck, t.inDeck);
+    atCtx(t, T, () => setPlayUI(t.inBtnPlay, true));
+    if (t.blueprint) {
+      const fxState = {};
+      t.intervals.push(setInterval(() => {
+        const prog = (engine.ctx.currentTime - T) / p.blendSec;
+        if (prog >= 0 && prog <= 1) triggerBlueprintEffects(t.blueprint, prog, fxState, t.outDeck, t.inDeck, t.outTrack);
+      }, 25));
+    }
+    atCtx(t, t.marks.end + 0.05, () => completeTransition(t));
+  }
+
+  /** Overlap-free techniques: outgoing FX lead in, incoming drops on the 1 at its native tempo. */
+  function runCut(t) {
+    const p = t.plan;
+    const T = p.startCtx;
+    const beat = p.beatSec;
+    const bar = 4 * beat;
+    const bpm = p.masterBpm;
+    const { outDeck, inDeck, outDeckNum } = t;
+
+    MixPlanner.neutral(inDeck, T - 0.05, 1);
+    inDeck.play(T, getTrackIntroCue(t.inTrack));
+    let cutTime = T;
+    let tail = 0.1;
+
+    if (t.tech === 'echo_freeze') {
+      atCtx(t, T, () => {
         applyDeckEQ(outDeckNum, 'low', -24);
         applyDeckEQ(outDeckNum, 'mid', -6);
-
-        outDeck.triggerEchoFreeze(outTrack.bpm, 4.5);
-        outBtnPlay.classList.remove('playing');
-        outBtnPlay.textContent = '▶ PLAY';
-
-        // Crossfader remains permanently centered at 50%
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-        outDeck.setVolume(0);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-        inDeck.setVolume(100);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-
-        // Ensure incoming deck drops with pristine 0 dB EQs and beat-aligned cue
-        resetDeckEQs(inDeckNum);
-        const introCue = getTrackIntroCue(inTrack);
-        inDeck.audio.currentTime = introCue;
-        
-        inDeck.play();
-        inBtnPlay.classList.add('playing');
-        inBtnPlay.textContent = '⏸ PAUSE';
-
-        // Gradually fade remaining bands on outgoing as wash decays
-        setTimeout(() => {
-          applyDeckEQ(outDeckNum, 'mid', -24);
-          applyDeckEQ(outDeckNum, 'hi', -24);
-          resetDeckEQs(outDeckNum);
-        }, 2200);
-
-        finishTransition(renderPromise);
-      }, waitMs);
-      return;
-    }
-
-    // TECHNIQUE 2: VINYL BRAKE
-    if (effectiveTech === 'vinyl_brake') {
-      setTimeout(() => {
-        clearInterval(hudInterval);
-        phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `⚡ VINYL BRAKE: ${outDeckName} LOW ROLLED OFF & MOTOR SHUTDOWN...`;
-
-        applyDeckEQ(outDeckNum, 'low', -24);
-
-        let rate = 1.0;
-        const brakeTimer = setInterval(() => {
-          rate -= 0.12;
-          if (rate <= 0.05) {
-            clearInterval(brakeTimer);
-            outDeck.pause();
-            outBtnPlay.classList.remove('playing');
-            outBtnPlay.textContent = '▶ PLAY';
-
-            resetDeckEQs(outDeckNum);
-
-            // Crossfader remains permanently centered at 50%
-            crossfader.value = 50;
-            engine.setCrossfader(50, 'club');
-            outDeck.setVolume(0);
-            if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-            if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-            inDeck.setVolume(100);
-            if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-            if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-
-            resetDeckEQs(inDeckNum);
-
-            const introCue = getTrackIntroCue(inTrack);
-            inDeck.audio.currentTime = introCue;
-
-            inDeck.play();
-            inBtnPlay.classList.add('playing');
-            inBtnPlay.textContent = '⏸ PAUSE';
-
-            finishTransition(renderPromise);
-          } else {
-            outDeck.setPlaybackRate(rate);
-          }
-        }, 90);
-      }, waitMs);
-      return;
-    }
-
-    // TECHNIQUE 3: VINYL SPINBACK
-    if (effectiveTech === 'spinback') {
-      const spinDurationSec = 1.2;
-      const spinLeadMs = Math.max(0, waitMs - (spinDurationSec * 1000));
-      
-      setTimeout(() => {
-        transitionStatusBanner.textContent = `💫 VINYL SPINBACK: ${outDeckName} LOW ROLLED OFF & REVERSE SCRUB...`;
-        applyDeckEQ(outDeckNum, 'low', -24);
-        outDeck.triggerSpinback(spinDurationSec, () => {
-          outBtnPlay.classList.remove('playing');
-          outBtnPlay.textContent = '▶ PLAY';
-          resetDeckEQs(outDeckNum);
-        });
-      }, spinLeadMs);
-
-      setTimeout(() => {
-        clearInterval(hudInterval);
-        phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `💥 DROP: ${inDeckName} DROPS WITH FULL 3-BAND POWER!`;
-        // Crossfader remains permanently centered at 50%
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-        outDeck.setVolume(0);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-        inDeck.setVolume(100);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-
-        resetDeckEQs(inDeckNum);
-
-        const introCue = getTrackIntroCue(inTrack);
-        inDeck.audio.currentTime = introCue;
-
-        inDeck.play();
-        inBtnPlay.classList.add('playing');
-        inBtnPlay.textContent = '⏸ PAUSE';
-
-        finishTransition(renderPromise);
-      }, waitMs);
-      return;
-    }
-
-    // TECHNIQUE 4: WHITE NOISE HPF RISER
-    if (effectiveTech === 'noise_riser') {
-      const riserBars = 4;
-      const riserDurationMs = riserBars * 4 * spb * 1000;
-      const riserLeadMs = Math.max(0, waitMs - riserDurationMs);
-
-      setTimeout(() => {
-        transitionStatusBanner.textContent = `📈 WHITE NOISE RISER: ${outDeckName} LOW ROLLED OFF & HPF SWELL...`;
-        applyDeckEQ(outDeckNum, 'low', -24);
-        engine.triggerNoiseRiser(outTrack.bpm, riserBars);
-
-        const sweepStart = performance.now();
-        const sweepTimer = setInterval(() => {
-          const el = (performance.now() - sweepStart) / riserDurationMs;
-          if (el >= 1.0) {
-            clearInterval(sweepTimer);
-            outFilter.value = 0;
-            outDeck.setColorFilter(0);
-          } else {
-            const filterVal = Math.floor(el * 45);
-            outFilter.value = filterVal;
-            outDeck.setColorFilter(filterVal);
-            if (el >= 0.92) {
-              applyDeckEQ(outDeckNum, 'mid', -24);
-              applyDeckEQ(outDeckNum, 'hi', -24);
-              transitionStatusBanner.textContent = '🤫 ANTICIPATION GAP (CHANNELS ROLLED OFF)...';
-            }
-          }
-        }, 50);
-      }, riserLeadMs);
-
-      setTimeout(() => {
-        clearInterval(hudInterval);
-        phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `💥 DROP: ${inDeckName} DROPS ON BEAT 1!`;
-        outDeck.pause();
-        outBtnPlay.classList.remove('playing');
-        outBtnPlay.textContent = '▶ PLAY';
-
-        // Crossfader remains permanently centered at 50%
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-        outDeck.setVolume(0);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-        inDeck.setVolume(100);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-        resetDeckEQs(inDeckNum);
-        resetDeckEQs(outDeckNum);
-
-        const introCue = getTrackIntroCue(inTrack);
-        inDeck.audio.currentTime = introCue;
-
-        inDeck.play();
-        inBtnPlay.classList.add('playing');
-        inBtnPlay.textContent = '⏸ PAUSE';
-
-        finishTransition(renderPromise);
-      }, waitMs);
-      return;
-    }
-
-    // TECHNIQUE 5: LOOP ROLL STUTTER & DROP
-    if (effectiveTech === 'loop_roll') {
-      const rollBars = Math.min(bars, 4);
-      const rollDurationMs = rollBars * 4 * spb * 1000;
-      const rollLeadMs = Math.max(0, waitMs - rollDurationMs);
-
-      setTimeout(() => {
-        transitionStatusBanner.textContent = `🌀 LOOP ROLL: ${outDeckName} STUTTER ACCELERATING...`;
-        applyDeckEQ(outDeckNum, 'low', -18);
-
-        outDeck.triggerLoopRoll(outTrack.bpm, rollBars, () => {
-          outDeck.cancelLoopRoll();
-        });
-      }, rollLeadMs);
-
-      setTimeout(() => {
-        clearInterval(hudInterval);
-        phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `💥 DROP: ${inDeckName} DROPS ON BEAT 1!`;
-
-        outDeck.cancelLoopRoll();
-        outDeck.pause();
-        outBtnPlay.classList.remove('playing');
-        outBtnPlay.textContent = '▶ PLAY';
-        resetDeckEQs(outDeckNum);
-        outDeck.resetAllFX();
-
-        // Crossfader remains permanently centered at 50%
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-        outDeck.setVolume(0);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-        inDeck.setVolume(100);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-        resetDeckEQs(inDeckNum);
-
-        const introCue = getTrackIntroCue(inTrack);
-        const mPhase = getDeckPhase(outTrack, outDeck.audio.currentTime);
-        const sPhase = getDeckPhase(inTrack, introCue);
-        inDeck.audio.currentTime = sPhase.currentBeat + (mPhase.phase * sPhase.beatDuration);
-
-        engine.triggerDropImpact(inTrack.bpm);
-        inDeck.play();
-        inBtnPlay.classList.add('playing');
-        inBtnPlay.textContent = '⏸ PAUSE';
-
-        finishTransition(renderPromise);
-      }, waitMs);
-      return;
-    }
-
-    // TECHNIQUE 6: FESTIVAL BUILD & DROP (Multi-Technique Composite)
-    // Layers: HPF Sweep + Loop Roll + White Noise Riser → Pre-Drop Silence → Sub Impact Drop
-    if (effectiveTech === 'festival_drop') {
-      const buildBars = Math.min(bars, 8);
-      const buildDurMs = buildBars * 4 * spb * 1000;
-      const buildLeadMs = Math.max(0, waitMs - buildDurMs);
-
-      setTimeout(() => {
-        transitionStatusBanner.textContent = `🎆 FESTIVAL BUILD: HPF SWEEP + STUTTER ROLL + NOISE RISER ON ${outDeckName}...`;
-
-        // Layer 1: HPF Sweep on outgoing
-        applyDeckEQ(outDeckNum, 'low', -18);
-        const sweepStart = performance.now();
-        const sweepTimer = setInterval(() => {
-          const el = (performance.now() - sweepStart) / buildDurMs;
-          if (el >= 0.95) {
-            clearInterval(sweepTimer);
-            outFilter.value = 0;
-            outDeck.setColorFilter(0);
-          } else {
-            const filterVal = Math.floor(el * 42);
-            outFilter.value = filterVal;
-            outDeck.setColorFilter(filterVal);
-            if (el >= 0.70) {
-              applyDeckEQ(outDeckNum, 'mid', -12 * ((el - 0.70) / 0.25));
-              applyDeckEQ(outDeckNum, 'hi', -8 * ((el - 0.70) / 0.25));
-            }
-          }
-        }, 40);
-
-        // Layer 2: Loop Roll stutter (last 4 bars of build)
-        const rollDelayMs = Math.max(0, buildDurMs - (4 * 4 * spb * 1000));
-        setTimeout(() => {
-          outDeck.triggerLoopRoll(outTrack.bpm, 4);
-        }, rollDelayMs);
-
-        // Layer 3: White Noise Riser (whole build duration)
-        engine.triggerNoiseRiser(outTrack.bpm, buildBars);
-      }, buildLeadMs);
-
-      // Pre-Drop Silence Gap (1 beat before drop)
-      const gapLeadMs = Math.max(0, waitMs - (spb * 1000));
-      setTimeout(() => {
-        transitionStatusBanner.textContent = `🤫 ANTICIPATION GAP...`;
-        outDeck.cancelLoopRoll();
-        outDeck.triggerPreDropGap(spb * 0.9);
-      }, gapLeadMs);
-
-      // THE DROP
-      setTimeout(() => {
-        clearInterval(hudInterval);
-        phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `💥 FESTIVAL DROP: ${inDeckName} FULL POWER!`;
-
-        outDeck.cancelLoopRoll();
-        outDeck.pause();
-        outBtnPlay.classList.remove('playing');
-        outBtnPlay.textContent = '▶ PLAY';
-        resetDeckEQs(outDeckNum);
-        outDeck.resetAllFX();
-        outFilter.value = 0;
-        outDeck.setColorFilter(0);
-
-        // Crossfader remains permanently centered at 50%
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-        outDeck.setVolume(0);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-        inDeck.setVolume(100);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-        resetDeckEQs(inDeckNum);
-
-        const introCue = getTrackIntroCue(inTrack);
-        inDeck.audio.currentTime = introCue;
-
-        engine.triggerDropImpact(inTrack.bpm);
-        inDeck.play();
-        inBtnPlay.classList.add('playing');
-        inBtnPlay.textContent = '⏸ PAUSE';
-
-        finishTransition(renderPromise);
-      }, waitMs);
-      return;
-    }
-
-    // TECHNIQUE 7: HARD CUT (INSTANT DOWNBEAT SNAP)
-    if (effectiveTech === 'hard_cut') {
-      setTimeout(() => {
-        clearInterval(hudInterval);
-        phraseHud.classList.add('hidden');
-        transitionStatusBanner.textContent = `✂️ HARD CUT: INSTANT 0ms SNAP TO ${inDeckName}!`;
-
-        // Instantly mute / pause and reset outgoing deck
-        outDeck.pause();
-        outBtnPlay.classList.remove('playing');
-        outBtnPlay.textContent = '▶ PLAY';
-        resetDeckEQs(outDeckNum);
-        outDeck.resetAllFX();
-        outFilter.value = 0;
-        outDeck.setColorFilter(0);
-
-        // Crossfader remains permanently centered at 50%
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-        outDeck.setVolume(0);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-        inDeck.setVolume(100);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-
-        // Incoming deck starts on the 1 with full punch
-        resetDeckEQs(inDeckNum);
-        const introCue = getTrackIntroCue(inTrack);
-        inDeck.audio.currentTime = introCue;
-
-        // Sub drop impact boom on beat 1 for punch
-        engine.triggerDropImpact(inTrack.bpm);
-        inDeck.play();
-        inBtnPlay.classList.add('playing');
-        inBtnPlay.textContent = '⏸ PAUSE';
-
-        finishTransition(renderPromise);
-      }, waitMs);
-      return;
-    }
-
-    // ===================================================================
-    // TECHNIQUE 8 (DEFAULT): PRO SEAMLESS BLEND
-    // Research-backed imperceptible transition using multi-layer automation:
-    //  - Quintic Smootherstep curves (6t^5 - 15t^4 + 10t^3) for zero-jerk EQ motion
-    //  - Hi-first-in / Hi-last-out EQ management (hi-hats maintain rhythmic continuity)
-    //  - 40% window Linkwitz-Riley equal-power bass crossover (no double-kick mud)
-    //  - Gradual HPF washout on outgoing (35%-95% of transition)
-    //  - Stem-aware vocal formant ducking to prevent vocal clashing
-    //  - Subtle 3/4-beat echo tail on outgoing (from 75%) for spacious wash
-    //  - Closed-loop PLL phase lock throughout
-    // ===================================================================
-    setTimeout(() => {
-      clearInterval(hudInterval);
-      phraseHud.classList.add('hidden');
-
-      // ─── CONTENT-AWARE EQ PARAMS ───
-      const introCue = getTrackIntroCue(inTrack);
-      const blendDurSec = bars * 4 * spb;
-      const eqParams = computeAdaptiveEQParams(outTrack, targetDropTime, inTrack, introCue, blendDurSec);
-
-      // ─── INITIAL EQ STATE ───
-      applyDeckEQ(inDeckNum, 'low', -24);
-      applyDeckEQ(inDeckNum, 'mid', -18);
-      applyDeckEQ(inDeckNum, 'hi', -8);
-      applyDeckEQ(outDeckNum, 'low', 0);
-      applyDeckEQ(outDeckNum, 'mid', 0);
-      applyDeckEQ(outDeckNum, 'hi', 0);
-
-      // ─── VOCAL DUCKING ───
-      const isVocalDuck = toggleVocalDuck ? toggleVocalDuck.checked : true;
-      const useStems = toggleNeuralStems ? toggleNeuralStems.checked : false;
-
-      // ─── PRE-LOCK BEAT ALIGNMENT ───
-      // Snap incoming deck to exact phase BEFORE the blend starts.
-      // This eliminates the need for PLL correction during audible overlap.
-      const syncRate = outTrack.bpm / inTrack.bpm;
-      inDeck.setPlaybackRate(syncRate);
-      inPitchVal.textContent = `${((syncRate - 1) * 100).toFixed(1)}%`;
-
-      const mPhase = getDeckPhase(outTrack, outDeck.audio.currentTime);
-      const sPhase = getDeckPhase(inTrack, introCue);
-      // Phase-align to the exact sub-beat position of the outgoing deck
-      const alignedStartTime = sPhase.currentBeat + (mPhase.phase * sPhase.beatDuration);
-      inDeck.audio.currentTime = alignedStartTime;
-      isTransitionPhaseLocked = true;
-
-      // Verify alignment and micro-correct if needed (pre-blend, so inaudible)
-      requestAnimationFrame(() => {
-        const verifyError = computePhaseError(outTrack, outDeck.audio.currentTime, inTrack, inDeck.audio.currentTime);
-        if (Math.abs(verifyError.errorMs) > 10) {
-          const mRetry = getDeckPhase(outTrack, outDeck.audio.currentTime);
-          const sRetry = getDeckPhase(inTrack, inDeck.audio.currentTime);
-          inDeck.audio.currentTime = sRetry.currentBeat + (mRetry.phase * sRetry.beatDuration);
-        }
+        outDeck.triggerEchoFreeze(bpm, 4.5);
       });
+      cutTime = null;  // the echo freeze gates the dry signal itself
+      tail = 5.0;
+    } else if (t.tech === 'vinyl_brake') {
+      atCtx(t, T - 2 * beat, () => {
+        applyDeckEQ(outDeckNum, 'low', -24);
+        const t0 = engine.ctx.currentTime;
+        const iv = setInterval(() => {
+          const k = (engine.ctx.currentTime - t0) / (2 * beat);
+          if (k >= 1) { clearInterval(iv); return; }
+          outDeck.audio.playbackRate = Math.max(0.02, 1 - k);
+        }, 30);
+        t.intervals.push(iv);
+      });
+    } else if (t.tech === 'spinback') {
+      atCtx(t, T - 3 * beat, () => {
+        applyDeckEQ(outDeckNum, 'low', -24);
+        outDeck.triggerSpinback(3 * beat);
+      });
+    } else if (t.tech === 'noise_riser') {
+      atCtx(t, T - 4 * bar, () => {
+        applyDeckEQ(outDeckNum, 'low', -24);
+        engine.triggerNoiseRiser(bpm, 4);
+      });
+      const f = outDeck.filterHPF.frequency;
+      f.setValueAtTime(20, T - 4 * bar);
+      f.exponentialRampToValueAtTime(1500, T - beat);
+    } else if (t.tech === 'loop_roll') {
+      const rollBars = Math.min(p.bars, 4);
+      atCtx(t, T - rollBars * bar, () => applyDeckEQ(outDeckNum, 'low', -18));
+      outDeck.triggerLoopRoll(bpm, rollBars, null, T - rollBars * bar);
+      atCtx(t, T, () => engine.triggerDropImpact(bpm));
+    } else if (t.tech === 'festival_drop') {
+      const buildBars = Math.min(p.bars, 8);
+      atCtx(t, T - buildBars * bar, () => {
+        applyDeckEQ(outDeckNum, 'low', -18);
+        engine.triggerNoiseRiser(bpm, buildBars);
+      });
+      // Roll (with its HPF sweep) over the last 4 bars, then one beat of silence before the drop
+      outDeck.triggerLoopRoll(bpm, 4 - 0.25, null, T - 4 * bar);
+      cutTime = T - beat;
+      atCtx(t, T, () => engine.triggerDropImpact(bpm));
+    } else if (t.tech === 'hard_cut') {
+      atCtx(t, T, () => engine.triggerDropImpact(bpm));
+    }
+    if (cutTime !== null) MixPlanner.cutAt(outDeck, cutTime);
 
-      // Initialize channel faders for blend: Incoming at 0%, Outgoing at 100%
-      inDeck.setVolume(0);
-      if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-      if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-      outDeck.setVolume(100);
-      if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-      if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
+    atCtx(t, T, () => {
+      setPlayUI(t.inBtnPlay, true);
+      transitionStatusBanner.textContent = `💥 ${t.tech.toUpperCase().replace(/_/g, ' ')}: ${t.inName} DROPS ON THE 1`;
+    });
+    atCtx(t, T + tail, () => completeTransition(t));
+  }
 
-      inDeck.play();
-      inBtnPlay.classList.add('playing');
-      inBtnPlay.textContent = '⏸ PAUSE';
-
-      const beatsTotal = bars * 4;
-      const beatDurationMs = (60.0 / outTrack.bpm) * 1000;
-      const totalTransMs = beatsTotal * beatDurationMs;
-
-      const startTime = performance.now();
-      let animFrameId = null;
-      let echoEngaged = false;
-
-      // ─── Quintic Smootherstep: 6t^5 - 15t^4 + 10t^3 ───
-      // Smoother than cubic smoothstep: zero 1st AND 2nd derivatives at endpoints
-      // This means EQ knobs DECELERATE smoothly at both ends of their travel
-      const smootherstep = (t) => {
-        const ct = Math.max(0.0, Math.min(1.0, t));
-        return ct * ct * ct * (ct * (ct * 6 - 15) + 10);
-      };
-
-      function updateTransitionFrame() {
-        if (!isTransitioning) return;
-        const now = performance.now();
-        const elapsed = now - startTime;
-        const p = Math.min(1.0, elapsed / totalTransMs);
-
-        // ═══════════════════════════════════════════════════
-        // 1. VERTICAL CHANNEL FADERS: Quintic S-Curve (Crossfader at 50%)
-        // ═══════════════════════════════════════════════════
-        const pSmooth = smootherstep(p);
-        crossfader.value = 50;
-        engine.setCrossfader(50, 'club');
-
-        const inVol = pSmooth * 100;
-        const outVol = (1.0 - pSmooth) * 100;
-        inDeck.setVolume(inVol);
-        outDeck.setVolume(outVol);
-        if (inDeckNum === 1 && d1VolFader) d1VolFader.value = Math.round(inVol);
-        if (inDeckNum === 2 && d2VolFader) d2VolFader.value = Math.round(inVol);
-        if (outDeckNum === 1 && d1VolFader) d1VolFader.value = Math.round(outVol);
-        if (outDeckNum === 2 && d2VolFader) d2VolFader.value = Math.round(outVol);
-
-        // ═══════════════════════════════════════════════════
-        // 2. CLOSED-LOOP PLL: Phase Lock with Tempo Ramp
-        // ═══════════════════════════════════════════════════
-        const baseRate = (tempoRamp && Math.abs(outTrack.bpm - inTrack.bpm) > 0.5)
-          ? (syncRate + (1.0 - syncRate) * smootherstep(p))
-          : syncRate;
-        // Allow micro-seek during first 8% (incoming is inaudible, correction is free)
-        const allowSeekEarly = (p < 0.08);
-        applyPhaseLockLoop(outDeck, outTrack, inDeck, inTrack, baseRate, allowSeekEarly);
-
-        // ═══════════════════════════════════════════════════
-        // 3. INCOMING DECK: 3-Band EQ Sculpting
-        // ═══════════════════════════════════════════════════
-
-        // ─── INCOMING HIGHS (adaptive: eqParams.inHiFullAt) ───
-        let inHi;
-        const hiFullAt = eqParams.inHiFullAt;
-        if (p < hiFullAt * 0.2) {
-          inHi = -8.0 + (3.0 * smootherstep(p / (hiFullAt * 0.2)));
-        } else if (p < hiFullAt) {
-          inHi = -5.0 + (5.0 * smootherstep((p - hiFullAt * 0.2) / (hiFullAt * 0.8)));
-        } else {
-          inHi = 0.0;
-        }
-        applyDeckEQ(inDeckNum, 'hi', inHi);
-
-        // ─── INCOMING MIDS (adaptive: eqParams.inMidFullAt) ───
-        let inMid;
-        const midFullAt = eqParams.inMidFullAt;
-        const midThird = midFullAt / 3;
-        if (p < midThird) {
-          inMid = -18.0 + (8.0 * smootherstep(p / midThird));
-        } else if (p < midThird * 2) {
-          inMid = -10.0 + (6.0 * smootherstep((p - midThird) / midThird));
-        } else if (p < midFullAt) {
-          inMid = -4.0 + (4.0 * smootherstep((p - midThird * 2) / midThird));
-        } else {
-          inMid = 0.0;
-        }
-        applyDeckEQ(inDeckNum, 'mid', inMid);
-
-        // ─── INCOMING LOWS (adaptive bass swap zone: eqParams.bassSwapStart/End) ───
-        let inLow;
-        const bssStart = eqParams.bassSwapStart;
-        const bssEnd = eqParams.bassSwapEnd;
-        const bssWidth = bssEnd - bssStart;
-        if (p < bssStart) {
-          inLow = -24.0 + (6.0 * smootherstep(p / bssStart));
-        } else if (p < bssEnd) {
-          const k = (p - bssStart) / bssWidth;
-          const inGain = Math.sin(k * Math.PI * 0.5);
-          inLow = -18.0 + (18.0 * inGain);
-        } else {
-          inLow = 0.0;
-        }
-        applyDeckEQ(inDeckNum, 'low', inLow);
-
-        // ═══════════════════════════════════════════════════
-        // 4. OUTGOING DECK: Content-Aware 3-Band EQ Sculpting
-        // ═══════════════════════════════════════════════════
-
-        // ─── OUTGOING LOWS (adaptive bass swap zone matches incoming) ───
-        let outLow;
-        if (p < bssStart) {
-          outLow = 0.0;
-        } else if (p < bssEnd) {
-          const k = (p - bssStart) / bssWidth;
-          const outGain = Math.cos(k * Math.PI * 0.5);
-          outLow = -24.0 * (1.0 - outGain);
-        } else {
-          outLow = -24.0;
-        }
-        applyDeckEQ(outDeckNum, 'low', outLow);
-
-        // ─── OUTGOING MIDS (adaptive: eqParams.outMidDuckStart) ───
-        let outMid;
-        const midDuckStart = eqParams.outMidDuckStart;
-        const midDuckMid = midDuckStart + 0.25;
-        const midDuckEnd = Math.min(0.90, midDuckMid + 0.35);
-        if (p < midDuckStart) {
-          outMid = 0.0;
-        } else if (p < midDuckMid) {
-          outMid = 0.0 - (6.0 * smootherstep((p - midDuckStart) / 0.25));
-        } else if (p < midDuckEnd) {
-          outMid = -6.0 - (18.0 * smootherstep((p - midDuckMid) / (midDuckEnd - midDuckMid)));
-        } else {
-          outMid = -24.0;
-        }
-        applyDeckEQ(outDeckNum, 'mid', outMid);
-
-        // ─── OUTGOING HIGHS (adaptive: eqParams.outHiDissolveStart) ───
-        let outHi;
-        const hiDissolveStart = eqParams.outHiDissolveStart;
-        if (p < hiDissolveStart) {
-          outHi = 0.0;
-        } else if (p < 0.92) {
-          outHi = 0.0 - (24.0 * smootherstep((p - hiDissolveStart) / (0.92 - hiDissolveStart)));
-        } else {
-          outHi = -24.0;
-        }
-        applyDeckEQ(outDeckNum, 'hi', outHi);
-
-        // ═══════════════════════════════════════════════════
-        // 5. HPF WASHOUT ON OUTGOING DECK
-        // Pro DJs sweep HPF from 20Hz → 1.5kHz to naturally thin out outgoing track
-        // Active from p=0.35 → p=0.95 (long, gradual, imperceptible)
-        // ═══════════════════════════════════════════════════
-        if (p >= 0.35 && p < 0.95) {
-          const hpfProgress = smootherstep((p - 0.35) / 0.60);
-          const filterVal = Math.floor(hpfProgress * 35);
-          outFilter.value = filterVal;
-          outDeck.setColorFilter(filterVal);
-        } else if (p >= 0.95 && outFilter.value != 0) {
-          outFilter.value = 0;
-          outDeck.setColorFilter(0);
-        }
-
-        // ═══════════════════════════════════════════════════
-        // 6. STEM-AWARE VOCAL DUCKING
-        // If Neural Stems is on, progressively duck outgoing deck's vocal band
-        // to prevent the cardinal sin of vocal clashing
-        // ═══════════════════════════════════════════════════
-        if (useStems && p > 0.25 && p < 0.75) {
-          const duckAmount = Math.min(-8.0, eqParams.vocalDuckDepth) * smootherstep((p - 0.25) / 0.25);
-          outDeck.duckMids(duckAmount, 0.15);
-        } else if (isVocalDuck && p > 0.20 && p < 0.80) {
-          const duckAmount = eqParams.vocalDuckDepth * smootherstep((p - 0.20) / 0.20);
-          outDeck.duckMids(duckAmount, 0.15);
-        }
-
-        // ═══════════════════════════════════════════════════
-        // 7. SUBTLE ECHO TAIL ON OUTGOING DECK
-        // At 75% progress, engage a 3/4-beat delay wash to create spacious dissolve
-        // This fills the perceptual gap as the outgoing track thins
-        // ═══════════════════════════════════════════════════
-        if (p >= 0.75 && !echoEngaged) {
-          echoEngaged = true;
-          outDeck.engageSubtleEcho(outTrack.bpm, 0.30);
-        }
-
-        // ═══════════════════════════════════════════════════
-        // 8. REAL-TIME STATUS HUD
-        // ═══════════════════════════════════════════════════
-        const currentBar = Math.floor(p * bars) + 1;
-        if (p < 0.15) {
-          transitionStatusBanner.textContent = `🎧 SEAMLESS BLEND: INTRODUCING ${inDeckName} AMBIENCE (BAR ${currentBar}/${bars})...`;
-        } else if (p < 0.28) {
-          transitionStatusBanner.textContent = `🎵 SEAMLESS BLEND: ${inDeckName} HATS & GROOVE WARMING (BAR ${currentBar}/${bars})...`;
-        } else if (p < 0.72) {
-          transitionStatusBanner.textContent = `💥 SEAMLESS BLEND: EQUAL-POWER BASS HANDOFF (BAR ${currentBar}/${bars})!`;
-        } else if (p < 0.92) {
-          transitionStatusBanner.textContent = `🎚️ SEAMLESS BLEND: ${outDeckName} DISSOLVING + ECHO WASH (BAR ${currentBar}/${bars})...`;
-        } else {
-          transitionStatusBanner.textContent = `✨ SEAMLESS BLEND: ${inDeckName} TAKING FULL CONTROL...`;
-        }
-
-        // ═══════════════════════════════════════════════════
-        // 9. FRAME LOOP OR COMPLETION
-        // ═══════════════════════════════════════════════════
-        if (p < 1.0) {
-          animFrameId = requestAnimationFrame(updateTransitionFrame);
-        } else {
-          // ─── CLEAN TEARDOWN ───
-          if (isVocalDuck || useStems) {
-            outDeck.unduckMids();
-          }
-          if (echoEngaged) {
-            outDeck.disengageSubtleEcho(2.0);
-          }
-
-          resetDeckEQs(outDeckNum);
-          outFilter.value = 0;
-          outDeck.setColorFilter(0);
-
-          outDeck.pause();
-          outDeck.setVolume(0);
-          if (outDeckNum === 1 && d1VolFader) d1VolFader.value = 0;
-          if (outDeckNum === 2 && d2VolFader) d2VolFader.value = 0;
-          outBtnPlay.classList.remove('playing');
-          outBtnPlay.textContent = '▶ PLAY';
-
-          inDeck.setPlaybackRate(1.0);
-          inPitchVal.textContent = '0.0%';
-
-          inDeck.setVolume(100);
-          if (inDeckNum === 1 && d1VolFader) d1VolFader.value = 100;
-          if (inDeckNum === 2 && d2VolFader) d2VolFader.value = 100;
-
-          resetDeckEQs(inDeckNum);
-
-          isTransitionPhaseLocked = false;
-          if (phaseCursor && phaseStatus) {
-            phaseCursor.style.left = '50%';
-            phaseCursor.className = 'phase-cursor locked';
-            phaseStatus.className = 'phase-status';
-            phaseStatus.textContent = '±0.0 ms (STANDBY)';
-          }
-
-          finishTransition(renderPromise);
-        }
-      }
-
-      animFrameId = requestAnimationFrame(updateTransitionFrame);
-    }, waitMs);
-  });
+  function completeTransition(t) {
+    if (activeTransition !== t) return;
+    clearTransitionTimers(t);
+    activeTransition = null;
+    const now = engine.ctx.currentTime;
+    MixPlanner.holdAutomation(t.inDeck, now);
+    MixPlanner.holdAutomation(t.outDeck, now);
+    t.outDeck.faderGain.gain.linearRampToValueAtTime(0, now + 0.03);
+    setTimeout(() => {
+      t.outDeck.pause();
+      setPlayUI(t.outBtnPlay, false);
+      MixPlanner.neutral(t.inDeck, engine.ctx.currentTime, 1);
+      ['btn-abort-transition', 'btn-manual-override'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = 'none';
+      });
+      finishTransition(t.renderPromise);
+    }, 40);
+  }
 
   function finishTransition(renderPromise) {
     isTransitioning = false;
-    isTransitionPhaseLocked = false;
     if (phaseCursor && phaseStatus) {
       phaseCursor.style.left = '50%';
       phaseCursor.className = 'phase-cursor locked';
@@ -3463,21 +2396,26 @@ document.addEventListener('DOMContentLoaded', () => {
     updateVUBars('vu-meter-left', vu1);
     updateVUBars('vu-meter-right', vu2);
 
-    // Live Phase Monitoring & Closed-Loop Real-Time SYNC PLL
-    if (!isTransitioning && track1Data && track2Data) {
+    // Faders/EQ follow the scheduled transition automation so the DJ sees the moves
+    if (isTransitioning) {
+      [[1, engine.deck1], [2, engine.deck2]].forEach(([n, deck]) => {
+        const fader = document.getElementById(`d${n}-vol-fader`);
+        if (fader) fader.value = Math.round(deck.faderGain.gain.value * 100);
+        [['hi', deck.eqHigh], ['mid', deck.eqMid], ['low', deck.eqLow]].forEach(([band, node]) => {
+          const el = document.getElementById(`d${n}-eq-${band}`);
+          if (el) el.value = node.gain.value;
+        });
+      });
+    }
+
+    // Phase meter: telemetry only (grids + audio clock), no correction loop
+    if (track1Data && track2Data) {
       if (engine.deck1.isPlaying && engine.deck2.isPlaying) {
-        if (isDeck2SyncLocked) {
-          const baseRate = track1Data.bpm / track2Data.bpm;
-          applyPhaseLockLoop(engine.deck1, track1Data, engine.deck2, track2Data, baseRate);
-        } else if (isDeck1SyncLocked) {
-          const baseRate = track2Data.bpm / track1Data.bpm;
-          applyPhaseLockLoop(engine.deck2, track2Data, engine.deck1, track1Data, baseRate);
-        } else {
-          // Passive Telemetry (Manual DJing)
-          const err = computePhaseError(track1Data, engine.deck1.audio.currentTime, track2Data, engine.deck2.audio.currentTime);
-          updatePhaseMeterHUD(err.errorMs);
-        }
-      } else if (phaseStatus && !isDeck1SyncLocked && !isDeck2SyncLocked) {
+        const err = isDeck1SyncLocked
+          ? computePhaseError(engine.deck2, track2Data, engine.deck1, track1Data)
+          : computePhaseError(engine.deck1, track1Data, engine.deck2, track2Data);
+        updatePhaseMeterHUD(err.errorMs);
+      } else if (phaseStatus && !isTransitioning) {
         phaseStatus.textContent = '±0.0 ms (STANDBY)';
         if (phaseCursor) {
           phaseCursor.style.left = '50%';

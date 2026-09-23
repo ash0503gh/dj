@@ -718,6 +718,39 @@ input[type="range"][orient="vertical"] {
   gap: 12px;
 }
 
+/* Beat-grid nudge strip */
+.grid-nudge-strip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.grid-nudge-label {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  letter-spacing: 1px;
+  color: var(--text-muted, #888);
+}
+
+.btn-grid {
+  flex: 1;
+  padding: 5px 0;
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 700;
+  border-radius: 4px;
+  cursor: pointer;
+  background: #16181d;
+  color: #aab;
+  border: 1px solid #2a2e36;
+}
+
+.btn-grid:hover {
+  color: #fff;
+  border-color: #555;
+}
+
 .btn-transport {
   flex: 1;
   padding: 14px 0;
