@@ -305,6 +305,7 @@
         <!-- Vertical Channel Volume Faders -->
         <div class="fader-row">
           <div class="v-fader-col">
+            <button type="button" id="d1-btn-pfl" class="btn-pfl-cue" title="Headphone Cue (PFL): Listen to Deck 1 in headphones without playing on main speakers">🎧 CUE</button>
             <input type="range" id="d1-vol-fader" class="v-fader" min="0" max="100" value="100" orient="vertical">
             <span class="fader-tag">CH 1</span>
           </div>
@@ -408,6 +409,21 @@
               </div>
             </div>
 
+            <!-- AI HEADPHONE AUDITION (PFL) MONITOR -->
+            <div id="ai-audition-monitor" class="ai-audition-monitor hidden">
+              <div class="audition-header">
+                <span class="audition-pulse">●</span>
+                <span class="audition-title">🎧 AI HEADPHONE CUE (PFL AUDITION BUS)</span>
+                <span id="audition-badge" class="audition-badge">INCOMING PREVIEW</span>
+              </div>
+              <div class="audition-body">
+                <div class="audition-meter-wrapper">
+                  <div id="audition-meter-fill" class="audition-meter-fill"></div>
+                </div>
+                <div id="audition-feedback-text" class="audition-feedback-text">Auditioning incoming groove in headphones...</div>
+              </div>
+            </div>
+
             <!-- THE BIG TRANSITION BUTTON -->
             <button id="btn-trigger-transition" class="btn-pro-mix">
               <div class="glow-ring"></div>
@@ -424,7 +440,8 @@
           </div>
 
           <div class="v-fader-col">
-            <input type="range" id="d2-vol-fader" class="v-fader" min="0" max="100" value="100" orient="vertical">
+            <button type="button" id="d2-btn-pfl" class="btn-pfl-cue" title="Headphone Cue (PFL): Listen to Deck 2 in headphones without playing on main speakers">🎧 CUE</button>
+            <input type="range" id="d2-vol-fader" class="v-fader" min="0" max="100" value="0" orient="vertical">
             <span class="fader-tag">CH 2</span>
           </div>
         </div>
@@ -713,9 +730,9 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=10.5"></script>
-  <script src="/js/jog_wheel.js?v=10.5"></script>
-  <script src="/js/waveform.js?v=10.5"></script>
-  <script src="/js/app.js?v=10.5"></script>
+  <script src="/js/audio_engine.js?v=10.6"></script>
+  <script src="/js/jog_wheel.js?v=10.6"></script>
+  <script src="/js/waveform.js?v=10.6"></script>
+  <script src="/js/app.js?v=10.6"></script>
 </body>
 </html>

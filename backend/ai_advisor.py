@@ -43,16 +43,33 @@ def get_gemini_api_key(provided_key: Optional[str] = None) -> Optional[str]:
         return provided_key.strip()
     return os.environ.get("GEMINI_API_KEY", "").strip() or None
 
-def call_gemini_api(prompt: str, api_key: str, model_name: str = "gemini-1.5-flash") -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Calls Google Gemini API via HTTPS REST endpoint."""
+def call_gemini_api(
+    prompt: str,
+    api_key: str,
+    model_name: str = "gemini-1.5-flash",
+    audio_b64: Optional[str] = None,
+    audio_mime: str = "audio/wav"
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Calls Google Gemini API via HTTPS REST endpoint with optional multimodal audio audition."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
+    parts = []
+    if audio_b64:
+        clean_b64 = audio_b64.split(",")[-1] if "," in audio_b64 else audio_b64
+        parts.append({
+            "inlineData": {
+                "mimeType": audio_mime,
+                "data": clean_b64
+            }
+        })
+    parts.append({"text": prompt})
+
     payload = {
         "contents": [{
-            "parts": [{"text": prompt}]
+            "parts": parts
         }],
         "generationConfig": {
-            "temperature": 0.3,
+            "temperature": 0.25,
             "responseMimeType": "application/json"
         }
     }

@@ -277,6 +277,12 @@ class DJDeckAudio {
     this.filterLPF.connect(this.filterHPF);
     this.filterHPF.connect(this.faderGain);
 
+    // Pre-Fade Listen (PFL) Headphone Tap (Pre-Fader / Pre-Crossfader)
+    this.pflSend = this.ctx.createGain();
+    this.pflSend.gain.value = 0.0;
+    this.isCueActive = false;
+    this.filterHPF.connect(this.pflSend);
+
     // Dry path: faderGain -> echoSend -> cfGain -> analyser -> destination
     this.faderGain.connect(this.echoSend);
     this.echoSend.connect(this.cfGain);
@@ -808,6 +814,71 @@ class DJDeckAudio {
     this.audio.playbackRate = 1.0;
     this.resetStems();
   }
+
+  // --- PRE-FADE LISTEN (PFL) HEADPHONE CUE ---
+  setHeadphoneCue(active) {
+    this.isCueActive = !!active;
+    const now = this.ctx.currentTime;
+    this.pflSend.gain.cancelScheduledValues(now);
+    this.pflSend.gain.setValueAtTime(this.isCueActive ? 1.0 : 0.0, now);
+    return this.isCueActive;
+  }
+
+  // --- EXTRACT 10-12s AUDITION SLICE AS BASE64 PCM WAV (< 5ms) ---
+  sliceAuditionWavBase64(startSec, durationSec = 10.0, targetSr = 16000) {
+    if (!this.audioBuffer) return null;
+    try {
+      const origSr = this.audioBuffer.sampleRate;
+      const startSample = Math.floor(Math.max(0, startSec) * origSr);
+      const totalSamples = Math.min(this.audioBuffer.length - startSample, Math.floor(durationSec * origSr));
+      if (totalSamples <= 0) return null;
+
+      const srcData = this.audioBuffer.getChannelData(0); // Mono
+      const step = origSr / targetSr;
+      const outSamples = Math.floor(totalSamples / step);
+
+      const buffer = new ArrayBuffer(44 + outSamples * 2);
+      const view = new DataView(buffer);
+
+      const writeStr = (offset, str) => {
+        for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+      };
+
+      writeStr(0, 'RIFF');
+      view.setUint32(4, 36 + outSamples * 2, true);
+      writeStr(8, 'WAVE');
+      writeStr(12, 'fmt ');
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true); // PCM format
+      view.setUint16(22, 1, true); // Mono channel
+      view.setUint32(24, targetSr, true);
+      view.setUint32(28, targetSr * 2, true); // byte rate (sr * 1 * 16/8)
+      view.setUint16(32, 2, true); // block align
+      view.setUint16(34, 16, true); // 16 bits per sample
+      writeStr(36, 'data');
+      view.setUint32(40, outSamples * 2, true);
+
+      let offset = 44;
+      for (let i = 0; i < outSamples; i++) {
+        const srcIdx = startSample + Math.floor(i * step);
+        const s = Math.max(-1, Math.min(1, srcData[srcIdx] || 0));
+        const val = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        view.setInt16(offset, val, true);
+        offset += 2;
+      }
+
+      let binary = '';
+      const bytes = new Uint8Array(buffer);
+      const len = bytes.byteLength;
+      for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+      }
+      return btoa(binary);
+    } catch (err) {
+      console.warn('sliceAuditionWavBase64 error:', err);
+      return null;
+    }
+  }
 }
 
 class DJAudioEngine {
@@ -821,7 +892,32 @@ class DJAudioEngine {
 
     this.deck1 = new DJDeckAudio(this.ctx, 1, this.masterGain);
     this.deck2 = new DJDeckAudio(this.ctx, 2, this.masterGain);
+
+    // Pre-Fade Listen (PFL) Headphone Bus
+    this.pflBusGain = this.ctx.createGain();
+    this.pflBusGain.gain.value = 1.0;
+    this.deck1.pflSend.connect(this.pflBusGain);
+    this.deck2.pflSend.connect(this.pflBusGain);
+
+    this.pflAnalyser = this.ctx.createAnalyser();
+    this.pflAnalyser.fftSize = 64;
+    this.pflBusGain.connect(this.pflAnalyser);
+    this.pflBusGain.connect(this.ctx.destination);
+
     this.setCrossfader(50, 'club');
+  }
+
+  setHeadphonePflVolume(val) { // 0 - 100
+    const norm = Math.max(0, Math.min(1, val / 100));
+    this.pflBusGain.gain.setValueAtTime(norm, this.ctx.currentTime);
+  }
+
+  getPflVULevel() {
+    const data = new Uint8Array(this.pflAnalyser.frequencyBinCount);
+    this.pflAnalyser.getByteFrequencyData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i];
+    return Math.min(100, Math.round((sum / data.length / 255) * 100 * 1.5));
   }
 
   setCrossfader(val, curve = 'club') {

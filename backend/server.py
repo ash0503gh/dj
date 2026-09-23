@@ -219,16 +219,55 @@ async def get_ai_status():
         "active_engine": "jev" if has_jev else ("gemini" if has_gemini else "local")
     })
 
+def slice_audio_file_to_b64(file_path: str, start_sec: float, duration_sec: float = 10.0) -> Optional[str]:
+    """Slices a lightweight 10s audio segment from an audio file into base64 WAV for Gemini headphone audition."""
+    import io
+    import soundfile as sf
+    import base64
+    import numpy as np
+    try:
+        with sf.SoundFile(file_path) as f:
+            sr = f.samplerate
+            start_frame = int(max(0, start_sec) * sr)
+            max_frames = int(duration_sec * sr)
+            if start_frame < f.frames:
+                f.seek(start_frame)
+                data = f.read(frames=max_frames)
+            else:
+                f.seek(0)
+                data = f.read(frames=max_frames)
+
+            # Convert to mono if multi-channel
+            if len(data.shape) > 1 and data.shape[1] > 1:
+                data = data.mean(axis=1)
+
+            # Sub-sample to 16kHz for fast, lightweight audition transmission
+            target_sr = 16000
+            if sr != target_sr:
+                step = sr / target_sr
+                indices = (np.arange(0, int(len(data) / step)) * step).astype(int)
+                indices = indices[indices < len(data)]
+                data = data[indices]
+                sr = target_sr
+
+            buf = io.BytesIO()
+            sf.write(buf, data, sr, format='WAV', subtype='PCM_16')
+            return base64.b64encode(buf.getvalue()).decode('utf-8')
+    except Exception as e:
+        print(f"Error slicing audio file {file_path}: {e}")
+        return None
+
 @app.post("/api/jev-blueprint")
 async def get_jev_blueprint(request: Request):
     """
-    Jev Autonomous DJ Brain: runs 3-4 chained Jev System One calls,
-    producing a complete TransitionBlueprint with keyframe arrays for
-    every EQ band, HPF, fader, crossfader, and effect trigger point.
-    Falls back to local acoustic heuristics if no Jev key is available.
+    Jev Autonomous DJ Brain:
+    1. Gemini Multimodal Audio Audition (AI Headphones / PFL): listens to a 10s audio slice
+       of the incoming track in its headphones and crafts a precision transition blueprint.
+    2. Jev System One Typed Pipeline: runs 3-4 chained typed question passes.
+    3. Resilient Local Acoustic Heuristics (0ms fallback).
     """
-    from .ai_advisor import get_jev_api_key
-    from .jev_blueprint import run_jev_pipeline, compile_local_fallback_blueprint
+    from .ai_advisor import get_jev_api_key, get_gemini_api_key
+    from .jev_blueprint import run_jev_pipeline, run_gemini_audition_pipeline, compile_local_fallback_blueprint
 
     try:
         body = await request.json()
@@ -238,18 +277,52 @@ async def get_jev_blueprint(request: Request):
     profile_out = body.get("profile_out", {})
     profile_in = body.get("profile_in", {})
     provided_key = body.get("jev_api_key", None)
+    audio_b64 = body.get("audio_clip_b64", None)
+    audio_mime = body.get("audio_mime", "audio/wav")
+    file_id_in = body.get("file_id_in", None)
+    cue_time = body.get("cue_time", None)
 
-    api_key = get_jev_api_key(provided_key)
+    # Server-side audio slicing if client didn't supply audio_clip_b64 but file_id_in exists on disk
+    if not audio_b64 and file_id_in:
+        try:
+            target_path = os.path.join(UPLOAD_DIR, file_id_in)
+            if not os.path.exists(target_path):
+                target_path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(file_id_in))
+            if os.path.exists(target_path):
+                audio_b64 = slice_audio_file_to_b64(target_path, float(cue_time or 0.0), 10.0)
+                if audio_b64:
+                    audio_mime = "audio/wav"
+        except Exception as slice_err:
+            print(f"Server-side audio slicing note: {slice_err}")
 
+    gemini_key = get_gemini_api_key(provided_key)
+    jev_key = get_jev_api_key(provided_key)
+
+    blueprint = None
     try:
-        if api_key:
-            blueprint, err = run_jev_pipeline(profile_out, profile_in, api_key)
-            if err:
-                print(f"Jev pipeline returned note ({err}), falling back to local blueprint")
-                blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
-                blueprint["meta"]["jev_fallback_reason"] = err
-        else:
+        # Priority 1: Google Gemini Multimodal Audio Audition ("AI Headphones")
+        if gemini_key:
+            bp, g_err = run_gemini_audition_pipeline(
+                profile_out, profile_in, gemini_key,
+                audio_b64=audio_b64, audio_mime=audio_mime
+            )
+            if bp:
+                blueprint = bp
+            elif g_err:
+                print(f"Gemini audition returned note ({g_err}), falling back to Jev/Local...")
+
+        # Priority 2: TypeSafe Jev System One Typed Pipeline
+        if not blueprint and jev_key:
+            bp, j_err = run_jev_pipeline(profile_out, profile_in, jev_key)
+            if bp:
+                blueprint = bp
+            elif j_err:
+                print(f"Jev pipeline returned note ({j_err}), falling back to local blueprint...")
+
+        # Priority 3: Local Resilient Heuristic Blueprint
+        if not blueprint:
             blueprint = compile_local_fallback_blueprint(profile_out, profile_in)
+
     except Exception as exc:
         print(f"Blueprint exception ({exc}), compiling resilient local fallback")
         blueprint = compile_local_fallback_blueprint(profile_out, profile_in)

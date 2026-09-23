@@ -1102,3 +1102,161 @@ def compile_local_fallback_blueprint(
     bp["meta"]["engine"] = "Local Acoustic Heuristic (0ms)"
 
     return bp
+
+
+def run_gemini_audition_pipeline(
+    profile_out: Dict[str, Any],
+    profile_in: Dict[str, Any],
+    gemini_api_key: str,
+    audio_b64: Optional[str] = None,
+    audio_mime: str = "audio/wav",
+    model_name: str = "gemini-1.5-flash"
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """
+    Runs Gemini Multimodal Audition Pipeline:
+    Sends an actual audio audition slice (10-12s around the Hot Cue) to Google Gemini
+    so the AI model 'hears' the incoming track in its DJ headphones (PFL / Pre-Fade Listen)
+    without playing it on the main speakers.
+    Gemini listens to kick transients, bass weight, synth timbres, and vocals,
+    then generates a full TransitionBlueprint with zero guesswork.
+    """
+    from .ai_advisor import call_gemini_api
+    import time
+
+    start_time = time.time()
+    
+    bpm_out = _safe_float(profile_out.get("bpm"), 128.0)
+    bpm_in = _safe_float(profile_in.get("bpm"), 128.0)
+    camelot_out = profile_out.get("camelot", "8A")
+    camelot_in = profile_in.get("camelot", "8A")
+    title_out = profile_out.get("title", "Track 1")
+    title_in = profile_in.get("title", "Track 2")
+    pos_out = _safe_float(profile_out.get("current_position"), 0.0)
+
+    cue_target_hint = "cue_1_intro"
+    hot_cues_in = profile_in.get("hot_cues") or {}
+    if "cue_3" in hot_cues_in or "DROP" in hot_cues_in:
+        cue_target_hint = "cue_3_drop"
+
+    has_audio = bool(audio_b64 and len(audio_b64) > 100)
+
+    audio_listening_instructions = (
+        "🎧 [HEADPHONE AUDITION ACTIVE]: You have an audio clip attached to this message. "
+        "This is an exact 10-second audition snippet of the incoming track taken at its cue point. "
+        "LISTEN CAREFULLY TO THE AUDIO IN YOUR HEADPHONES: "
+        "- What kick drum punch, sub-bass frequency, or percussion do you hear? "
+        "- Are there vocals present or is it instrumental? "
+        "- How does the rhythmic energy compare to the outgoing track? "
+        "Describe what you literally hear in the 'audition_heard' field."
+        if has_audio else
+        "🎧 [HEADPHONE AUDITION ACTIVE]: Auditioning incoming track via high-resolution spectral and transient telemetry."
+    )
+
+    prompt = f"""
+You are Jev, a World-Champion DJ and Master Audio Engineer headlining Tomorrowland and Ultra Music Festival.
+You are wearing DJ headphones (PFL / Pre-Fade Listen Bus).
+The audience is currently listening to Track 1 (Outgoing) live on the main speakers.
+Track 2 (Incoming) is in your headphones, MUTED from the main speakers (Volume Fader = 0%).
+
+{audio_listening_instructions}
+
+LIVE OUTGOING TRACK (Currently playing to the audience on main speakers):
+- Title: {title_out}
+- BPM: {bpm_out}
+- Camelot Key: {camelot_out}
+- Current Live Playhead: {pos_out:.1f}s
+
+INCOMING TRACK (In your headphones):
+- Title: {title_in}
+- BPM: {bpm_in}
+- Camelot Key: {camelot_in}
+- Energy Profile: Low={profile_in.get('energy_low', 0.5)}, Mid={profile_in.get('energy_mid', 0.5)}, High={profile_in.get('energy_high', 0.5)}
+- Available Hot Cues: {json.dumps(hot_cues_in)}
+
+Based on what you hear in your headphones, formulate the perfect transition plan.
+Return ONLY valid JSON matching this exact structure:
+{{
+  "audition_heard": "1-2 sentences vividly describing the exact sounds, drums, instruments, and vocal texture you heard in your headphones",
+  "cue_target": "cue_1_intro" | "cue_2_breakdown" | "cue_3_drop" | "cue_4_outro",
+  "transition_bars": 8 | 16 | 32,
+  "energy_intent": "sustain" | "boost" | "drop",
+  "blend_quality": 1.0 to 5.0,
+  "use_bass_swap": true,
+  "use_echo_wash": true,
+  "use_hpf_sweep": true,
+  "use_loop_roll": false,
+  "use_predrop_gap": false,
+  "use_drop_impact": false,
+  "vocal_ducking": true,
+  "use_stem_mashup": true,
+  "use_flanger": false,
+  "use_beat_masher": false,
+  "use_pitch_bend": false,
+  "eq_intro_order": "highs_first" | "mids_first" | "full_punch",
+  "bass_swap_position": 0.3 to 0.7,
+  "bass_swap_width": 0.2 to 0.6,
+  "outgoing_dissolve": 0.6 to 0.95,
+  "aggression": 0.1 to 0.9,
+  "tactical_advice": "One high-level pro tip on why this blend will rock the dancefloor"
+}}
+"""
+
+    gemini_resp, err = call_gemini_api(
+        prompt=prompt,
+        api_key=gemini_api_key,
+        model_name=model_name,
+        audio_b64=audio_b64 if has_audio else None,
+        audio_mime=audio_mime
+    )
+
+    if err or not gemini_resp or not isinstance(gemini_resp, dict):
+        return None, err or "Invalid Gemini response format"
+
+    # Merge decisions with defaults
+    decisions = {
+        "cue_target": gemini_resp.get("cue_target", cue_target_hint),
+        "transition_bars": int(gemini_resp.get("transition_bars", 16)),
+        "energy_intent": gemini_resp.get("energy_intent", "sustain"),
+        "blend_quality": float(gemini_resp.get("blend_quality", 4.0)),
+        "use_bass_swap": bool(gemini_resp.get("use_bass_swap", True)),
+        "use_echo_wash": bool(gemini_resp.get("use_echo_wash", True)),
+        "use_hpf_sweep": bool(gemini_resp.get("use_hpf_sweep", True)),
+        "use_loop_roll": bool(gemini_resp.get("use_loop_roll", False)),
+        "use_predrop_gap": bool(gemini_resp.get("use_predrop_gap", False)),
+        "use_drop_impact": bool(gemini_resp.get("use_drop_impact", False)),
+        "vocal_ducking": bool(gemini_resp.get("vocal_ducking", True)),
+        "use_stem_mashup": bool(gemini_resp.get("use_stem_mashup", True)),
+        "use_flanger": bool(gemini_resp.get("use_flanger", False)),
+        "use_beat_masher": bool(gemini_resp.get("use_beat_masher", False)),
+        "use_pitch_bend": bool(gemini_resp.get("use_pitch_bend", False)),
+        "eq_intro_order": gemini_resp.get("eq_intro_order", "highs_first"),
+        "bass_swap_position": float(gemini_resp.get("bass_swap_position", 0.5)),
+        "bass_swap_width": float(gemini_resp.get("bass_swap_width", 0.5)),
+        "outgoing_dissolve": float(gemini_resp.get("outgoing_dissolve", 0.85)),
+        "aggression": float(gemini_resp.get("aggression", 0.35)),
+        "audition_heard": gemini_resp.get("audition_heard", "Auditioned in background PFL headphones"),
+        "tactical_advice": gemini_resp.get("tactical_advice", ""),
+    }
+
+    if decisions["use_loop_roll"]:
+        decisions["loop_acceleration"] = "gradual"
+        decisions["loop_roll_bars"] = 4
+    if decisions["use_predrop_gap"]:
+        decisions["predrop_gap_beats"] = "one_beat"
+    if decisions["use_drop_impact"]:
+        decisions["drop_impact_style"] = "boom_and_crash"
+
+    bp = compile_blueprint(decisions, profile_out, profile_in)
+    latency_ms = int((time.time() - start_time) * 1000)
+    bp["meta"]["jev_calls"] = 1
+    bp["meta"]["jev_latency_ms"] = latency_ms
+    bp["meta"]["total_pipeline_ms"] = latency_ms
+    bp["meta"]["jev_decisions"] = decisions
+    bp["meta"]["engine"] = f"Gemini Multimodal DJ Ear ({model_name})"
+    bp["meta"]["ai_ears"] = True
+    bp["meta"]["audio_auditioned"] = has_audio
+    bp["meta"]["audition_heard"] = decisions["audition_heard"]
+    bp["meta"]["tactical_advice"] = decisions["tactical_advice"]
+
+    return bp, None
+

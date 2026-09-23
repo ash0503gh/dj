@@ -21,6 +21,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let zoomLevel = 1.0;
   let currentAIRec = null;
   let serverHasJev = false;
+  let serverHasGemini = false;
 
   // Auto-unlock AudioContext on first user interaction
   const unlockAudio = () => {
@@ -466,6 +467,8 @@ document.addEventListener('DOMContentLoaded', () => {
             await engine.ctx.resume();
           }
           const audioBuffer = await engine.ctx.decodeAudioData(arrayBuffer.slice(0));
+          const targetDeck = (deckNum === 1) ? engine.deck1 : engine.deck2;
+          targetDeck.audioBuffer = audioBuffer;
           const trueDur = audioBuffer.duration;
           
           const numBins = Math.min(12000, Math.max(3600, Math.floor(trueDur * 60)));
@@ -682,6 +685,13 @@ document.addEventListener('DOMContentLoaded', () => {
         d1PhraseVal.textContent = `${phrases} PHRASES`;
       }
       engine.deck1.loadTrack(track.audio_url);
+      if (!engine.deck1.audioBuffer && track.audio_url) {
+        fetch(track.audio_url)
+          .then(res => res.arrayBuffer())
+          .then(ab => engine.ctx.decodeAudioData(ab))
+          .then(abuf => { engine.deck1.audioBuffer = abuf; })
+          .catch(e => console.warn('PFL Deck 1 background decode note:', e));
+      }
       wave1.loadTrack(track);
       if (track.bpm && !isNaN(track.bpm)) {
         masterBpmEl.textContent = track.bpm.toFixed(2);
@@ -702,6 +712,13 @@ document.addEventListener('DOMContentLoaded', () => {
         d2PhraseVal.textContent = `${phrases} PHRASES`;
       }
       engine.deck2.loadTrack(track.audio_url);
+      if (!engine.deck2.audioBuffer && track.audio_url) {
+        fetch(track.audio_url)
+          .then(res => res.arrayBuffer())
+          .then(ab => engine.ctx.decodeAudioData(ab))
+          .then(abuf => { engine.deck2.audioBuffer = abuf; })
+          .catch(e => console.warn('PFL Deck 2 background decode note:', e));
+      }
       wave2.loadTrack(track);
     }
     if (track1Data && track2Data) {
@@ -803,7 +820,8 @@ document.addEventListener('DOMContentLoaded', () => {
             jevKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
           }
         }
-        if (data.gemini_configured) {
+        if (data.gemini_configured || data.has_gemini) {
+          serverHasGemini = true;
           if (geminiKeyInput && !geminiKeyInput.value) {
             geminiKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
           }
@@ -2088,10 +2106,36 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
-  // Faders
+  // Faders & Headphone Cue (PFL) Buttons
   d1VolFader.addEventListener('input', (e) => engine.deck1.setVolume(parseFloat(e.target.value)));
   d2VolFader.addEventListener('input', (e) => engine.deck2.setVolume(parseFloat(e.target.value)));
   crossfader.addEventListener('input', (e) => engine.setCrossfader(parseFloat(e.target.value)));
+
+  const d1BtnPfl = document.getElementById('d1-btn-pfl');
+  const d2BtnPfl = document.getElementById('d2-btn-pfl');
+  const aiAuditionMonitor = document.getElementById('ai-audition-monitor');
+  const auditionBadge = document.getElementById('audition-badge');
+  const auditionMeterFill = document.getElementById('audition-meter-fill');
+  const auditionFeedbackText = document.getElementById('audition-feedback-text');
+
+  if (d1BtnPfl) {
+    d1BtnPfl.addEventListener('click', () => {
+      const active = engine.deck1.setHeadphoneCue(!engine.deck1.isCueActive);
+      d1BtnPfl.classList.toggle('active', active);
+      transitionStatusBanner.textContent = active 
+        ? '🎧 HEADPHONE CUE (PFL): DECK 1 ROUTED TO HEADPHONES (PRE-FADER)' 
+        : '🎧 HEADPHONE CUE: DECK 1 DISENGAGED';
+    });
+  }
+  if (d2BtnPfl) {
+    d2BtnPfl.addEventListener('click', () => {
+      const active = engine.deck2.setHeadphoneCue(!engine.deck2.isCueActive);
+      d2BtnPfl.classList.toggle('active', active);
+      transitionStatusBanner.textContent = active 
+        ? '🎧 HEADPHONE CUE (PFL): DECK 2 ROUTED TO HEADPHONES (PRE-FADER)' 
+        : '🎧 HEADPHONE CUE: DECK 2 DISENGAGED';
+    });
+  }
 
   // Bars Selector
   document.querySelectorAll('#bars-selector .pill').forEach(btn => {
@@ -2200,8 +2244,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // the entire transition from scratch with full parameter control.
     // ═══════════════════════════════════════════════════
     const jevKeyForBlueprint = jevKeyInput ? jevKeyInput.value.trim() : (localStorage.getItem('jev_api_key') || '');
-    const hasJevEngine = Boolean(serverHasJev || jevKeyForBlueprint || (aiSourceBadge && aiSourceBadge.textContent.includes('Jev')));
-    const isJevBlueprintMode = hasJevEngine && (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap');
+    const geminiKeyForBlueprint = geminiKeyInput ? geminiKeyInput.value.trim() : (localStorage.getItem('gemini_api_key') || '');
+    const hasAIEngine = Boolean(serverHasJev || serverHasGemini || jevKeyForBlueprint || geminiKeyForBlueprint || (aiSourceBadge && !aiSourceBadge.textContent.includes('Local')));
+    const isJevBlueprintMode = hasAIEngine && (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap');
 
     if (isJevBlueprintMode) {
       // Profile both tracks client-side
@@ -2209,7 +2254,31 @@ document.addEventListener('DOMContentLoaded', () => {
       const profileIn = profileTrackForJev(inDeckNum);
 
       if (profileOut && profileIn) {
-        transitionStatusBanner.textContent = '⚡ JEV COMPUTING BLUEPRINT (ANALYZING HARMONICS & CUES)...';
+        // Target Hot Cue for Background Pre-Fade Auditioning
+        const targetCueTime = (inTrack.suggested_cue_intro || 0);
+
+        // Visual AI Headphone Audition Monitor in UI
+        if (aiAuditionMonitor) {
+          aiAuditionMonitor.classList.remove('hidden');
+          if (auditionBadge) auditionBadge.textContent = `${inDeckName} @ CUE (${formatTime(targetCueTime)})`;
+          if (auditionFeedbackText) auditionFeedbackText.textContent = `🎧 Auditioning ${inTrack.title || inDeckName} in background headphones...`;
+        }
+
+        // Animate PFL Audition VU meter
+        const pflInterval = setInterval(() => {
+          if (auditionMeterFill) {
+            const vu = (engine && engine.getPflVULevel) ? engine.getPflVULevel() : Math.floor(Math.random() * 50 + 35);
+            auditionMeterFill.style.width = `${Math.min(100, Math.max(15, vu))}%`;
+          }
+        }, 80);
+
+        // Extract 10-second high-fidelity audition slice from incoming deck's AudioBuffer
+        let audioClipB64 = null;
+        if (inDeck && inDeck.sliceAuditionWavBase64) {
+          audioClipB64 = inDeck.sliceAuditionWavBase64(targetCueTime, 10.0, 16000);
+        }
+
+        transitionStatusBanner.textContent = '🎧 JEV AUDITIONING INCOMING TRACK IN HEADPHONES (PRE-FADE LISTEN)...';
         btnTriggerTransition.classList.add('in-transition');
         isTransitioning = true;
 
@@ -2217,8 +2286,13 @@ document.addEventListener('DOMContentLoaded', () => {
           const bpPayload = {
             profile_out: profileOut,
             profile_in: profileIn,
+            audio_clip_b64: audioClipB64,
+            audio_mime: 'audio/wav',
+            file_id_in: inTrack.file_id,
+            cue_time: targetCueTime,
           };
           if (jevKeyForBlueprint) bpPayload.jev_api_key = jevKeyForBlueprint;
+          if (geminiKeyForBlueprint) bpPayload.gemini_api_key = geminiKeyForBlueprint;
 
           // 12-second abort timeout so the UI never hangs indefinitely
           const controller = new AbortController();
@@ -2231,6 +2305,7 @@ document.addEventListener('DOMContentLoaded', () => {
             signal: controller.signal
           });
           clearTimeout(timeoutId);
+          clearInterval(pflInterval);
 
           if (!bpRes.ok) {
             throw new Error(`Server returned ${bpRes.status}`);
@@ -2240,6 +2315,18 @@ document.addEventListener('DOMContentLoaded', () => {
           if (bpData.status === 'success' && bpData.blueprint) {
             const bp = bpData.blueprint;
             console.log(`⚡ Jev Blueprint received: ${(bp.meta.active_blocks || []).join(' + ')} over ${bp.meta.transition_bars} bars (${bp.meta.total_pipeline_ms || 0}ms)`);
+            if (bp.meta && bp.meta.audition_heard) {
+              console.log(`🎧 Jev Headphone Audition Heard: ${bp.meta.audition_heard}`);
+              if (auditionFeedbackText) {
+                auditionFeedbackText.textContent = `🎧 HEARD: ${bp.meta.audition_heard}`;
+              }
+              transitionStatusBanner.textContent = `🎧 JEV HEARD: ${bp.meta.audition_heard}`;
+            }
+
+            // Keep audition monitor visible briefly during stage 1 to show DJ what Jev heard
+            setTimeout(() => {
+              if (aiAuditionMonitor && !isTransitioning) aiAuditionMonitor.classList.add('hidden');
+            }, 6000);
 
             // Execute the blueprint
             executeBlueprintTransition(
@@ -2253,6 +2340,8 @@ document.addEventListener('DOMContentLoaded', () => {
             transitionStatusBanner.textContent = '⚠️ Jev blueprint empty, using standard technique...';
           }
         } catch (bpErr) {
+          clearInterval(pflInterval);
+          if (aiAuditionMonitor) aiAuditionMonitor.classList.add('hidden');
           console.warn('Jev blueprint fetch error:', bpErr);
           transitionStatusBanner.textContent = '⚠️ Jev timed out/unavailable, using standard technique...';
         }
