@@ -76,6 +76,22 @@ Open [http://localhost:8000](http://localhost:8000) in your browser.
 
 ---
 
+## Deploy to Google Cloud Run (recommended)
+
+2 vCPU / 4 GB, scale to zero, request-based billing in `us-central1` (Cloud Run's free monthly
+quota applies). Uploaded tracks, analyses and keylocked renders are kept in a Cloud Storage bucket,
+so the library survives restarts.
+
+```bash
+gcloud auth login                                   # once
+export GEMINI_API_KEY=...  JEV_API_KEY=...          # optional, stored in Secret Manager
+PROJECT=<your-project-id> ./deploy/cloudrun.sh
+```
+
+The script enables the APIs, creates the bucket (keylocked renders expire after 30 days), a service
+account with access to that bucket only, and deploys the Dockerfile with `GCS_BUCKET` set.
+Without `GCS_BUCKET` (local runs, Render) everything stays on local disk.
+
 ## Deploy to Render.com
 
 This repository includes a production-ready `render.yaml` Blueprint and an optimized `Dockerfile`.

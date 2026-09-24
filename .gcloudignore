@@ -1,0 +1,8 @@
+# What `gcloud run deploy --source .` uploads to Cloud Build: the git-tracked app only
+# (never local tracks in uploads/ or the 3 GB of renders in outputs/)
+#!include:.gitignore
+.git/
+.gcloudignore
+.claude/
+tests/
+*.png

@@ -14,7 +14,7 @@ import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.concurrency import run_in_threadpool
@@ -24,7 +24,8 @@ import soundfile as sf
 
 from .audio_analyzer import analyze_track, check_camelot_compatibility, build_grid_times, ANALYSIS_VERSION
 from .dj_engine import render_pro_transition
-from .stretch import stretch_file
+from .stretch import stretch_file, stretched_path
+from . import storage
 from .stem_separator import separate_with_demucs, separate_fast_spectral
 from .ai_advisor import generate_ai_dj_strategy
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
@@ -92,23 +93,63 @@ async def heavy(fn, *args, **kwargs):
     return await loop.run_in_executor(_heavy_pool(), functools.partial(fn, *args, **kwargs))
 
 
+async def local_track(file_id: str) -> Optional[str]:
+    """Local path of an uploaded track, pulling it from the bucket (Cloud Run) when this
+    instance doesn't have it yet. None if it exists nowhere."""
+    import urllib.parse
+    ids = [file_id] if urllib.parse.unquote(file_id) == file_id else [file_id, urllib.parse.unquote(file_id)]
+    for fid in ids:
+        path = os.path.join(UPLOAD_DIR, fid)
+        if os.path.exists(path):
+            return path
+    for fid in ids:
+        path = os.path.join(UPLOAD_DIR, fid)
+        if await run_in_threadpool(storage.fetch_file, f"uploads/{fid}", path):
+            return path
+    return None
+
+
+async def persist_analysis(file_id: str, an: dict) -> None:
+    """Keep an analysis in memory, on local disk and (Cloud Run) in the bucket."""
+    ANALYSIS_CACHE[file_id] = an
+    save_cache_to_disk()
+    meta = {k: an.get(k) for k in ("title", "bpm", "camelot", "key", "duration") if an.get(k) is not None}
+    await run_in_threadpool(storage.put_json, f"analysis/{file_id}.json", an, meta)
+
+
 async def get_cached_analysis(file_id: str) -> Optional[dict]:
     """Cached analysis for an uploaded file, re-analyzing entries written by an older
     analyzer version (v1 grids only covered the first 90 s). None if the file is missing."""
     cached = ANALYSIS_CACHE.get(file_id)
+    if not (cached and cached.get("analysis_version") == ANALYSIS_VERSION) and storage.enabled():
+        remote = await run_in_threadpool(storage.get_json, f"analysis/{file_id}.json")
+        if remote:
+            cached = ANALYSIS_CACHE[file_id] = remote
     if cached and cached.get("analysis_version") == ANALYSIS_VERSION:
         return cached
-    path = os.path.join(UPLOAD_DIR, file_id)
-    if not os.path.exists(path):
+    path = await local_track(file_id)
+    if not path:
         return cached
     an = await heavy(analyze_track, path)
     for keep in ("title", "deck", "audio_url"):
         if cached and keep in cached:
             an[keep] = cached[keep]
     an["file_id"] = file_id
-    ANALYSIS_CACHE[file_id] = an
-    save_cache_to_disk()
+    await persist_analysis(file_id, an)
     return an
+
+
+def stream_file(path: str, media_type: str, headers: dict) -> StreamingResponse:
+    """Chunked response: Cloud Run caps non-streamed HTTP/1 responses at 32 MB, and keylocked
+    FLACs are ~35-40 MB."""
+    def chunks():
+        with open(path, "rb") as f:
+            while True:
+                block = f.read(1 << 20)
+                if not block:
+                    break
+                yield block
+    return StreamingResponse(chunks(), media_type=media_type, headers=headers)
 
 
 # Set-level energy manager (single instance per server, reset per set)
@@ -165,7 +206,21 @@ async def get_presets():
                 "key": data.get("key", "--"),
                 "duration": data.get("duration", 180.0)
             })
-        
+    # Cloud Run: the library lives in the bucket (metadata only, no downloads)
+    listed = {t["file_id"] for t in available_tracks}
+    remote = await run_in_threadpool(lambda: list(storage.list_metadata("analysis/")))
+    for name, meta in remote:
+        fid = name[len("analysis/"):-len(".json")]
+        if fid not in listed:
+            available_tracks.append({
+                "file_id": fid,
+                "title": meta.get("title", fid),
+                "bpm": float(meta.get("bpm", 128.0)),
+                "camelot": meta.get("camelot", "--"),
+                "key": meta.get("key", "--"),
+                "duration": float(meta.get("duration", 180.0)),
+            })
+
     sets = []
     if os.path.exists(os.path.join(UPLOAD_DIR, "Laserpack.mp3")) and os.path.exists(os.path.join(UPLOAD_DIR, "Overworld.mp3")):
         sets.append({
@@ -188,25 +243,22 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
         if unquoted in ANALYSIS_CACHE:
             target_id = unquoted
 
-    if target_id in ANALYSIS_CACHE:
-        data = dict(await get_cached_analysis(target_id))
-        data["deck"] = deck
-        data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
-        return JSONResponse(content={"status": "success", "track": data})
-        
-    path = os.path.join(UPLOAD_DIR, target_id)
-    if not os.path.exists(path):
-        path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(target_id))
-        if not os.path.exists(path):
+    # Cached (memory / disk / bucket) or analyzed now if only the audio exists
+    found = await get_cached_analysis(target_id)
+    if not found and target_id != urllib.parse.unquote(target_id):
+        target_id = urllib.parse.unquote(target_id)
+        found = await get_cached_analysis(target_id)
+    if not found:
+        path = await local_track(target_id)
+        if not path:
             raise HTTPException(status_code=404, detail=f"Track {file_id} not found")
-
-    an = await heavy(analyze_track, path)
-    an["file_id"] = target_id
-    an["deck"] = deck
-    an["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
-    ANALYSIS_CACHE[target_id] = an
-    save_cache_to_disk()
-    return JSONResponse(content={"status": "success", "track": an})
+        found = await heavy(analyze_track, path)
+        found["file_id"] = target_id
+        await persist_analysis(target_id, found)
+    data = dict(found)
+    data["deck"] = deck
+    data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
+    return JSONResponse(content={"status": "success", "track": data})
 
 @app.post("/api/upload")
 async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1")):
@@ -233,16 +285,18 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
 
         with open(save_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-            
+        # Cloud Run: keep the audio in the bucket so it survives restarts (a library, not a deck slot)
+        await run_in_threadpool(storage.put_file, f"uploads/{file_id}", save_path)
+
         # Analyze track
         analysis = await heavy(analyze_track, save_path)
         analysis["file_id"] = file_id
         analysis["title"] = clean_name
         analysis["deck"] = deck
         analysis["audio_url"] = f"/api/audio/{urllib.parse.quote(file_id)}"
-        
-        ANALYSIS_CACHE[file_id] = analysis
-        
+
+        await persist_analysis(file_id, analysis)
+
         # Keep cache lean (max 10 recent items)
         if len(ANALYSIS_CACHE) > 10:
             for k in list(ANALYSIS_CACHE.keys())[:-10]:
@@ -268,9 +322,9 @@ async def get_compatibility(camelot_1: str, camelot_2: str, direction: str = "1_
 @app.get("/api/ai-recommendation")
 async def get_ai_recommendation(file_id_1: str, file_id_2: str, direction: str = "1_to_2"):
     """AI Live Decision Engine recommendation endpoint supporting bidirectional mixing."""
-    track_1_path = os.path.join(UPLOAD_DIR, file_id_1)
-    track_2_path = os.path.join(UPLOAD_DIR, file_id_2)
-    if not os.path.exists(track_1_path) or not os.path.exists(track_2_path):
+    track_1_path = await local_track(file_id_1)
+    track_2_path = await local_track(file_id_2)
+    if not track_1_path or not track_2_path:
         raise HTTPException(status_code=404, detail="Tracks not found")
 
     an1 = await get_cached_analysis(file_id_1)
@@ -363,10 +417,8 @@ async def get_jev_blueprint(request: Request):
     # Server-side audio slicing if client didn't supply audio_clip_b64 but file_id_in exists on disk
     if not audio_b64 and file_id_in:
         try:
-            target_path = os.path.join(UPLOAD_DIR, file_id_in)
-            if not os.path.exists(target_path):
-                target_path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(file_id_in))
-            if os.path.exists(target_path):
+            target_path = await local_track(file_id_in)
+            if target_path:
                 audio_b64 = slice_audio_file_to_b64(target_path, float(cue_time or 0.0), 10.0)
                 if audio_b64:
                     audio_mime = "audio/wav"
@@ -544,10 +596,10 @@ async def render_mix(
     cue_2: Optional[float] = Form(None)
 ):
     """Renders pro-grade DJ transition between Track 1 and Track 2 in either direction."""
-    track_1_path = os.path.join(UPLOAD_DIR, file_id_1)
-    track_2_path = os.path.join(UPLOAD_DIR, file_id_2)
+    track_1_path = await local_track(file_id_1)
+    track_2_path = await local_track(file_id_2)
     
-    if not os.path.exists(track_1_path) or not os.path.exists(track_2_path):
+    if not track_1_path or not track_2_path:
         raise HTTPException(status_code=404, detail="One or both tracks not found")
         
     mix_hash = uuid.uuid4().hex[:8]
@@ -608,8 +660,8 @@ async def render_mix(
 @app.post("/api/separate-stems")
 async def separate_stems_endpoint(file_id: str = Form(...), mode: str = Form("fast")):
     """Separates audio into 4 stems (fast DSP or Demucs)."""
-    track_path = os.path.join(UPLOAD_DIR, file_id)
-    if not os.path.exists(track_path):
+    track_path = await local_track(file_id)
+    if not track_path:
         raise HTTPException(status_code=404, detail="Track not found")
         
     try:
@@ -629,38 +681,39 @@ async def separate_stems_endpoint(file_id: str = Form(...), mode: str = Form("fa
 
 @app.get("/api/audio/{filename:path}")
 async def get_audio(filename: str):
-    import urllib.parse
-    decoded = urllib.parse.unquote(filename)
-    path = os.path.join(UPLOAD_DIR, decoded)
-    if not os.path.exists(path):
-        path = os.path.join(UPLOAD_DIR, filename)
-        if not os.path.exists(path):
-            raise HTTPException(status_code=404, detail=f"File not found: {decoded}")
-            
+    path = await local_track(filename)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+
     media = "audio/mpeg" if path.lower().endswith(".mp3") else "audio/wav"
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
         "Access-Control-Allow-Headers": "*",
-        "Accept-Ranges": "bytes",
         "Cache-Control": "public, max-age=86400"
     }
-    return FileResponse(path, media_type=media, headers=headers)
+    return stream_file(path, media, headers)
 
 @app.get("/api/stretched/{file_id:path}")
 async def get_stretched(file_id: str, ratio: float):
     """The track at `ratio` x tempo with pitch unchanged (keylock), as FLAC.
     Rendered and kick-aligned in a heavy-job child process."""
     import urllib.parse
-    path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(file_id))
-    if not os.path.exists(path):
-        raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
     if not 0.8 <= ratio <= 1.25:
         raise HTTPException(status_code=400, detail="ratio must be within 0.8 - 1.25")
-    grid = (ANALYSIS_CACHE.get(urllib.parse.unquote(file_id)) or {}).get("grid")
-    out = await heavy(stretch_file, path, round(ratio, 6), STRETCH_DIR, grid)
-    return FileResponse(out, media_type="audio/flac",
-                        headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+    path = await local_track(file_id)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
+    ratio = round(ratio, 6)
+    out = stretched_path(path, ratio, STRETCH_DIR)
+    key = f"stretch/{os.path.basename(out)}"
+    # Rendered before (this instance, or any instance via the bucket)? Otherwise render + keep it.
+    if not os.path.exists(out) and not await run_in_threadpool(storage.fetch_file, key, out):
+        grid = ((await get_cached_analysis(os.path.basename(path))) or {}).get("grid")
+        out = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid)
+        await run_in_threadpool(storage.put_file, key, out, "audio/flac")
+    return stream_file(out, "audio/flac",
+                       {"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
 
 
 @app.post("/api/score-transition")
@@ -688,7 +741,7 @@ async def grid_adjust(request: Request):
     shift_ms: move the whole grid; shift_beats: move the downbeat; shift_bars: move the phrase start."""
     body = await request.json()
     file_id = body.get("file_id", "")
-    an = ANALYSIS_CACHE.get(file_id)
+    an = await get_cached_analysis(file_id)
     if not an or "grid" not in an:
         raise HTTPException(status_code=404, detail="No analyzed grid for this track")
     grid = dict(an["grid"])
@@ -700,7 +753,7 @@ async def grid_adjust(request: Request):
     an.update(build_grid_times(grid, an["duration"]))
     for key in ("suggested_cue_intro", "suggested_cue_outro"):
         an[key] = round(an[key] + shift_s, 3)
-    save_cache_to_disk()
+    await persist_analysis(file_id, an)
     fields = ("grid", "beat_times", "downbeat_times", "phrase_8_times", "phrase_16_times",
               "phrase_32_times", "suggested_cue_intro", "suggested_cue_outro")
     return JSONResponse(content={"status": "success", "track": {k: an[k] for k in fields}})

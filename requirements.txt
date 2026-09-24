@@ -8,3 +8,4 @@ librosa>=0.10.1
 pydantic>=2.6.0
 python-dotenv>=1.0.1
 requests>=2.31.0
+google-cloud-storage>=2.18.0
