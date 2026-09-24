@@ -746,8 +746,10 @@ html.landscape-ui .ai-config-item .picker-button { height: 36px; font-size: 13px
 /* The app turns the console itself when the browser can't rotate (iPhones, rotation lock) */
 html.forced-landscape, html.forced-landscape body { height: 100%; overflow: hidden; }
 html.forced-landscape .dj-console {
+  /* svh: the viewport with Safari's toolbars showing. It never changes while the page is used
+     (dvh does, each time the toolbar slides in or out, which resized the whole console) */
   position: fixed; top: 0; left: 100vw; margin: 0;
-  width: 100vh; width: 100dvh; height: 100vw;
+  width: 100vh; width: 100svh; height: 100vw;
   transform: rotate(90deg); transform-origin: top left;
   overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch;
   background: var(--bg);
