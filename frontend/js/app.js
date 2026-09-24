@@ -200,9 +200,20 @@ document.addEventListener('DOMContentLoaded', () => {
     aiModelSelect.value = savedModel.startsWith('gemini-') ? 'gemini-3.8-flash' : savedModel;
     aiModelSelect.addEventListener('change', () => {
       localStorage.setItem('ai_dj_model', aiModelSelect.value);
+      updateEngineChip();
       fetchAIStrategy();
     });
   }
+  function updateEngineChip() {
+    const chip = document.getElementById('ai-engine-chip');
+    if (!chip || !aiModelSelect) return;
+    chip.textContent = {
+      'gemini-3.8-flash': 'Gemini 3.8 Flash · Jev fallback',
+      'jev-latest': 'Jev System One · Gemini fallback',
+      local: 'Local engine (no AI)',
+    }[aiModelSelect.value] || aiModelSelect.value;
+  }
+  updateEngineChip();
   if (btnSaveJevKey && jevKeyInput) {
     btnSaveJevKey.addEventListener('click', () => {
       const keyVal = jevKeyInput.value.trim();
@@ -260,7 +271,27 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnCloseShortcuts) btnCloseShortcuts.addEventListener('click', () => toggleShortcutsModal(false));
   if (btnAICopilot) btnAICopilot.addEventListener('click', () => toggleAIModal(true));
   if (btnCloseAI) btnCloseAI.addEventListener('click', () => toggleAIModal(false));
-  if (aiRecCard) aiRecCard.addEventListener('click', () => toggleAIModal(true));
+  if (aiRecCard) {
+    aiRecCard.addEventListener('click', () => toggleAIModal(true));
+    aiRecCard.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.stopPropagation(); toggleAIModal(true); }
+    });
+  }
+
+  // Status texts are built all over this file with emoji; the hardware theme shows plain text
+  const EMOJI = /[\p{Extended_Pictographic}\u{FE0F}\u{200D}]+\s*/gu;
+  ['transition-status-banner', 'ai-rec-technique', 'ai-rec-reason', 'ai-rec-confidence', 'ai-headline-box',
+   'ai-source-badge', 'transition-state-sub', 'phrase-hud-counter'].forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const clean = () => {
+      const t = el.textContent;
+      const plain = t.replace(EMOJI, '').trim();
+      if (plain !== t) el.textContent = plain;
+    };
+    new MutationObserver(clean).observe(el, { childList: true, characterData: true, subtree: true });
+    clean();
+  });
   if (btnRefreshAI) btnRefreshAI.addEventListener('click', () => fetchAIStrategy());
 
   // Direction Switcher Handlers
@@ -331,7 +362,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function updateTechniqueUI() {
     if (selectedTechnique === 'auto') {
-      transitionStateSub.textContent = currentAIRec ? `AI PICK: ${currentAIRec.technique_name}` : 'AI SMART DECISION';
+      transitionStateSub.textContent = 'AI PICKS · EVERY OPTION SOUND-CHECKED';
     } else {
       const names = {
         'bass_swap': '💥 BASS SWAP (16/32 BARS)',
@@ -684,15 +715,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const phrases = (track.phrase_16_times && track.phrase_16_times.length) || (track.phrase_8_times && track.phrase_8_times.length) || 4;
 
     const bpmStr = (track.bpm && !isNaN(track.bpm)) ? track.bpm.toFixed(2) : '--.--';
-    const keyStr = track.camelot ? `${track.camelot} (${track.key || ''})` : '--';
+    const keyStr = track.camelot || '--';
 
     if (deckNum === 1) {
       track1Data = track;
       d1Title.textContent = track.title || track.filename;
       d1Bpm.textContent = bpmStr;
       d1Key.textContent = keyStr;
+      d1Key.title = track.key || '';
       if (d1VocalVal) {
-        d1VocalVal.textContent = `${vocalPct}% (${vocalPct > 35 ? 'VOCALS' : (vocalPct > 15 ? 'MILD' : 'CLEAN')})`;
+        d1VocalVal.textContent = `${vocalPct}%`;
+        d1VocalVal.title = vocalPct > 35 ? 'Vocals' : (vocalPct > 15 ? 'Mild vocals' : 'Clean');
         d1VocalVal.className = `lcd-val lcd-vocal-val ${vocalPct > 35 ? 'heavy' : (vocalPct > 15 ? 'moderate' : 'clean')}`;
       }
       if (d1DynamicVal) {
@@ -711,8 +744,10 @@ document.addEventListener('DOMContentLoaded', () => {
       d2Title.textContent = track.title || track.filename;
       d2Bpm.textContent = bpmStr;
       d2Key.textContent = keyStr;
+      d2Key.title = track.key || '';
       if (d2VocalVal) {
-        d2VocalVal.textContent = `${vocalPct}% (${vocalPct > 35 ? 'VOCALS' : (vocalPct > 15 ? 'MILD' : 'CLEAN')})`;
+        d2VocalVal.textContent = `${vocalPct}%`;
+        d2VocalVal.title = vocalPct > 35 ? 'Vocals' : (vocalPct > 15 ? 'Mild vocals' : 'Clean');
         d2VocalVal.className = `lcd-val lcd-vocal-val ${vocalPct > 35 ? 'heavy' : (vocalPct > 15 ? 'moderate' : 'clean')}`;
       }
       if (d2DynamicVal) {
@@ -864,6 +899,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         if (aiModelSelect && !localStorage.getItem('ai_dj_model')) {
           aiModelSelect.value = data.gemini_configured ? 'gemini-3.8-flash' : (data.jev_configured ? 'jev-latest' : 'local');
+          updateEngineChip();
         }
       }
     } catch (e) {
@@ -1276,19 +1312,19 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- Transport Controls ---
   engine.deck1.audio.addEventListener('play', () => {
     d1BtnPlay.classList.add('playing');
-    d1BtnPlay.textContent = '⏸ PAUSE';
+    d1BtnPlay.textContent = 'PAUSE';
   });
   engine.deck1.audio.addEventListener('pause', () => {
     d1BtnPlay.classList.remove('playing');
-    d1BtnPlay.textContent = '▶ PLAY';
+    d1BtnPlay.textContent = 'PLAY';
   });
   engine.deck2.audio.addEventListener('play', () => {
     d2BtnPlay.classList.add('playing');
-    d2BtnPlay.textContent = '⏸ PAUSE';
+    d2BtnPlay.textContent = 'PAUSE';
   });
   engine.deck2.audio.addEventListener('pause', () => {
     d2BtnPlay.classList.remove('playing');
-    d2BtnPlay.textContent = '▶ PLAY';
+    d2BtnPlay.textContent = 'PLAY';
   });
 
   d1BtnPlay.addEventListener('click', async () => {
@@ -1296,7 +1332,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (engine.deck1.isPlaying) {
       engine.deck1.pause();
       d1BtnPlay.classList.remove('playing');
-      d1BtnPlay.textContent = '▶ PLAY';
+      d1BtnPlay.textContent = 'PLAY';
     } else {
       if (!engine.deck1.audio.src || engine.deck1.audio.src === window.location.href) {
         transitionStatusBanner.textContent = 'DECK 1: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
@@ -1316,10 +1352,10 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         await engine.deck1.play(when, startPos);
         d1BtnPlay.classList.add('playing');
-        d1BtnPlay.textContent = '⏸ PAUSE';
+        d1BtnPlay.textContent = 'PAUSE';
       } catch (err) {
         d1BtnPlay.classList.remove('playing');
-        d1BtnPlay.textContent = '▶ PLAY';
+        d1BtnPlay.textContent = 'PLAY';
         transitionStatusBanner.textContent = 'DECK 1 PLAYBACK ERROR: ' + (err.message || 'Check audio source');
       }
     }
@@ -1330,7 +1366,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (engine.deck2.isPlaying) {
       engine.deck2.pause();
       d2BtnPlay.classList.remove('playing');
-      d2BtnPlay.textContent = '▶ PLAY';
+      d2BtnPlay.textContent = 'PLAY';
     } else {
       if (!engine.deck2.audio.src || engine.deck2.audio.src === window.location.href) {
         transitionStatusBanner.textContent = 'DECK 2: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
@@ -1350,10 +1386,10 @@ document.addEventListener('DOMContentLoaded', () => {
       try {
         await engine.deck2.play(when, startPos);
         d2BtnPlay.classList.add('playing');
-        d2BtnPlay.textContent = '⏸ PAUSE';
+        d2BtnPlay.textContent = 'PAUSE';
       } catch (err) {
         d2BtnPlay.classList.remove('playing');
-        d2BtnPlay.textContent = '▶ PLAY';
+        d2BtnPlay.textContent = 'PLAY';
         transitionStatusBanner.textContent = 'DECK 2 PLAYBACK ERROR: ' + (err.message || 'Check audio source');
       }
     }
@@ -1363,14 +1399,14 @@ document.addEventListener('DOMContentLoaded', () => {
     unlockAudio();
     engine.deck1.setCue();
     d1BtnPlay.classList.remove('playing');
-    d1BtnPlay.textContent = '▶ PLAY';
+    d1BtnPlay.textContent = 'PLAY';
   });
 
   d2BtnCue.addEventListener('click', () => {
     unlockAudio();
     engine.deck2.setCue();
     d2BtnPlay.classList.remove('playing');
-    d2BtnPlay.textContent = '▶ PLAY';
+    d2BtnPlay.textContent = 'PLAY';
   });
 
   // --- BEAT SYNC: fitted grids + one audio clock. Decks started from the same clock at the
@@ -1746,7 +1782,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function setPlayUI(btn, playing) {
     btn.classList.toggle('playing', playing);
-    btn.textContent = playing ? '⏸ PAUSE' : '▶ PLAY';
+    btn.textContent = playing ? 'PAUSE' : 'PLAY';
   }
 
   function atCtx(t, ctxTime, fn) {
@@ -1839,11 +1875,13 @@ document.addEventListener('DOMContentLoaded', () => {
         transitionStatusBanner.textContent = useAI
           ? `🤖 ${who} IS CHOOSING BETWEEN ${cands.length} TRANSITIONS WHILE EACH ONE IS SOUND-CHECKED...`
           : `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
+        renderSoundCheck(cands, null, null);
         const checked = Promise.race([measureCandidates(t, cands), new Promise(r => setTimeout(r, budget * 1000))]);
         const ai = useAI ? chooseWithAI(t, cands, aiModel) : Promise.resolve({ id: null, note: null, who });
         Promise.all([ai, checked]).then(([pick]) => {
           if (activeTransition !== t) return;  // aborted while choosing
           const { plan, verdict } = TransitionLab.settle(cands, pick.id);
+          renderSoundCheck(cands, plan.id, pick.id);
           const note = {
             ai: pick.note,
             rejected: `${pick.who} PICKED ${pick.id} BUT IT FAILED THE SOUND CHECK: PLAYING ${plan.id}, THE CLEANEST`,
@@ -1907,6 +1945,35 @@ document.addEventListener('DOMContentLoaded', () => {
       clearTimeout(timer);
     }
     return { id: null, who: model.startsWith('jev') ? 'JEV' : 'GEMINI', note: null };
+  }
+
+  /** The sound-check panel: each candidate's measured score, which one plays, and the AI's pick. */
+  const soundCheckList = document.getElementById('sound-check-list');
+  function renderSoundCheck(cands, playedId, aiId) {
+    if (!soundCheckList) return;
+    const scores = cands.map(c => (c.measured ? c.measured.penalty : null));
+    const worst = Math.max(10, ...scores.filter(v => v !== null));
+    soundCheckList.replaceChildren(...cands.map((c, i) => {
+      const score = scores[i];
+      const plays = c.id === playedId;
+      const verdict = playedId === null ? (score === null ? (c.technique === 'blend' ? 'CHECKING' : 'NO OVERLAP') : 'MEASURED')
+        : plays ? 'PLAYS' : c.id === aiId ? 'AI PICK · FAIL' : 'SKIPPED';
+      const color = plays ? 'var(--ok)' : c.id === aiId ? 'var(--bad)' : score !== null && score > 6 ? 'var(--warn)' : 'var(--muted)';
+      const row = document.createElement('div');
+      row.className = 'check-row';
+      row.style.setProperty('--sc', color);
+      row.title = c.technique === 'blend'
+        ? `${c.bars}-bar blend leaving at ${formatTime(c.exitNative)}`
+        : `${c.technique.replace(/_/g, ' ')} leaving at ${formatTime(c.exitNative)}`;
+      const id = document.createElement('span'); id.className = 'check-id'; id.textContent = c.id;
+      const bar = document.createElement('span'); bar.className = 'check-bar';
+      const fill = document.createElement('span'); fill.style.width = `${score === null ? 0 : Math.max(4, Math.min(100, 100 * score / worst))}%`;
+      bar.append(fill);
+      const val = document.createElement('span'); val.className = 'check-score'; val.textContent = score === null ? '–' : score.toFixed(1);
+      const tag = document.createElement('span'); tag.className = 'check-verdict'; tag.textContent = verdict;
+      row.append(id, bar, val, tag);
+      return row;
+    }));
   }
 
   /** Render every blend candidate offline from the decks' own buffers and measure it (c.measured). */
@@ -2309,9 +2376,21 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Main Animation Loop ---
   let lastTime = performance.now();
+  const deckStateEls = [document.getElementById('d1-state'), document.getElementById('d2-state')];
+  function updateDeckStates() {
+    [[track1Data, engine.deck1], [track2Data, engine.deck2]].forEach(([track, deck], i) => {
+      const el = deckStateEls[i];
+      if (!el) return;
+      const [text, cls] = !track ? ['EMPTY', 'deck-state'] : deck.isPlaying ? ['ON AIR', 'deck-state on-air']
+        : ['CUED', 'deck-state cued'];
+      if (el.textContent !== text) { el.textContent = text; el.className = cls; }
+    });
+  }
+
   function loop(currentTime) {
     const dt = (currentTime - lastTime) / 1000;
     lastTime = currentTime;
+    updateDeckStates();
 
     if (track1Data) {
       jog1.updatePlayback(dt, track1Data.bpm, engine.deck1.isPlaying);

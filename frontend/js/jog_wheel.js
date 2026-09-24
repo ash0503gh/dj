@@ -14,7 +14,7 @@ class JogWheel {
     this.angle = 0; // Current rotation angle in radians
     this.isDragging = false;
     this.lastAngle = 0;
-    this.accentColor = deckNumber === 1 ? '#00e5ff' : '#ff8c00';
+    this.accentColor = deckNumber === 1 ? '#3ea6ff' : '#ff8a1f';
     
     this.setupEvents();
     this.draw();
@@ -89,22 +89,22 @@ class JogWheel {
 
     // Outer Silver/Charcoal Bezel (Knurled ring)
     const gradBezel = ctx.createLinearGradient(0, 0, w, h);
-    gradBezel.addColorStop(0, '#2d3748');
-    gradBezel.addColorStop(0.5, '#1a202c');
-    gradBezel.addColorStop(1, '#11151c');
+    gradBezel.addColorStop(0, '#2a2a30');
+    gradBezel.addColorStop(0.5, '#1b1b1f');
+    gradBezel.addColorStop(1, '#121214');
 
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
     ctx.fillStyle = gradBezel;
     ctx.fill();
     ctx.lineWidth = 3;
-    ctx.strokeStyle = '#374151';
+    ctx.strokeStyle = '#34343a';
     ctx.stroke();
 
     // Grooved Vinyl Platter
     ctx.beginPath();
     ctx.arc(cx, cy, radius - 14, 0, Math.PI * 2);
-    ctx.fillStyle = '#0a0d12';
+    ctx.fillStyle = '#0e0e10';
     ctx.fill();
 
     // Vinyl grooves

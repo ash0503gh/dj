@@ -4,9 +4,9 @@
  * Distinctive VirtualDJ Characteristics:
  * 1. High-Density Transient Spikes: Crisp 2px vertical slices with 1px dark separation slits (NO flat blocks).
  * 2. 3-Tier Multi-Band Color Layering:
- *    - Highs (Hats / Cymbals / Sibilance): Piercing Electric Cyan (#00f0ff) outer needles with white tips (#e0f7ff).
- *    - Mids (Vocals / Melodies / Synths): Vibrant Neon Lime Green (#00e676) body.
- *    - Lows (Kicks / 808 Sub): Blazing Crimson Red (#ff1744) core anchored around the center zero-crossing line.
+ *    - Highs (Hats / Cymbals / Sibilance): white (#f4f1ea) outer needles.
+ *    - Mids (Vocals / Melodies / Synths): amber (#ffb13b) body.
+ *    - Lows (Kicks / 808 Sub): blue (#2f7bff) core around the center line (Rekordbox-style 3-band).
  * 3. Authentic VirtualDJ Beatgrid with Beat Numbers:
  *    - Beat 1 (Downbeat): Prominent accent line + glowing deck-colored [ 1 ] badge.
  *    - Beats 2, 3, 4: Vertical grid ticks with crisp "2", "3", "4" numbers.
@@ -306,7 +306,7 @@ class RGBWaveform {
     const ctx = this.ctx;
 
     // Background: Deep VirtualDJ Carbon Slate
-    ctx.fillStyle = '#07090e';
+    ctx.fillStyle = '#0b0b0c';
     ctx.fillRect(0, 0, w, h);
 
     const mainH = 72; // Top 72px: Main Scrolling Waveform
@@ -318,7 +318,7 @@ class RGBWaveform {
 
     // If no track data, draw idle grid lines
     if (!this.trackData) {
-      ctx.strokeStyle = '#131922';
+      ctx.strokeStyle = '#1a1a1e';
       ctx.lineWidth = 1;
       for (let x = 0; x < w; x += 40) {
         ctx.beginPath();
@@ -365,9 +365,9 @@ class RGBWaveform {
     // --- 1. Lead-In Pre-Track Silence (Hatched Grid) ---
     const startX = timeToX(0);
     if (startX > 0) {
-      ctx.fillStyle = 'rgba(10, 14, 20, 0.95)';
+      ctx.fillStyle = 'rgba(14, 14, 16, 0.95)';
       ctx.fillRect(0, 0, startX, mainH);
-      ctx.strokeStyle = '#1c2533';
+      ctx.strokeStyle = '#26262b';
       ctx.lineWidth = 1;
       const step = 20;
       for (let x = (startX % step) - step; x < startX; x += step) {
@@ -377,14 +377,14 @@ class RGBWaveform {
         ctx.stroke();
       }
       // Track Start Line (0:00)
-      ctx.strokeStyle = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
+      ctx.strokeStyle = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
       ctx.lineWidth = 2;
       ctx.beginPath();
       ctx.moveTo(startX, 0);
       ctx.lineTo(startX, mainH);
       ctx.stroke();
 
-      ctx.fillStyle = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
+      ctx.fillStyle = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
       ctx.font = 'bold 9px monospace';
       ctx.fillText('START 0:00', startX + 4, 12);
     }
@@ -392,9 +392,9 @@ class RGBWaveform {
     // --- 2. Run-Out Post-Track Silence ---
     const endX = timeToX(dur);
     if (endX < w) {
-      ctx.fillStyle = 'rgba(10, 14, 20, 0.95)';
+      ctx.fillStyle = 'rgba(14, 14, 16, 0.95)';
       ctx.fillRect(endX, 0, w - endX, mainH);
-      ctx.strokeStyle = '#1c2533';
+      ctx.strokeStyle = '#26262b';
       ctx.lineWidth = 1;
       const step = 20;
       for (let x = endX; x < w; x += step) {
@@ -434,33 +434,33 @@ class RGBWaveform {
       // Total bar height (symmetrical positive/negative)
       const totalH = Math.max(1.5, tot * maxBarH);
 
-      // ─── LAYER 1: High Frequencies (Electric Cyan Needle Spikes) ───
-      ctx.fillStyle = '#00f0ff';
+      // ─── LAYER 1: High Frequencies (white needle spikes) ───
+      ctx.fillStyle = '#f4f1ea';
       ctx.fillRect(x, midY - totalH, sliceW, totalH * 2);
 
       // Glowing needle crest caps (top & bottom tips)
       if (totalH > 6) {
-        ctx.fillStyle = '#e0f7ff';
+        ctx.fillStyle = '#ffffff';
         ctx.fillRect(x, midY - totalH, sliceW, 1.5);
         ctx.fillRect(x, midY + totalH - 1.5, sliceW, 1.5);
       }
 
-      // ─── LAYER 2: Mid Frequencies (Neon Lime Green / Body / Vocals) ───
+      // ─── LAYER 2: Mid Frequencies (amber body / vocals) ───
       const midRatio = Math.max(0.15, Math.min(0.92, g / Math.max(0.01, tot)));
       const midH = Math.max(1, Math.min(totalH - 1, totalH * (0.32 + 0.68 * midRatio)));
-      ctx.fillStyle = '#00e676';
+      ctx.fillStyle = '#ffb13b';
       ctx.fillRect(x, midY - midH, sliceW, midH * 2);
 
-      // ─── LAYER 3: Bass / Kicks / 808 Sub (Blazing Crimson Red Core) ───
+      // ─── LAYER 3: Bass / Kicks / 808 Sub (blue core) ───
       const lowRatio = Math.max(0.0, Math.min(1.0, r / Math.max(0.01, tot)));
       if (lowRatio > 0.12) {
         const lowH = Math.max(1, Math.min(midH - 1, totalH * (0.18 + 0.82 * lowRatio)));
-        ctx.fillStyle = '#ff1744';
+        ctx.fillStyle = '#2f7bff';
         ctx.fillRect(x, midY - lowH, sliceW, lowH * 2);
       }
 
       // ─── LAYER 4: VirtualDJ Center Zero-Crossing Hairline ───
-      ctx.fillStyle = 'rgba(7, 9, 14, 0.75)';
+      ctx.fillStyle = 'rgba(11, 11, 12, 0.75)';
       ctx.fillRect(x, midY - 0.5, sliceW, 1);
     }
 
@@ -474,10 +474,10 @@ class RGBWaveform {
       if (zX2 > 0 && zX1 < w) {
         const drawX1 = Math.max(0, zX1);
         const drawX2 = Math.min(w, zX2);
-        ctx.fillStyle = 'rgba(157, 78, 221, 0.20)';
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
         ctx.fillRect(drawX1, 0, drawX2 - drawX1, mainH);
 
-        ctx.strokeStyle = 'rgba(192, 132, 252, 0.9)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
         ctx.setLineDash([4, 4]);
         ctx.lineWidth = 1.5;
         if (zX1 >= 0 && zX1 <= w) {
@@ -490,7 +490,7 @@ class RGBWaveform {
 
         // Transition Label
         if (zX1 + 10 < w && zX2 > 10) {
-          ctx.fillStyle = '#d8b4fe';
+          ctx.fillStyle = '#ecebe8';
           ctx.font = 'bold 9px monospace';
           ctx.fillText('TRANSITION DROP WINDOW // BASS SWAP', Math.max(8, zX1 + 6), 25);
         }
@@ -519,7 +519,7 @@ class RGBWaveform {
           if (x >= -15 && x <= w + 15) {
             if (isPhrase) {
               // 16-Bar Phrase: Vivid Purple full line
-              ctx.strokeStyle = '#c084fc';
+              ctx.strokeStyle = '#ff8a1f';
               ctx.lineWidth = 2;
               ctx.beginPath();
               ctx.moveTo(x, 14);
@@ -527,7 +527,7 @@ class RGBWaveform {
               ctx.stroke();
 
               // VirtualDJ Phrase Pill Badge at top
-              ctx.fillStyle = '#9333ea';
+              ctx.fillStyle = '#ff8a1f';
               ctx.fillRect(x - 12, 1, 24, 12);
               ctx.fillStyle = '#ffffff';
               ctx.font = 'bold 8px -apple-system, sans-serif';
@@ -537,7 +537,7 @@ class RGBWaveform {
 
             } else if (isDownbeat) {
               // Beat 1 (Downbeat): Deck Color Accent Line
-              const deckColor = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
+              const deckColor = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
               ctx.strokeStyle = deckColor;
               ctx.lineWidth = 1.5;
               ctx.beginPath();
@@ -654,7 +654,7 @@ class RGBWaveform {
       ctx.shadowBlur = 0;
 
       // Illuminated Center Diamond / Pip
-      const deckColor = (this.deckNum === 1) ? '#00e5ff' : '#ff8c00';
+      const deckColor = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
       ctx.fillStyle = deckColor;
       ctx.beginPath();
       ctx.arc(centerX, midY, 3.5, 0, Math.PI * 2);
