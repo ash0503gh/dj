@@ -6,7 +6,7 @@
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=13.0">
+  <link rel="stylesheet" href="/css/style.css?v=13.2">
 </head>
 <body>
   <div class="dj-console">
@@ -135,7 +135,11 @@
           </div>
           <div class="tempo-slider-wrap">
             <span class="tempo-name">TEMPO</span>
-            <input type="range" id="d1-tempo-fader" class="tempo-fader" min="-16" max="16" step="0.1" value="0" orient="vertical" aria-label="Deck A tempo">
+            <span class="tempo-sign">+</span>
+            <div class="fader fader-v fader-tempo" data-center data-reset="0" data-ticks="8" title="Tempo (double-click: reset to 0)">
+              <input type="range" id="d1-tempo-fader" class="tempo-fader" min="-16" max="16" step="0.1" value="0" aria-label="Deck A tempo">
+            </div>
+            <span class="tempo-sign">−</span>
           </div>
         </div>
 
@@ -183,8 +187,8 @@
 
           <div class="mixer-center">
             <div class="fader-row">
-              <div class="v-fader-col">
-                <input type="range" id="d1-vol-fader" class="v-fader" min="0" max="100" value="100" orient="vertical" aria-label="Deck A channel fader">
+              <div class="fader fader-v fader-channel" data-ticks="10">
+                <input type="range" id="d1-vol-fader" class="v-fader" min="0" max="100" value="100" aria-label="Deck A channel fader">
               </div>
               <div class="master-meter-strip" aria-hidden="true">
                 <div class="vu-meter" id="vu-meter-left">
@@ -198,8 +202,8 @@
                   <div class="vu-bar green"></div><div class="vu-bar green"></div><div class="vu-bar green"></div><div class="vu-bar green"></div>
                 </div>
               </div>
-              <div class="v-fader-col">
-                <input type="range" id="d2-vol-fader" class="v-fader" min="0" max="100" value="0" orient="vertical" aria-label="Deck B channel fader">
+              <div class="fader fader-v fader-channel" data-ticks="10">
+                <input type="range" id="d2-vol-fader" class="v-fader" min="0" max="100" value="0" aria-label="Deck B channel fader">
               </div>
             </div>
             <div class="pfl-row">
@@ -234,7 +238,9 @@
         <div class="crossfader-section">
           <div class="crossfader-track">
             <span class="ch-a">A</span>
-            <input type="range" id="crossfader" min="0" max="100" value="50" aria-label="Crossfader">
+            <div class="fader fader-h fader-cross" data-center data-reset="50" data-ticks="10" title="Crossfader (double-click: center)">
+              <input type="range" id="crossfader" min="0" max="100" value="50" aria-label="Crossfader">
+            </div>
             <span class="ch-b">B</span>
           </div>
           <span class="cf-label">CROSSFADER</span>
@@ -295,7 +301,11 @@
           </div>
           <div class="tempo-slider-wrap">
             <span class="tempo-name">TEMPO</span>
-            <input type="range" id="d2-tempo-fader" class="tempo-fader" min="-16" max="16" step="0.1" value="0" orient="vertical" aria-label="Deck B tempo">
+            <span class="tempo-sign">+</span>
+            <div class="fader fader-v fader-tempo" data-center data-reset="0" data-ticks="8" title="Tempo (double-click: reset to 0)">
+              <input type="range" id="d2-tempo-fader" class="tempo-fader" min="-16" max="16" step="0.1" value="0" aria-label="Deck B tempo">
+            </div>
+            <span class="tempo-sign">−</span>
           </div>
         </div>
 
@@ -545,12 +555,12 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=13.0"></script>
-  <script src="/js/mix_planner.js?v=13.0"></script>
-  <script src="/js/transition_lab.js?v=13.0"></script>
-  <script src="/js/jog_wheel.js?v=13.0"></script>
-  <script src="/js/waveform.js?v=13.0"></script>
-  <script src="/js/knobs.js?v=13.0"></script>
-  <script src="/js/app.js?v=13.0"></script>
+  <script src="/js/audio_engine.js?v=13.2"></script>
+  <script src="/js/mix_planner.js?v=13.2"></script>
+  <script src="/js/transition_lab.js?v=13.2"></script>
+  <script src="/js/jog_wheel.js?v=13.2"></script>
+  <script src="/js/waveform.js?v=13.2"></script>
+  <script src="/js/knobs.js?v=13.2"></script>
+  <script src="/js/app.js?v=13.2"></script>
 </body>
 </html>

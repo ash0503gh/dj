@@ -1,22 +1,14 @@
 /**
- * waveform.js - Professional VirtualDJ-Style 3-Band RGB Dynamic Waveform Visualizer
+ * waveform.js - Scrolling deck waveforms in the console's deck colors.
  *
- * Distinctive VirtualDJ Characteristics:
- * 1. High-Density Transient Spikes: Crisp 2px vertical slices with 1px dark separation slits (NO flat blocks).
- * 2. 3-Tier Multi-Band Color Layering:
- *    - Highs (Hats / Cymbals / Sibilance): white (#f4f1ea) outer needles.
- *    - Mids (Vocals / Melodies / Synths): amber (#ffb13b) body.
- *    - Lows (Kicks / 808 Sub): blue (#2f7bff) core around the center line (Rekordbox-style 3-band).
- * 3. Authentic VirtualDJ Beatgrid with Beat Numbers:
- *    - Beat 1 (Downbeat): Prominent accent line + glowing deck-colored [ 1 ] badge.
- *    - Beats 2, 3, 4: Vertical grid ticks with crisp "2", "3", "4" numbers.
- *    - 16-Bar Phrases: Vivid purple accent lines with [16B] badge.
- * 4. Center Playhead Needle:
- *    - Crisp white glowing needle with top pointer (▼), bottom pointer (▲), and illuminated center pip.
- * 5. Mini Full-Track Overview Strip:
- *    - True 3-band energy overview with illuminated zoom window bracket and playhead scrubber.
- * 6. High-Density Synthesizer & Sub-Sample Interpolator:
- *    - Guarantees razor-sharp transient spikes even for fallback audio or coarse arrays.
+ * - Bars (3 px, 1 px apart): a softer outer body for the full level, a bright core for the bass
+ *   share and light tips where the highs dominate. Deck A blue, deck B orange; the part already
+ *   played is dimmed.
+ * - Beat grid behind the bars: faint beats, brighter bar lines, deck-colored 16-bar phrase marks.
+ * - Numbered hot cue flags, track start/end, a soft tint over the transition window (the page
+ *   draws the playhead and the transition box/label as overlays across both decks).
+ * - Full-track overview strip at the bottom: played part dimmed, cue ticks, visible window.
+ * - Low-resolution waveform arrays get beat-synchronized transient detail (sampleWaveformAt).
  */
 
 class RGBWaveform {
@@ -42,9 +34,13 @@ class RGBWaveform {
 
   resize() {
     if (!this.canvas || !this.canvas.parentElement) return;
-    const parentW = this.canvas.parentElement.clientWidth || 800;
-    this.canvas.width = Math.max(300, parentW);
-    this.canvas.height = 90;
+    // Drawn in CSS pixels on a device-pixel backing store, so it stays sharp on retina screens
+    const dpr = window.devicePixelRatio || 1;
+    this.cssW = Math.max(300, this.canvas.parentElement.clientWidth || 800);
+    this.cssH = Math.max(60, this.canvas.clientHeight || 90);   // the stylesheet sets the lane height
+    this.canvas.width = Math.round(this.cssW * dpr);
+    this.canvas.height = Math.round(this.cssH * dpr);
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this.draw();
   }
 
@@ -245,8 +241,8 @@ class RGBWaveform {
       const h = rect.height;
       const dur = this.trackData.duration;
 
-      // Bottom 18px is the mini full-track overview strip
-      if (y >= h - 18 || this.dragMode === 'overview') {
+      // The bottom strip is the full-track overview
+      if (y >= h - 16 || this.dragMode === 'overview') {
         this.dragMode = 'overview';
         const ratio = Math.max(0, Math.min(1, x / w));
         const targetTime = ratio * dur;
@@ -301,470 +297,182 @@ class RGBWaveform {
 
   draw() {
     if (!this.canvas || !this.ctx) return;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
     const ctx = this.ctx;
+    const w = this.cssW || this.canvas.width;
+    const H = this.cssH || 90;
+    const OV_H = H >= 80 ? 14 : 11;        // full-track overview strip at the bottom
+    const OV_Y = H - OV_H - 1;
+    const MAIN_H = OV_Y - 5;               // scrolling waveform above it
+    const midY = MAIN_H / 2 + 1;
+    const maxBarH = MAIN_H / 2 - 5;
+    const rgb = this.deckNum === 1 ? [62, 166, 255] : [255, 138, 31];
+    const col = (a) => `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${a})`;
 
-    // Background: Deep VirtualDJ Carbon Slate
     ctx.fillStyle = '#0b0b0c';
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillRect(0, 0, w, H);
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+    ctx.fillRect(0, midY - 0.5, w, 1);
 
-    const mainH = 72; // Top 72px: Main Scrolling Waveform
-    const overviewY = 73; // Bottom 17px: Mini Full-Track Overview
-    const overviewH = 17;
-    const midY = 41; // Shift slightly down to leave room for VirtualDJ beat numbers at top
-    const centerX = w * 0.5; // Locked center playhead line (50%)
-    const maxBarH = 29; // ~29px max height above and below center line
-
-    // If no track data, draw idle grid lines
     if (!this.trackData) {
-      ctx.strokeStyle = '#1a1a1e';
-      ctx.lineWidth = 1;
-      for (let x = 0; x < w; x += 40) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x, mainH);
-        ctx.stroke();
-      }
-      this.drawOverviewStrip(w, h, overviewY, overviewH);
+      this.drawOverviewStrip(w, OV_Y, OV_H, rgb);
       return;
     }
 
     const dur = Math.max(1, this.trackData.duration || 180);
     const visibleDur = this.getVisibleDuration();
-    const isScrolling = (this.mode === 'scroll');
+    const scrolling = this.mode === 'scroll';
+    const centerX = w / 2;
+    const timeToX = (t) => (scrolling ? centerX + ((t - this.currentTime) / visibleDur) * w : (t / dur) * w);
+    const xToTime = (x) => (scrolling ? this.currentTime + ((x - centerX) / w) * visibleDur : (x / w) * dur);
+    const viewStart = xToTime(0), viewEnd = xToTime(w);
 
-    // Calculate visible time window
-    let viewStart, viewEnd;
-    if (isScrolling) {
-      viewStart = this.currentTime - visibleDur / 2;
-      viewEnd = this.currentTime + visibleDur / 2;
-    } else {
-      viewStart = 0;
-      viewEnd = dur;
-    }
-
-    // Helper: Map audio time to canvas X coordinate
-    const timeToX = (t) => {
-      if (isScrolling) {
-        return centerX + ((t - this.currentTime) / visibleDur) * w;
-      } else {
-        return (t / dur) * w;
-      }
-    };
-
-    // Helper: Map canvas X coordinate to audio time
-    const xToTime = (x) => {
-      if (isScrolling) {
-        return this.currentTime + ((x - centerX) / w) * visibleDur;
-      } else {
-        return (x / w) * dur;
-      }
-    };
-
-    // --- 1. Lead-In Pre-Track Silence (Hatched Grid) ---
-    const startX = timeToX(0);
-    if (startX > 0) {
-      ctx.fillStyle = 'rgba(14, 14, 16, 0.95)';
-      ctx.fillRect(0, 0, startX, mainH);
-      ctx.strokeStyle = '#26262b';
-      ctx.lineWidth = 1;
-      const step = 20;
-      for (let x = (startX % step) - step; x < startX; x += step) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x + step, mainH);
-        ctx.stroke();
-      }
-      // Track Start Line (0:00)
-      ctx.strokeStyle = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(startX, 0);
-      ctx.lineTo(startX, mainH);
-      ctx.stroke();
-
-      ctx.fillStyle = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
-      ctx.font = 'bold 9px monospace';
-      ctx.fillText('START 0:00', startX + 4, 12);
-    }
-
-    // --- 2. Run-Out Post-Track Silence ---
-    const endX = timeToX(dur);
-    if (endX < w) {
-      ctx.fillStyle = 'rgba(14, 14, 16, 0.95)';
-      ctx.fillRect(endX, 0, w - endX, mainH);
-      ctx.strokeStyle = '#26262b';
-      ctx.lineWidth = 1;
-      const step = 20;
-      for (let x = endX; x < w; x += step) {
-        ctx.beginPath();
-        ctx.moveTo(x, 0);
-        ctx.lineTo(x + step, mainH);
-        ctx.stroke();
-      }
-      ctx.strokeStyle = '#ef4444';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(endX, 0);
-      ctx.lineTo(endX, mainH);
-      ctx.stroke();
-
-      ctx.fillStyle = '#ef4444';
-      ctx.font = 'bold 9px monospace';
-      ctx.fillText('END', endX - 26, 12);
-    }
-
-    // --- 3. Render VirtualDJ Multi-Band Layered Waveform Slices ---
-    // VirtualDJ Signature Geometry: 2.0px crisp vertical transient bars + 1.0px dark slit gap
-    const sliceW = 2.0;
-    const gap = 1.0;
-    const sliceStep = sliceW + gap; // 3.0px total step per slice
-
-    for (let x = 0; x < w; x += sliceStep) {
-      const t = xToTime(x + sliceW / 2);
-      if (t < 0 || t > dur) continue;
-
-      const sample = this.sampleWaveformAt(t, dur);
-      const tot = sample.tot;
-      const r = sample.r;
-      const g = sample.g;
-      const b = sample.b;
-
-      // Total bar height (symmetrical positive/negative)
-      const totalH = Math.max(1.5, tot * maxBarH);
-
-      // ─── LAYER 1: High Frequencies (white needle spikes) ───
-      ctx.fillStyle = '#f4f1ea';
-      ctx.fillRect(x, midY - totalH, sliceW, totalH * 2);
-
-      // Glowing needle crest caps (top & bottom tips)
-      if (totalH > 6) {
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(x, midY - totalH, sliceW, 1.5);
-        ctx.fillRect(x, midY + totalH - 1.5, sliceW, 1.5);
-      }
-
-      // ─── LAYER 2: Mid Frequencies (amber body / vocals) ───
-      const midRatio = Math.max(0.15, Math.min(0.92, g / Math.max(0.01, tot)));
-      const midH = Math.max(1, Math.min(totalH - 1, totalH * (0.32 + 0.68 * midRatio)));
-      ctx.fillStyle = '#ffb13b';
-      ctx.fillRect(x, midY - midH, sliceW, midH * 2);
-
-      // ─── LAYER 3: Bass / Kicks / 808 Sub (blue core) ───
-      const lowRatio = Math.max(0.0, Math.min(1.0, r / Math.max(0.01, tot)));
-      if (lowRatio > 0.12) {
-        const lowH = Math.max(1, Math.min(midH - 1, totalH * (0.18 + 0.82 * lowRatio)));
-        ctx.fillStyle = '#2f7bff';
-        ctx.fillRect(x, midY - lowH, sliceW, lowH * 2);
-      }
-
-      // ─── LAYER 4: VirtualDJ Center Zero-Crossing Hairline ───
-      ctx.fillStyle = 'rgba(11, 11, 12, 0.75)';
-      ctx.fillRect(x, midY - 0.5, sliceW, 1);
-    }
-
-    // --- 4. Transition Zone Shaded Highlight (on outgoing or incoming deck) ---
-    if (this.transitionZone && this.transitionZone.duration > 0) {
-      const zStart = this.transitionZone.start;
-      const zEnd = zStart + this.transitionZone.duration;
-      const zX1 = timeToX(zStart);
-      const zX2 = timeToX(zEnd);
-
-      if (zX2 > 0 && zX1 < w) {
-        const drawX1 = Math.max(0, zX1);
-        const drawX2 = Math.min(w, zX2);
-        ctx.fillStyle = 'rgba(255, 255, 255, 0.07)';
-        ctx.fillRect(drawX1, 0, drawX2 - drawX1, mainH);
-
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.55)';
-        ctx.setLineDash([4, 4]);
-        ctx.lineWidth = 1.5;
-        if (zX1 >= 0 && zX1 <= w) {
-          ctx.beginPath(); ctx.moveTo(zX1, 0); ctx.lineTo(zX1, mainH); ctx.stroke();
-        }
-        if (zX2 >= 0 && zX2 <= w) {
-          ctx.beginPath(); ctx.moveTo(zX2, 0); ctx.lineTo(zX2, mainH); ctx.stroke();
-        }
-        ctx.setLineDash([]);
-
-        // Transition Label
-        if (zX1 + 10 < w && zX2 > 10) {
-          ctx.fillStyle = '#ecebe8';
-          ctx.font = 'bold 9px monospace';
-          ctx.fillText('TRANSITION DROP WINDOW // BASS SWAP', Math.max(8, zX1 + 6), 25);
-        }
+    // Transition window: a soft tint (the page draws its box and label on top)
+    const tz = this.transitionZone;
+    if (tz && tz.duration > 0) {
+      const x1 = Math.max(0, timeToX(tz.start)), x2 = Math.min(w, timeToX(tz.start + tz.duration));
+      if (x2 > x1) {
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.045)';
+        ctx.fillRect(x1, 0, x2 - x1, MAIN_H);
       }
     }
 
-    // --- 5. VirtualDJ Beatgrid Lines & Beat Numbers (1, 2, 3, 4) ---
-    if (this.trackData.beat_times && this.trackData.beat_times.length > 0) {
-      const downbeatSet = new Set(this.trackData.downbeat_times || []);
-      const phraseSet = new Set(this.trackData.phrase_16_times || []);
-      const beats = this.trackData.beat_times;
-
-      let beatInBar = 1;
-
-      for (let idx = 0; idx < beats.length; idx++) {
-        const t = beats[idx];
-        const isDownbeat = downbeatSet.has(t) || (idx % 4 === 0);
-        const isPhrase = phraseSet.has(t) || (idx % 64 === 0);
-
-        if (isDownbeat) {
-          beatInBar = 1;
-        }
-
-        if (t >= viewStart - 0.5 && t <= viewEnd + 0.5) {
-          const x = Math.round(timeToX(t));
-          if (x >= -15 && x <= w + 15) {
-            if (isPhrase) {
-              // 16-Bar Phrase: Vivid Purple full line
-              ctx.strokeStyle = '#ff8a1f';
-              ctx.lineWidth = 2;
-              ctx.beginPath();
-              ctx.moveTo(x, 14);
-              ctx.lineTo(x, mainH);
-              ctx.stroke();
-
-              // VirtualDJ Phrase Pill Badge at top
-              ctx.fillStyle = '#ff8a1f';
-              ctx.fillRect(x - 12, 1, 24, 12);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = 'bold 8px -apple-system, sans-serif';
-              ctx.textAlign = 'center';
-              ctx.fillText('16B', x, 10);
-              ctx.textAlign = 'left';
-
-            } else if (isDownbeat) {
-              // Beat 1 (Downbeat): Deck Color Accent Line
-              const deckColor = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
-              ctx.strokeStyle = deckColor;
-              ctx.lineWidth = 1.5;
-              ctx.beginPath();
-              ctx.moveTo(x, 14);
-              ctx.lineTo(x, mainH);
-              ctx.stroke();
-
-              // VirtualDJ Downbeat [ 1 ] Badge
-              ctx.fillStyle = deckColor;
-              ctx.fillRect(x - 6, 1, 12, 12);
-              ctx.fillStyle = '#000000';
-              ctx.font = 'bold 9px -apple-system, sans-serif';
-              ctx.textAlign = 'center';
-              ctx.fillText('1', x, 10);
-              ctx.textAlign = 'left';
-
-            } else {
-              // Beats 2, 3, 4: Clean vertical tick + number
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.20)';
-              ctx.lineWidth = 1;
-              ctx.beginPath();
-              ctx.moveTo(x, 14);
-              ctx.lineTo(x, mainH - 2);
-              ctx.stroke();
-
-              // VirtualDJ Beat Number (2, 3, 4)
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
-              ctx.font = 'bold 8px monospace';
-              ctx.textAlign = 'center';
-              ctx.fillText(String(beatInBar), x, 10);
-              ctx.textAlign = 'left';
-            }
-          }
-        }
-
-        beatInBar = (beatInBar % 4) + 1;
-      }
-    }
-
-    // --- 6. Hot Cues (1: INTRO, 2: VERSE, 3: DROP, 4: OUTRO) ---
-    const cueDefs = [
-      { key: 'cue_1', label: '1 INTRO', color: '#10b981' },
-      { key: 'cue_2', label: '2 VERSE', color: '#0ea5e9' },
-      { key: 'cue_3', label: '3 DROP',  color: '#ec4899' },
-      { key: 'cue_4', label: '4 OUTRO', color: '#f97316' }
-    ];
-
-    const hotCues = this.trackData.hot_cues || {
-      cue_1: (this.trackData.suggested_cue_intro !== undefined) ? this.trackData.suggested_cue_intro : 0,
-      cue_2: (this.trackData.suggested_cue_verse !== undefined) ? this.trackData.suggested_cue_verse : ((this.trackData.duration || 180) * 0.25),
-      cue_3: (this.trackData.suggested_cue_drop !== undefined) ? this.trackData.suggested_cue_drop : ((this.trackData.duration || 180) * 0.50),
-      cue_4: (this.trackData.suggested_cue_outro !== undefined) ? this.trackData.suggested_cue_outro : Math.max(0, (this.trackData.duration || 180) - 30)
-    };
-
-    cueDefs.forEach(cd => {
-      const t = hotCues[cd.key];
-      if (t !== undefined && t !== null) {
-        const x = timeToX(t);
-        if (x >= -20 && x <= w + 20) {
-          ctx.strokeStyle = cd.color;
-          ctx.lineWidth = 2;
+    // Beat grid behind the bars: faint beats, brighter bar lines, deck-colored 16-bar phrases
+    const beats = this.trackData.beat_times || [];
+    if (beats.length) {
+      const downbeats = new Set(this.trackData.downbeat_times || []);
+      const phrases = new Set(this.trackData.phrase_16_times || []);
+      const pxPerBeat = (w / visibleDur) * (60 / (this.trackData.bpm || 120));
+      for (let i = 0; i < beats.length; i++) {
+        const t = beats[i];
+        if (t < viewStart - 1 || t > viewEnd + 1) continue;
+        const x = Math.round(timeToX(t)) + 0.5;
+        if (phrases.has(t)) {
+          ctx.fillStyle = col(0.55);
+          ctx.fillRect(x - 1, 0, 2, MAIN_H);
           ctx.beginPath();
-          ctx.moveTo(x, 14);
-          ctx.lineTo(x, mainH);
-          ctx.stroke();
-
-          ctx.fillStyle = cd.color;
-          ctx.beginPath();
-          ctx.moveTo(x - 5, 14);
-          ctx.lineTo(x + 5, 14);
-          ctx.lineTo(x, 21);
+          ctx.moveTo(x - 4, 0); ctx.lineTo(x + 4, 0); ctx.lineTo(x, 5); ctx.closePath();
           ctx.fill();
-
-          ctx.fillStyle = cd.color;
-          ctx.fillRect(x + 2, 14, 42, 11);
-          ctx.fillStyle = '#000000';
-          ctx.font = 'bold 8px -apple-system, sans-serif';
-          ctx.textAlign = 'left';
-          ctx.fillText(cd.label, x + 4, 22);
+        } else if (downbeats.has(t)) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.13)';
+          ctx.fillRect(x - 0.5, 0, 1, MAIN_H);
+        } else if (pxPerBeat > 7) {
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.05)';
+          ctx.fillRect(x - 0.5, 6, 1, MAIN_H - 12);
         }
       }
-    });
-
-    // --- 7. VirtualDJ Center Playhead Needle ---
-    if (isScrolling) {
-      ctx.shadowColor = '#ffffff';
-      ctx.shadowBlur = 6;
-
-      // Vertical White Needle
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.moveTo(centerX, 0);
-      ctx.lineTo(centerX, mainH);
-      ctx.stroke();
-
-      // Top White Pointer Triangle (pointing down ▼)
-      ctx.fillStyle = '#ffffff';
-      ctx.beginPath();
-      ctx.moveTo(centerX - 6, 0);
-      ctx.lineTo(centerX + 6, 0);
-      ctx.lineTo(centerX, 8);
-      ctx.closePath();
-      ctx.fill();
-
-      // Bottom White Pointer Triangle (pointing up ▲)
-      ctx.beginPath();
-      ctx.moveTo(centerX - 6, mainH);
-      ctx.lineTo(centerX + 6, mainH);
-      ctx.lineTo(centerX, mainH - 8);
-      ctx.closePath();
-      ctx.fill();
-
-      ctx.shadowBlur = 0;
-
-      // Illuminated Center Diamond / Pip
-      const deckColor = (this.deckNum === 1) ? '#3ea6ff' : '#ff8a1f';
-      ctx.fillStyle = deckColor;
-      ctx.beginPath();
-      ctx.arc(centerX, midY, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1;
-      ctx.stroke();
-    } else {
-      // In overview mode, playhead travels across
-      const playX = timeToX(this.currentTime);
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 2;
-      ctx.shadowColor = '#ffffff';
-      ctx.shadowBlur = 6;
-      ctx.beginPath();
-      ctx.moveTo(playX, 0);
-      ctx.lineTo(playX, mainH);
-      ctx.stroke();
-      ctx.shadowBlur = 0;
     }
 
-    // --- 8. Mini Full-Track Overview Strip at Bottom ---
-    this.drawOverviewStrip(w, h, overviewY, overviewH);
+    // Bars: 3 px wide, 1 px apart. Outer body = full level (softer); bright core = the bass share;
+    // light tips where the highs dominate. The part already played is dimmed.
+    const BAR = 3, STEP = 4;
+    const played = scrolling ? centerX : timeToX(this.currentTime);
+    for (let x = 0; x < w; x += STEP) {
+      const t = xToTime(x + BAR / 2);
+      if (t < 0 || t > dur) continue;
+      const s = this.sampleWaveformAt(t, dur);
+      const h = Math.max(1, s.tot * maxBarH);
+      const lowShare = Math.min(1, s.r / Math.max(0.01, s.tot));
+      const highShare = Math.min(1, s.b / Math.max(0.01, s.tot));
+      const dim = x + BAR <= played ? 0.42 : 1;
+      ctx.fillStyle = col((0.38 + 0.2 * highShare) * dim);
+      ctx.fillRect(x, midY - h, BAR, h * 2);
+      const core = Math.max(1, Math.min(h, h * (0.25 + 0.75 * lowShare)));
+      ctx.fillStyle = col(0.95 * dim);
+      ctx.fillRect(x, midY - core, BAR, core * 2);
+      if (highShare > 0.45 && h > 6) {
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.55 * dim})`;
+        ctx.fillRect(x, midY - h, BAR, 1.5);
+        ctx.fillRect(x, midY + h - 1.5, BAR, 1.5);
+      }
+    }
+
+    // Track start / end
+    ctx.font = '600 9px "JetBrains Mono", monospace';
+    const sx = timeToX(0);
+    if (sx > 0 && sx < w) {
+      ctx.fillStyle = col(0.8);
+      ctx.fillRect(sx, 4, 1, MAIN_H - 8);
+      ctx.fillText('0:00', sx + 4, MAIN_H - 5);
+    }
+    const ex = timeToX(dur);
+    if (ex > 0 && ex < w) {
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.fillRect(ex, 4, 1, MAIN_H - 8);
+      ctx.fillText('END', ex - 24, MAIN_H - 5);
+    }
+
+    // Hot cues: thin line + numbered flag
+    const cues = this.cuePoints(dur);
+    ctx.font = '700 9px "JetBrains Mono", monospace';
+    ctx.textAlign = 'center';
+    cues.forEach(({ t, n, color }) => {
+      const x = Math.round(timeToX(t));
+      if (x < -16 || x > w + 16) return;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.75;
+      ctx.fillRect(x, 0, 1, MAIN_H);
+      ctx.globalAlpha = 1;
+      ctx.fillRect(x, MAIN_H - 13, 13, 13);
+      ctx.fillStyle = '#0b0b0c';
+      ctx.fillText(String(n), x + 6.5, MAIN_H - 3.5);
+    });
+    ctx.textAlign = 'left';
+
+    // Overview mode has no page playhead: draw it here
+    if (!scrolling) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(Math.round(played) - 1, 0, 2, MAIN_H);
+    }
+
+    this.drawOverviewStrip(w, OV_Y, OV_H, rgb);
   }
 
-  /**
-   * Renders the mini full-track overview strip along the bottom 17px
-   * in VirtualDJ 3-band colors with illuminated zoom bracket.
-   */
-  drawOverviewStrip(w, h, overviewY, overviewH) {
-    const ctx = this.ctx;
-    const dur = (this.trackData && this.trackData.duration) ? this.trackData.duration : 180;
-    const visibleDur = this.getVisibleDuration();
-
-    // Strip background
-    ctx.fillStyle = '#05070a';
-    ctx.fillRect(0, overviewY, w, overviewH);
-    ctx.strokeStyle = '#121820';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(0, overviewY);
-    ctx.lineTo(w, overviewY);
-    ctx.stroke();
-
-    if (!this.trackData || !this.trackData.waveform) return;
-
-    const midY = overviewY + (overviewH / 2);
-    const maxH = (overviewH / 2) - 1.5;
-
-    // Mini compressed waveform in VirtualDJ 3-band colors
-    const overviewStep = 2.0;
-    for (let x = 0; x < w; x += overviewStep) {
-      const t = (x / w) * dur;
-      const sample = this.sampleWaveformAt(t, dur);
-      const totH = Math.max(1, sample.tot * maxH);
-      const lowH = Math.max(0, sample.r * maxH);
-
-      // Mid/High background bar
-      ctx.fillStyle = (this.deckNum === 1) ? 'rgba(0, 229, 255, 0.55)' : 'rgba(255, 140, 0, 0.55)';
-      ctx.fillRect(x, midY - totH, 1.5, totH * 2);
-
-      // Low kick core
-      if (lowH > 0.5) {
-        ctx.fillStyle = 'rgba(255, 23, 68, 0.85)';
-        ctx.fillRect(x, midY - lowH, 1.5, lowH * 2);
-      }
-    }
-
-    // Hot Cue markers on mini overview
-    const overviewCues = this.trackData.hot_cues || {
-      cue_1: (this.trackData.suggested_cue_intro !== undefined) ? this.trackData.suggested_cue_intro : 0,
-      cue_2: (this.trackData.suggested_cue_verse !== undefined) ? this.trackData.suggested_cue_verse : (dur * 0.25),
-      cue_3: (this.trackData.suggested_cue_drop !== undefined) ? this.trackData.suggested_cue_drop : (dur * 0.50),
-      cue_4: (this.trackData.suggested_cue_outro !== undefined) ? this.trackData.suggested_cue_outro : Math.max(0, dur - 30)
+  /** Hot cue times from the track (same fallbacks as the cue buttons). */
+  cuePoints(dur) {
+    const td = this.trackData;
+    const hc = td.hot_cues || {
+      cue_1: td.suggested_cue_intro !== undefined ? td.suggested_cue_intro : 0,
+      cue_2: td.suggested_cue_verse !== undefined ? td.suggested_cue_verse : dur * 0.25,
+      cue_3: td.suggested_cue_drop !== undefined ? td.suggested_cue_drop : dur * 0.5,
+      cue_4: td.suggested_cue_outro !== undefined ? td.suggested_cue_outro : Math.max(0, dur - 30),
     };
-    const cueColors = { cue_1: '#10b981', cue_2: '#0ea5e9', cue_3: '#ec4899', cue_4: '#f97316' };
-    Object.entries(overviewCues).forEach(([k, t]) => {
-      if (t !== undefined && t !== null) {
-        const cx = (t / dur) * w;
-        ctx.fillStyle = cueColors[k] || '#10b981';
-        ctx.fillRect(cx - 1.5, overviewY + 1, 3, overviewH - 2);
-      }
-    });
+    const colors = ['#10b981', '#0ea5e9', '#ec4899', '#f97316'];
+    return [1, 2, 3, 4].map((n) => ({ n, t: hc[`cue_${n}`], color: colors[n - 1] }))
+      .filter((c) => c.t !== undefined && c.t !== null);
+  }
 
-    // Visible window illuminated bracket in scrolling mode
-    if (this.mode === 'scroll') {
-      const winLeft = Math.max(0, ((this.currentTime - visibleDur / 2) / dur) * w);
-      const winRight = Math.min(w, ((this.currentTime + visibleDur / 2) / dur) * w);
-      const winW = Math.max(6, winRight - winLeft);
-
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
-      ctx.fillRect(winLeft, overviewY, winW, overviewH);
-
-      ctx.strokeStyle = '#ffffff';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(winLeft, overviewY, winW, overviewH);
-
-      // Bracket handles
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(winLeft, overviewY, 2, overviewH);
-      ctx.fillRect(winLeft + winW - 2, overviewY, 2, overviewH);
+  /** Full-track overview: played part dimmed, cue ticks, the visible window and the playhead. */
+  drawOverviewStrip(w, y, h, rgb) {
+    const ctx = this.ctx;
+    ctx.fillStyle = '#121214';
+    ctx.fillRect(0, y, w, h);
+    if (!this.trackData || !this.trackData.waveform) return;
+    const dur = Math.max(1, this.trackData.duration || 180);
+    const mid = y + h / 2;
+    const maxH = h / 2 - 1;
+    const playX = Math.max(0, Math.min(w, (this.currentTime / dur) * w));
+    for (let x = 0; x < w; x += 2) {
+      const s = this.sampleWaveformAt((x / w) * dur, dur);
+      const bh = Math.max(0.5, s.tot * maxH);
+      ctx.fillStyle = `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${x < playX ? 0.3 : 0.75})`;
+      ctx.fillRect(x, mid - bh, 1.5, bh * 2);
     }
-
-    // Current playhead position cursor on mini overview
-    const pipX = Math.max(0, Math.min(w, (this.currentTime / dur) * w));
+    this.cuePoints(dur).forEach(({ t, color }) => {
+      ctx.fillStyle = color;
+      ctx.fillRect(Math.round((t / dur) * w) - 1, y, 2, h);
+    });
+    if (this.mode === 'scroll') {
+      const vis = this.getVisibleDuration();
+      const x1 = Math.max(0, ((this.currentTime - vis / 2) / dur) * w);
+      const x2 = Math.min(w, ((this.currentTime + vis / 2) / dur) * w);
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.fillRect(x1, y, Math.max(4, x2 - x1), h);
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(x1 + 0.5, y + 0.5, Math.max(4, x2 - x1) - 1, h - 1);
+    }
     ctx.fillStyle = '#ffffff';
-    ctx.shadowColor = '#ffffff';
-    ctx.shadowBlur = 4;
-    ctx.fillRect(pipX - 1, overviewY, 2, overviewH);
-    ctx.shadowBlur = 0;
+    ctx.fillRect(playX - 1, y, 2, h);
   }
 }
 
