@@ -393,7 +393,7 @@ def compute_section_map(mono: np.ndarray, sr: int, beat_times: List[float], bpm:
 # track, then find the bar phase and phrase phase from structural changes.
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANALYSIS_VERSION = 4
+ANALYSIS_VERSION = 5
 ANALYSIS_SR = 16000
 ONSET_HOP = 128            # 8 ms onset frames
 BPM_RANGE = (85.0, 185.0)
@@ -638,6 +638,18 @@ def _best_offset(nov: np.ndarray, modulus: int, choices) -> int:
     return max(scores, key=scores.get)
 
 
+def _bass_entries(low_db: np.ndarray) -> np.ndarray:
+    """Per bar: dB by which kick/bass comes in on this bar and stays at body level for 4 bars
+    (beyond a 6 dB margin), else 0."""
+    out = np.zeros(len(low_db))
+    median = float(np.median(low_db)) if len(low_db) else 0.0
+    for b in range(1, len(low_db) - 3):
+        after = float(low_db[b:b + 4].min())
+        if after > median:
+            out[b] = max(0.0, after - float(low_db[b - 1]) - 6.0)
+    return out
+
+
 def build_grid_times(grid: Dict[str, Any], duration: float) -> Dict[str, List[float]]:
     """Expand grid parameters into the beat/downbeat/phrase time lists the frontend uses."""
     period = grid["period"]
@@ -712,9 +724,12 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
         bar_mel = _sync_mean(logS, fps, bar_t)
         bar_chroma = _sync_mean(beat_chroma, 1.0, np.arange(downbeat_offset, len(beat_t), 4, dtype=float))
         nov_bar = _z(_boundary_novelty(bar_mel, 4)) + 0.5 * _z(_boundary_novelty(bar_chroma, 4, cosine=True))
-        o8 = _best_offset(nov_bar, 8, range(8))
-        o16 = _best_offset(nov_bar, 16, (o8, o8 + 8))
-        phrase_offset = _best_offset(nov_bar, 32, (o16, o16 + 16))
+        # Where the bass comes back in and stays is the 1 of a phrase. Texture novelty alone also
+        # peaks on the one-bar mute before a drop, which put phrases a bar early on such tracks.
+        phrase_score = nov_bar + _bass_entries(bar_mel[freqs < 150].mean(axis=0)) / 5.0
+        o8 = _best_offset(phrase_score, 8, range(8))
+        o16 = _best_offset(phrase_score, 16, (o8, o8 + 8))
+        phrase_offset = _best_offset(phrase_score, 32, (o16, o16 + 16))
 
         # Structural boundaries: clear local novelty peaks
         thr = nov_bar.mean() + 0.75 * nov_bar.std()

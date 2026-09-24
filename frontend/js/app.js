@@ -466,6 +466,7 @@ document.addEventListener('DOMContentLoaded', () => {
       filename: file.name,
       file_id: `${deck}_${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`,
       audio_url: blobUrl,
+      analyzing: true,  // placeholder grid/cues until the server analysis arrives
       bpm: 128.0,
       camelot: '8A',
       key: 'A Minor',
@@ -521,87 +522,14 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     targetAudio.addEventListener('loadedmetadata', onMeta, { once: true });
 
-    // 3. The deck already decodes the file once (loadTrackIntoDeck): reuse it for the RGB waveform
-    try {
-      const targetDeck = (deckNum === 1) ? engine.deck1 : engine.deck2;
-      targetDeck.audio.loaded.then((audioBuffer) => {
-        try {
-          if (!audioBuffer) return;
-          const trueDur = audioBuffer.duration;
-          
-          const numBins = Math.min(12000, Math.max(3600, Math.floor(trueDur * 60)));
-          const chData = audioBuffer.getChannelData(0);
-          const binSize = Math.max(1, Math.floor(chData.length / numBins));
-          const overall = [];
-          const low = [];
-          const mid = [];
-          const high = [];
-
-          // Fast single-pass 3-band acoustic filtering (< 30ms)
-          const sr = audioBuffer.sampleRate;
-          const step = 4; // Sub-sample 4:1 for blazing fast DSP
-          const alphaLow = Math.min(1.0, (2 * Math.PI * 250 / sr) * step);
-          let yL = 0;
-          let prevSample = 0;
-
-          for (let b = 0; b < numBins; b++) {
-            const start = b * binSize;
-            const end = Math.min(chData.length, start + binSize);
-            let maxTot = 0, maxLow = 0, maxHigh = 0;
-
-            for (let i = start; i < end; i += step) {
-              const x = chData[i];
-              const ax = Math.abs(x);
-              if (ax > maxTot) maxTot = ax;
-
-              // Low-pass filter for sub-bass & kicks (< 250 Hz)
-              yL += alphaLow * (x - yL);
-              const aL = Math.abs(yL);
-              if (aL > maxLow) maxLow = aL;
-
-              // High-frequency transient delta for hi-hats & cymbals (> 2500 Hz)
-              const diff = Math.abs(x - prevSample);
-              if (diff > maxHigh) maxHigh = diff;
-              prevSample = x;
-            }
-
-            const totVal = Math.min(1.0, Math.round(maxTot * 1.25 * 1000) / 1000);
-            const lowVal = Math.min(1.0, Math.round(maxLow * 1.65 * 1000) / 1000);
-            const highVal = Math.min(1.0, Math.round(maxHigh * 0.75 * 1000) / 1000);
-            const midVal = Math.max(0.0, Math.min(1.0, Math.round((totVal - lowVal * 0.45 - highVal * 0.3) * 1.2 * 1000) / 1000));
-
-            overall.push(totVal);
-            low.push(lowVal);
-            mid.push(midVal);
-            high.push(highVal);
-          }
-
-          const currentTrack = (deckNum === 1) ? track1Data : track2Data;
-          if (currentTrack && currentTrack.audio_url === blobUrl) {
-            currentTrack.duration = trueDur;
-            currentTrack.waveform = { 
-              overall, 
-              low, 
-              mid, 
-              high, 
-              low_red: low, 
-              mid_green: mid, 
-              high_blue: high 
-            };
-            currentTrack.suggested_cue_outro = Math.max(0, trueDur - 30);
-            if (deckNum === 1) {
-              wave1.loadTrack(currentTrack);
-            } else {
-              wave2.loadTrack(currentTrack);
-            }
-          }
-        } catch (decErr) {
-          console.warn('Client-side waveform error (using acoustic synthesizer):', decErr);
-        }
-      });
-    } catch (readErr) {
-      console.warn('File read error:', readErr);
-    }
+    // 3. Duration from the decoded audio (loadTrackIntoDeck draws its waveform from it too)
+    const targetDeck = (deckNum === 1) ? engine.deck1 : engine.deck2;
+    targetDeck.audio.loaded.then((audioBuffer) => {
+      const cur = (deckNum === 1) ? track1Data : track2Data;
+      if (!audioBuffer || cur !== initialTrack || !cur.analyzing) return;
+      cur.duration = audioBuffer.duration;
+      cur.suggested_cue_outro = Math.max(0, audioBuffer.duration - 30);
+    }).catch(() => {});
 
     // 4. Background server analysis for BPM, Camelot key, and AI acoustic profile
     const formData = new FormData();
@@ -617,7 +545,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (data.status === 'success' && data.track) {
         const sTrack = data.track;
         const currentTrack = (deckNum === 1) ? track1Data : track2Data;
-        if (currentTrack) {
+        if (currentTrack === initialTrack) {  // not replaced by another track meanwhile
           currentTrack.bpm = sTrack.bpm || currentTrack.bpm;
           currentTrack.camelot = sTrack.camelot || currentTrack.camelot;
           currentTrack.key = sTrack.key || currentTrack.key;
@@ -635,7 +563,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (sTrack[k]) currentTrack[k] = sTrack[k];
           });
           currentTrack.hot_cues = computeTrackHotCues(currentTrack);
-          if (sTrack.waveform) {
+          if (sTrack.waveform && !(currentTrack.waveform && currentTrack.waveform.client)) {
             currentTrack.waveform = sTrack.waveform;
           }
 
@@ -658,17 +586,50 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           transitionStatusBanner.textContent = `${deckName}: ANALYSIS COMPLETE (${currentTrack.bpm.toFixed(1)} BPM, ${currentTrack.camelot})`;
           prefetchIncoming();
+          listenForVocals(currentTrack);
         }
       }
     } catch (err) {
       console.warn('Server background analysis failed, local playback remains active:', err);
       transitionStatusBanner.textContent = `${deckName}: READY FOR LIVE MIXING (LOCAL MODE)`;
+    } finally {
+      initialTrack.analyzing = false;
+      startQueuedMix();
     }
   }
 
   // ═══════════════════════════════════════════════════
   // PRO DJ HOT CUES: Automatic 4-Point Detection
   // ═══════════════════════════════════════════════════
+  /** Main drop and the build-up into it, from the per-bar bass level (bar_low_db, one value per
+   *  bar from the first downbeat). The drop is the first strong place where the bass comes back
+   *  after 4+ bars away and stays; the build-up is where it went away (at most 16 bars earlier,
+   *  never before the intro). Null when the track has no clear drop. */
+  function measuredDropCues(track, dur, intro) {
+    const low = track.bar_low_db, bars = track.downbeat_times, grid = track.grid;
+    if (!low || !bars || !grid || low.length < 24) return null;
+    const median = [...low].sort((a, b) => a - b)[Math.floor(low.length / 2)];
+    const mean = (a, b) => low.slice(a, b).reduce((s, v) => s + v, 0) / (b - a);
+    const onPhrase = b => ((b - (grid.phrase_offset_bars || 0)) % 4 + 4) % 4 === 0;
+    const entries = [];
+    for (let b = 4; b < low.length - 3 && bars[b] < 0.75 * dur; b++) {
+      const after = Math.min(...low.slice(b, b + 4));
+      const jump = after - low[b - 1];
+      if (after > median && mean(b - 4, b) < median - 10 && jump >= 12) entries.push({ b, jump });
+    }
+    if (!entries.length) return null;
+    const strongest = Math.max(...entries.map(e => e.jump));
+    const drop = entries.find(e => e.jump >= 0.6 * strongest).b;
+    let build = drop - 4;
+    for (let b = drop - 4; b >= Math.max(1, drop - 16); b--) {
+      if (!onPhrase(b) || bars[b] < intro) continue;
+      if (mean(b, drop) >= median - 6) break;
+      build = b;
+    }
+    if (bars[build] <= intro) build = drop;  // drop right after the intro: no separate build
+    return { drop: bars[drop], build: bars[build] };
+  }
+
   function computeTrackHotCues(track) {
     if (!track) return { cue_1: 0, cue_2: 30, cue_3: 60, cue_4: 120 };
     const dur = track.duration || 180;
@@ -692,6 +653,14 @@ document.addEventListener('DOMContentLoaded', () => {
       cue3 = track.phrase_16_times[2];
     }
 
+    // Measured instead, when the analysis has the bass level per bar: the main drop is where the
+    // bass comes back after 4+ bars away, the build-up is where it went away.
+    const measured = measuredDropCues(track, dur, cue1);
+    if (measured) {
+      cue2 = measured.build;
+      cue3 = measured.drop;
+    }
+
     // Cue 4 (OUTRO): Start of outro beats (~16 bars before track end)
     let cue4 = Math.max(cue3 + 15, dur - (16 * 4 * spb));
     if (track.suggested_cue_outro && track.suggested_cue_outro > cue3) {
@@ -710,12 +679,75 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // --- Load Track Into Deck ---
+  /** RGB waveform peaks straight from the decoded audio, 60 per second: much sharper than the
+   *  server's 10 per second, which the display could only interpolate between. */
+  function decodedWaveform(audioBuffer) {
+    const numBins = Math.min(12000, Math.max(3600, Math.floor(audioBuffer.duration * 60)));
+    const chData = audioBuffer.getChannelData(0);
+    const binSize = Math.max(1, Math.floor(chData.length / numBins));
+    const overall = [];
+    const low = [];
+    const mid = [];
+    const high = [];
+
+    // Fast single-pass 3-band acoustic filtering (< 30ms)
+    const sr = audioBuffer.sampleRate;
+    const step = 4; // Sub-sample 4:1 for blazing fast DSP
+    const alphaLow = Math.min(1.0, (2 * Math.PI * 250 / sr) * step);
+    let yL = 0;
+    let prevSample = 0;
+
+    for (let b = 0; b < numBins; b++) {
+      const start = b * binSize;
+      const end = Math.min(chData.length, start + binSize);
+      let maxTot = 0, maxLow = 0, maxHigh = 0;
+
+      for (let i = start; i < end; i += step) {
+        const x = chData[i];
+        const ax = Math.abs(x);
+        if (ax > maxTot) maxTot = ax;
+
+        // Low-pass filter for sub-bass & kicks (< 250 Hz)
+        yL += alphaLow * (x - yL);
+        const aL = Math.abs(yL);
+        if (aL > maxLow) maxLow = aL;
+
+        // High-frequency transient delta for hi-hats & cymbals (> 2500 Hz)
+        const diff = Math.abs(x - prevSample);
+        if (diff > maxHigh) maxHigh = diff;
+        prevSample = x;
+      }
+
+      const totVal = Math.min(1.0, Math.round(maxTot * 1.25 * 1000) / 1000);
+      const lowVal = Math.min(1.0, Math.round(maxLow * 1.65 * 1000) / 1000);
+      const highVal = Math.min(1.0, Math.round(maxHigh * 0.75 * 1000) / 1000);
+      const midVal = Math.max(0.0, Math.min(1.0, Math.round((totVal - lowVal * 0.45 - highVal * 0.3) * 1.2 * 1000) / 1000));
+
+      overall.push(totVal);
+      low.push(lowVal);
+      mid.push(midVal);
+      high.push(highVal);
+    }
+
+    return { overall, low, mid, high, low_red: low, mid_green: mid, high_blue: high, client: true };
+  }
+
+  /** Once the deck has decoded the track, draw the full-resolution waveform. */
+  function drawDecodedWaveform(deckNum, track) {
+    const deck = deckNum === 1 ? engine.deck1 : engine.deck2;
+    Promise.resolve(deck.audio.loaded).then((audioBuffer) => {
+      if (!audioBuffer || track !== (deckNum === 1 ? track1Data : track2Data)) return;
+      track.waveform = decodedWaveform(audioBuffer);
+      (deckNum === 1 ? wave1 : wave2).loadTrack(track);
+    }).catch((err) => console.warn('Waveform from decoded audio unavailable:', err));
+  }
+
   function loadTrackIntoDeck(deckNum, track) {
     resetDeckEQs(deckNum);
     track.hot_cues = computeTrackHotCues(track);
 
     // Update Hot Cue buttons title/tooltip with exact timestamps
-    const cueLabels = ['INTRO', 'VERSE', 'MAIN DROP', 'OUTRO'];
+    const cueLabels = ['INTRO', 'BUILD', 'MAIN DROP', 'OUTRO'];
     [1, 2, 3, 4].forEach(cNum => {
       const btn = document.getElementById(`d${deckNum}-cue-${cNum}`);
       if (btn) {
@@ -752,6 +784,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       engine.deck1.loadTrack(track.audio_url);
       wave1.loadTrack(track);
+      drawDecodedWaveform(1, track);
       if (track.bpm && !isNaN(track.bpm)) {
         masterBpmEl.textContent = track.bpm.toFixed(2);
       }
@@ -774,6 +807,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       engine.deck2.loadTrack(track.audio_url);
       wave2.loadTrack(track);
+      drawDecodedWaveform(2, track);
     }
     if (track1Data && track2Data) {
       btnExportMix.disabled = false;
@@ -946,7 +980,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   async function updateAIRecCard() {
-    if (!track1Data || !track2Data) return;
+    if (!track1Data || !track2Data || track1Data.analyzing || track2Data.analyzing) return;
     try {
       const q1 = encodeURIComponent(track1Data.file_id);
       const q2 = encodeURIComponent(track2Data.file_id);
@@ -1638,7 +1672,7 @@ document.addEventListener('DOMContentLoaded', () => {
             btn.classList.add('active');
             setTimeout(() => btn.classList.remove('active'), 250);
 
-            const cueLabels = ['INTRO', 'VERSE', 'MAIN DROP', 'OUTRO'];
+            const cueLabels = ['INTRO', 'BUILD', 'MAIN DROP', 'OUTRO'];
             transitionStatusBanner.textContent = `DECK ${deckNum}: SNAPPED TO CUE ${cueNum} [${cueLabels[cueNum - 1]}] (${formatTime(targetTime)})`;
           }
         });
@@ -1761,6 +1795,14 @@ document.addEventListener('DOMContentLoaded', () => {
     t.intervals.forEach(clearInterval);
   }
 
+  let mixQueued = false;
+  function startQueuedMix() {
+    if (!mixQueued || (track1Data && track1Data.analyzing) || (track2Data && track2Data.analyzing)) return;
+    mixQueued = false;
+    btnTriggerTransition.classList.remove('queued');
+    btnTriggerTransition.click();
+  }
+
   btnTriggerTransition.addEventListener('click', () => {
     unlockAudio();
     if (!track1Data || !track2Data) {
@@ -1768,6 +1810,14 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     if (isTransitioning) return;
+    // Never plan on the placeholder grid of a track still being analysed: the beats and cues
+    // would be guesses. MIX waits and starts by itself once the analysis is in.
+    if (track1Data.analyzing || track2Data.analyzing) {
+      mixQueued = true;
+      btnTriggerTransition.classList.add('queued');
+      transitionStatusBanner.textContent = 'ANALYSING BEAT GRID: MIX STARTS AS SOON AS IT IS READY';
+      return;
+    }
 
     const isDir1to2 = (transitionDirection === '1_to_2');
     const t = {

@@ -466,6 +466,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .btn-pro-mix:hover { filter: brightness(1.08); }
 .mix-btn-title { font-family: var(--font-cond); font-weight: 700; font-size: 21px; letter-spacing: 0.1em; line-height: 1; }
 .mix-btn-sub { font-size: 10px; letter-spacing: 0.12em; opacity: 0.75; max-width: 100%; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.btn-pro-mix.queued { box-shadow: inset 0 0 0 1px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 .btn-pro-mix.in-transition { background: #3a2412; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); animation: pulse 1.6s ease-in-out infinite; }
 @keyframes pulse { 50% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 18px rgba(255,138,31,0.35); } }
 .abort-btn, .override-btn {
