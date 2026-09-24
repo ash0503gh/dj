@@ -7,6 +7,7 @@
  * to /api/score-transition. Nothing runs unless called, e.g. from the devtools console:
  *
  *   await TransitionLab.run({ outId: 'lab1_a.mp3', inId: 'lab2_b.mp3', bars: 16 })
+ *   await TransitionLab.benchmark({ outId: ..., inId: ... })   // which engine picks best
  */
 const TransitionLab = (() => {
   const SR = 22050;
@@ -18,6 +19,16 @@ const TransitionLab = (() => {
     const res = await fetch('/api/load-preset', { method: 'POST', body: form });
     if (!res.ok) throw new Error(`load ${fileId}: HTTP ${res.status}`);
     return (await res.json()).track;
+  }
+
+  /** Gemini's vocal labels for the track (see /api/listen-vocals), when available. */
+  async function listened(track) {
+    if (track.vocal_source) return track;
+    const res = await fetch('/api/listen-vocals', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ file_id: track.file_id }) });
+    const data = res.ok ? await res.json() : {};
+    return data.status === 'success'
+      ? Object.assign(track, { section_map: data.section_map, vocal_source: data.vocal_source }) : track;
   }
 
   async function decode(url) {
@@ -60,13 +71,33 @@ const TransitionLab = (() => {
    * side: { buffer, tempoRatio, rate, trimDb } for each deck (buffer = what the deck plays).
    * The outgoing deck is `preroll` seconds before the plan's start at ctx time 0.
    * stems: channel 0 = outgoing, channel 1 = incoming; otherwise a normal stereo mix.
+   * bands: 6 channels, outgoing/incoming as [0,1] full band, [2,3] bass (<150 Hz), [4,5] mids (300 Hz-3 kHz).
    */
-  async function renderBlend({ out, inc, plan, blueprint = null, sr = SR, preroll = 16, tail = 16, stems = false }) {
+  async function renderBlend({ out, inc, plan, blueprint = null, sr = SR, preroll = 16, tail = 16, stems = false,
+                               bands = false }) {
     const p = Object.assign({}, plan, { startCtx: preroll });
     const outSpeed = out.tempoRatio * out.rate;
-    const ctx = new OfflineAudioContext(2, Math.ceil((preroll + p.blendSec + tail) * sr), sr);
+    const ctx = new OfflineAudioContext(bands ? 6 : 2, Math.ceil((preroll + p.blendSec + tail) * sr), sr);
     let busOut, busIn;
-    if (stems) {
+    if (bands) {
+      const merger = ctx.createChannelMerger(6);
+      merger.connect(ctx.destination);
+      const chain = (src, specs) => specs.reduce((node, [type, hz]) => {
+        const f = ctx.createBiquadFilter();
+        f.type = type;
+        f.frequency.value = hz;
+        f.Q.value = Math.SQRT1_2;
+        node.connect(f);
+        return f;
+      }, src);
+      busOut = ctx.createGain();
+      busIn = ctx.createGain();
+      [busOut, busIn].forEach((bus, i) => {
+        bus.connect(merger, 0, i);
+        chain(bus, [['lowpass', 150], ['lowpass', 150]]).connect(merger, 0, 2 + i);
+        chain(bus, [['highpass', 300], ['highpass', 300], ['lowpass', 3000], ['lowpass', 3000]]).connect(merger, 0, 4 + i);
+      });
+    } else if (stems) {
       const merger = ctx.createChannelMerger(2);
       merger.connect(ctx.destination);
       busOut = ctx.createGain();
@@ -113,19 +144,31 @@ const TransitionLab = (() => {
       keyClash: !camelotCompatible(outTrack.camelot, inTrack.camelot),
     });
 
-    let stretched = null;
     const t0 = performance.now();
-    if (blend && Math.abs(p.tempoRatio - 1) >= 0.0005) {
-      stretched = await decode(`/api/stretched/${encodeURIComponent(inTrack.file_id)}?ratio=${Math.round(p.tempoRatio * 1e6) / 1e6}`);
-    }
+    const stretched = blend ? await stretchedFor(inTrack, p.tempoRatio) : null;
     const stretchMs = Math.round(performance.now() - t0);
+    const result = await renderAndScore({ outTrack, inTrack, outBuf, inBuf, stretched, plan: p, outStart,
+                                          blueprint: opts.blueprint });
+    return Object.assign(result, { stretch_ms: stretchMs });
+  }
 
+  const stretchedCache = new Map();
+  function stretchedFor(inTrack, ratio) {
+    if (Math.abs(ratio - 1) < 0.0005) return Promise.resolve(null);
+    const url = `/api/stretched/${encodeURIComponent(inTrack.file_id)}?ratio=${Math.round(ratio * 1e6) / 1e6}`;
+    if (!stretchedCache.has(url)) stretchedCache.set(url, decode(url));
+    return stretchedCache.get(url);
+  }
+
+  /** Render one plan (blend, or an overlap-free cut when plan.technique says so) and score it. */
+  async function renderAndScore({ outTrack, inTrack, outBuf, inBuf, stretched, plan: p, outStart, blueprint }) {
+    const blend = p.technique ? p.technique === 'blend' : Math.abs(outTrack.bpm / inTrack.bpm - 1) <= MixPlanner.MAX_STRETCH;
     let rendered, marks;
     if (blend) {
       ({ rendered, marks } = await renderBlend({
         out: { buffer: outBuf, tempoRatio: 1, rate: 1 },
         inc: { buffer: stretched || inBuf, tempoRatio: stretched ? p.tempoRatio : 1, rate: 1 },
-        plan: p, blueprint: opts.blueprint, preroll: p.startCtx, stems: true,
+        plan: p, blueprint, preroll: p.startCtx, stems: true,
       }));
     } else {
       const ctx = new OfflineAudioContext(2, Math.ceil((p.startCtx + p.blendSec + 16) * SR), SR);
@@ -161,14 +204,13 @@ const TransitionLab = (() => {
     return {
       pair: `${outTrack.title || outTrack.file_id} (${outTrack.bpm.toFixed(2)}, ${outTrack.camelot}) -> ` +
             `${inTrack.title || inTrack.file_id} (${inTrack.bpm.toFixed(2)}, ${inTrack.camelot})`,
-      style: blend ? (opts.blueprint ? 'ai-blueprint blend' : 'blend') : 'cut (tempo gap)',
+      style: blend ? (blueprint ? 'ai-blueprint blend' : 'blend') : (p.technique || 'cut (tempo gap)'),
       bars: p.bars,
       tail_bars: p.tailBars || 0,
       swap_bar: p.swapBar,
       drop_swap: !!p.dropAligned,
       trim_db: +(p.inTrimDb || 0).toFixed(2),
       tempo_ratio: +p.tempoRatio.toFixed(5),
-      stretch_ms: stretchMs,
       exit_at: +p.exitNative.toFixed(2),
       exit_on_phrase16: near(outTrack.phrase_16_times, p.exitNative),
       exit_on_phrase32: near(outTrack.phrase_32_times, p.exitNative),
@@ -183,6 +225,182 @@ const TransitionLab = (() => {
     };
   }
 
+  const QUICK_SR = 11025;
+
+  /** RMS in dB of consecutive `n`-sample blocks. */
+  function blockDb(x, n) {
+    const out = [];
+    for (let i = 0; i + n <= x.length; i += n) {
+      let s = 0;
+      for (let k = i; k < i + n; k++) s += x[k] * x[k];
+      out.push(10 * Math.log10(Math.max(s / n, 1e-18)));
+    }
+    return out;
+  }
+
+  const pct = (a, q) => { const s = [...a].sort((x, y) => x - y); return s[Math.min(s.length - 1, Math.floor(q * s.length))]; };
+  const med = a => pct(a, 0.5);
+
+  /**
+   * Measure a blend before it's played: render it offline from the exact buffers, plan and
+   * automation the live console would use, and compute the same bass/mids/loudness scores as
+   * /api/score-transition (kick flam aside: the grid is the same for every candidate).
+   * out/inc: { buffer, tempoRatio, rate, trimDb }. ~0.1-0.3 s per candidate.
+   */
+  async function quickScore({ out, inc, plan }) {
+    const beat = plan.beatSec;
+    const preroll = 4 * 4 * beat;                      // 4 bars before (the "pre" level)
+    const { rendered, marks } = await renderBlend({ out, inc, plan, sr: QUICK_SR, preroll,
+                                                     tail: 4 * 4 * beat + 0.5, bands: true });
+    const ch = [0, 1, 2, 3, 4, 5].map(i => rendered.getChannelData(i));
+    const nBeat = Math.floor(beat * QUICK_SR);
+    const a0 = Math.floor(marks.start / beat), a1 = Math.floor(marks.end / beat);
+    // Bass: a deck carries the floor on a beat when its lows are within 12 dB of its loud beats
+    const lows = [ch[2], ch[3]].map(x => blockDb(x, nBeat));
+    const active = lows.map(db => { const ref = pct(db, 0.95); return db.map(v => v > ref - 12 && v > -100); });
+    let both = 0, neither = 0, clash = 0;
+    const mids = [ch[4], ch[5]].map(x => blockDb(x, nBeat));
+    const midOn = mids.map(db => { const ref = pct(db, 0.95); return db.map(v => v > ref - 10 && v > -100); });
+    for (let b = a0; b < Math.min(a1, lows[0].length); b++) {
+      if (active[0][b] && active[1][b]) both++;
+      if (!active[0][b] && !active[1][b]) neither++;
+      if (midOn[0][b] && midOn[1][b] && Math.abs(mids[0][b] - mids[1][b]) < 6) clash++;
+    }
+    // Loudness per bar of the mix: the dip/bump against the level before and after
+    const mix = new Float32Array(ch[0].length);
+    for (let i = 0; i < mix.length; i++) mix[i] = ch[0][i] + ch[1][i];
+    const bars = blockDb(mix, 4 * nBeat);
+    const b0 = Math.round(marks.start / (4 * beat)), b1 = Math.round(marks.end / (4 * beat));
+    const pre = med(bars.slice(Math.max(0, b0 - 4), b0));
+    const post = med(bars.slice(b1, b1 + 4).length ? bars.slice(b1, b1 + 4) : bars.slice(-1));
+    const during = bars.slice(b0, Math.max(b0 + 1, b1));
+    const m = {
+      bass_overlap_s: +(both * beat).toFixed(2),
+      bass_gap_s: +(neither * beat).toFixed(2),
+      mid_clash_s: +(clash * beat).toFixed(2),
+      loudness_dip_db: +(Math.min(...during) - Math.min(pre, post)).toFixed(2),
+      loudness_bump_db: +(Math.max(...during) - Math.max(pre, post)).toFixed(2),
+    };
+    return Object.assign(m, { penalty: penalty(m) });
+  }
+
+  /** Measure every blend candidate in place (c.measured); overlap-free candidates need none. */
+  async function measureAll(cands, out, inc) {
+    for (const c of cands) {
+      if (c.technique !== 'blend' || c.measured) continue;
+      try {
+        c.measured = await quickScore({ out, inc, plan: c });
+      } catch (err) {
+        console.warn(`Could not measure candidate ${c.id}:`, err);
+      }
+    }
+    return cands;
+  }
+
+  const ACCEPT_MARGIN = 3;  // penalty points a candidate may sit above the cleanest one
+
+  /** Candidates that sound as clean as the cleanest, within the margin (unmeasured ones pass). */
+  function acceptable(cands) {
+    const scores = cands.filter(c => c.measured).map(c => c.measured.penalty);
+    if (!scores.length) return cands;
+    const best = Math.min(...scores);
+    return cands.filter(c => !c.measured || c.measured.penalty <= best + ACCEPT_MARGIN);
+  }
+
+  /** The measured-cleanest candidate (planner order breaks ties; the first one if none measured). */
+  function cleanest(cands) {
+    return cands.filter(c => c.measured).sort((a, b) => a.measured.penalty - b.measured.penalty)[0] || cands[0];
+  }
+
+  /**
+   * Final choice: the AI's pick when it passed the sound check, else the cleanest candidate.
+   * Returns { plan, verdict: 'ai' | 'rejected' | 'cleanest' | 'planner' }.
+   */
+  function settle(cands, aiId) {
+    const ok = acceptable(cands);
+    const ai = cands.find(c => c.id === aiId);
+    if (ai && ok.includes(ai)) return { plan: ai, verdict: 'ai' };
+    const measured = cands.some(c => c.measured);
+    return { plan: measured ? cleanest(ok) : cands[0], verdict: ai ? 'rejected' : (measured ? 'cleanest' : 'planner') };
+  }
+
+  /** One number for "how clean did it sound" (lower is better): flams, bass holes/mud, level
+   *  dips/spikes and two leads fighting. Musical taste (phrasing, energy) isn't in here. */
+  function penalty(m, cut = false) {
+    if (!m) return null;
+    // A cut never overlaps: its "flam" compares two tempos that are never heard together
+    return +((cut ? 0 : (m.kick_flam_ms || 0) / 2) + 2 * (m.bass_gap_s || 0) + 2 * (m.bass_overlap_s || 0) +
+             3 * Math.max(0, -(m.loudness_dip_db || 0) - 1.5) + 3 * Math.max(0, (m.loudness_bump_db || 0) - 1.5) +
+             (m.mid_clash_s || 0)).toFixed(2);
+  }
+
+  /**
+   * Which engine picks the best transition? For one track pair: build the live console's
+   * candidates, render and score every one, then ask each engine to pick.
+   * opts: { outId, inId, bars=16, outStart, models=['planner', 'gemini-3.8-flash', 'jev-latest'],
+   *         listen=true (use Gemini's vocal labels) }
+   */
+  async function benchmark(opts) {
+    const bars = opts.bars || 16;
+    const models = opts.models || ['planner', 'gemini-3.8-flash', 'jev-latest'];
+    let [outTrack, inTrack] = await Promise.all([loadTrack(opts.outId), loadTrack(opts.inId)]);
+    if (opts.listen !== false) [outTrack, inTrack] = await Promise.all([listened(outTrack), listened(inTrack)]);
+    const [outBuf, inBuf] = await Promise.all([decode(outTrack.audio_url), decode(inTrack.audio_url)]);
+    const outStart = opts.outStart !== undefined ? opts.outStart : Math.max(0, outTrack.suggested_cue_outro - 40);
+    const planDeck = { audio: { timeAt: t => outStart + t, ctxTimeAt: n => n - outStart,
+                                tempoRatio: 1, playbackRate: 1, duration: outBuf.duration } };
+    const blend = Math.abs(outTrack.bpm / inTrack.bpm - 1) <= MixPlanner.MAX_STRETCH;
+    const cands = MixPlanner.candidates(outTrack, planDeck, inTrack, {
+      now: 0, leadSec: 11, blend, phraseLock: true, cutTechnique: 'echo_freeze',
+      barsOptions: bars >= 16 ? [bars, 8] : [bars, 16],
+      keyClash: !camelotCompatible(outTrack.camelot, inTrack.camelot),
+    });
+    const stretched = blend && cands.length ? await stretchedFor(inTrack, cands[0].tempoRatio) : null;
+    const scored = {};
+    for (const c of cands) {
+      const r = await renderAndScore({ outTrack, inTrack, outBuf, inBuf, stretched, plan: c, outStart });
+      scored[c.id] = Object.assign(r, { id: c.id, technique: c.technique, penalty: penalty(r.metrics, c.technique !== 'blend'),
+                                        features: MixPlanner.candidateFeatures(c, outTrack, inTrack, 0) });
+    }
+    const body = {
+      budget_sec: 8,
+      out: MixPlanner.trackSummary(outTrack, outTrack.bpm, outStart, outStart),
+      in: MixPlanner.trackSummary(inTrack, inTrack.bpm),
+      candidates: cands.map(c => scored[c.id].features),
+    };
+    // The live sound check: the same quick render + measurement the console runs before a mix
+    await measureAll(cands, { buffer: outBuf, tempoRatio: 1, rate: 1 },
+                     stretched ? { buffer: stretched, tempoRatio: cands[0].tempoRatio, rate: 1 }
+                               : { buffer: inBuf, tempoRatio: 1, rate: 1 });
+    const picks = {};
+    for (const model of models) {
+      let res = { choice: null, engine: 'planner', latency_ms: 0 };
+      if (model !== 'planner' && cands.length > 1) {
+        res = await (await fetch('/api/ai-choose-transition', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.assign({ model }, body)),
+        })).json();
+      }
+      // What the live console would play: the AI's pick if it passed the sound check, else the cleanest
+      const final = cands.length ? settle(cands, res.choice) : { plan: null, verdict: 'none' };
+      picks[model] = { choice: res.choice, engine: res.engine, reason: res.reason, latency_ms: res.latency_ms,
+                       errors: res.errors, played: final.plan && final.plan.id, verdict: final.verdict };
+    }
+    picks['planner-first (before)'] = { choice: cands.length ? cands[0].id : null, played: cands.length ? cands[0].id : null,
+                                        verdict: 'planner' };
+    const ranked = Object.values(scored).map(s => s.penalty).filter(v => v !== null).sort((a, b) => a - b);
+    return {
+      pair: `${outTrack.title || outTrack.file_id} -> ${inTrack.title || inTrack.file_id}`,
+      out_start: outStart,
+      best_penalty: ranked.length ? ranked[0] : null,
+      candidates: Object.values(scored).map(s => ({ id: s.id, technique: s.technique, bars: s.bars,
+        exit_at: s.exit_at, wait_s: s.wait_s, penalty: s.penalty, quick: (cands.find(c => c.id === s.id).measured || {}),
+        features: s.features, metrics: s.metrics })),
+      picks: Object.fromEntries(Object.entries(picks).map(([m, p]) => [m, Object.assign(p, {
+        penalty: p.played && scored[p.played] ? scored[p.played].penalty : null })])),
+    };
+  }
+
   /** Export the blend that was just performed live: same buffers, plan and automation, 44.1 kHz. */
   async function exportPerformed(L) {
     const { rendered, marks } = await renderBlend({
@@ -191,7 +409,7 @@ const TransitionLab = (() => {
     return { blob: wav16(rendered), duration: rendered.duration, marks };
   }
 
-  return { run, renderBlend, exportPerformed };
+  return { run, benchmark, quickScore, measureAll, settle, renderBlend, exportPerformed };
 })();
 
 window.TransitionLab = TransitionLab;

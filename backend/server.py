@@ -347,8 +347,58 @@ async def get_ai_status():
         "status": "success",
         "jev_configured": has_jev,
         "gemini_configured": has_gemini,
-        "active_engine": "jev" if has_jev else ("gemini" if has_gemini else "local")
+        "active_engine": "gemini" if has_gemini else ("jev" if has_jev else "local")
     })
+
+LISTENING: dict = {}  # file_id -> in-flight Gemini listening task (both decks may ask at once)
+
+
+@app.post("/api/listen-vocals")
+async def listen_vocals(request: Request):
+    """Gemini listens to the track once and relabels which sections have a lead vocal
+    (see vocal_listen.py). Body: {file_id}. Returns the updated section_map."""
+    import urllib.parse
+    from .ai_advisor import get_gemini_api_key, DEFAULT_GEMINI_MODEL
+    from .vocal_listen import apply_vocal_labels, listen_for_vocals
+    body = await request.json()
+    file_id = urllib.parse.unquote(body.get("file_id", ""))
+    an = await get_cached_analysis(file_id)
+    if not an or not an.get("section_map"):
+        raise HTTPException(status_code=404, detail="Track not analyzed")
+    if not an.get("vocal_source"):
+        key = get_gemini_api_key()
+        path = await local_track(file_id)
+        if not key or not path:
+            return JSONResponse(content={"status": "skipped", "reason": "no Gemini key" if not key else "no audio"})
+        if file_id not in LISTENING:
+            LISTENING[file_id] = asyncio.ensure_future(
+                run_in_threadpool(listen_for_vocals, path, an["section_map"], key, DEFAULT_GEMINI_MODEL))
+        try:
+            labels, err = await LISTENING[file_id]
+        finally:
+            LISTENING.pop(file_id, None)
+        if labels is None:
+            return JSONResponse(content={"status": "error", "reason": err})
+        if not an.get("vocal_source"):
+            apply_vocal_labels(an, labels, DEFAULT_GEMINI_MODEL)
+            await persist_analysis(file_id, an)
+    return JSONResponse(content={"status": "success", "vocal_source": an["vocal_source"],
+                                 "section_map": an["section_map"]})
+
+
+@app.post("/api/ai-choose-transition")
+async def ai_choose_transition(request: Request):
+    """The AI picks one of the planner's candidate transitions (see transition_chooser.py).
+    Body: {out, in, candidates: [{id, ...features}], model, budget_sec}."""
+    from .transition_chooser import choose_transition
+    body = await request.json()
+    cands = body.get("candidates") or []
+    if not cands:
+        raise HTTPException(status_code=400, detail="no candidates")
+    budget = max(1.0, min(15.0, float(body.get("budget_sec", 8.0))))
+    result = await run_in_threadpool(choose_transition, body.get("out") or {}, body.get("in") or {}, cands,
+                                     body.get("model"), budget)
+    return JSONResponse(content={"status": "success", **result})
 
 def slice_audio_file_to_b64(file_path: str, start_sec: float, duration_sec: float = 10.0) -> Optional[str]:
     """Slices a lightweight 10s audio segment from an audio file into base64 WAV for Gemini headphone audition."""
@@ -476,7 +526,7 @@ async def get_ai_strategy_endpoint(
     direction: str = Form("1_to_2"),
     gemini_api_key: Optional[str] = Form(None),
     jev_api_key: Optional[str] = Form(None),
-    model: str = Form("jev-latest"),
+    model: str = Form("gemini-3.8-flash"),
     track_1_meta: Optional[str] = Form(None),
     track_2_meta: Optional[str] = Form(None)
 ):

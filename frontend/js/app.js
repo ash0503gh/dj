@@ -195,7 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
     geminiKeyInput.value = localStorage.getItem('gemini_api_key') || '';
   }
   if (aiModelSelect) {
-    const savedModel = localStorage.getItem('ai_dj_model') || 'jev-latest';
+    const savedModel = localStorage.getItem('ai_dj_model') || 'gemini-3.8-flash';
     // Saved choices of retired Gemini models (1.5 / 2.x) move to the current Flash model
     aiModelSelect.value = savedModel.startsWith('gemini-') ? 'gemini-3.8-flash' : savedModel;
     aiModelSelect.addEventListener('change', () => {
@@ -732,6 +732,29 @@ document.addEventListener('DOMContentLoaded', () => {
     updateAIRecCard();
     updateTransitionOverlay();
     prefetchIncoming();
+    listenForVocals(track);
+  }
+
+  /** Once per track, Gemini listens and marks which sections really have a lead vocal (the
+   *  spectral detector flags nearly everything). Stored server-side with the analysis. */
+  async function listenForVocals(track) {
+    if (track.vocal_source || !track.file_id || !track.section_map) return;
+    if ((aiModelSelect ? aiModelSelect.value : 'local') === 'local') return;
+    try {
+      const res = await fetch('/api/listen-vocals', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: track.file_id }),
+      });
+      const data = await res.json();
+      if (data.status === 'success') {
+        track.section_map = data.section_map;
+        track.vocal_source = data.vocal_source;
+        console.info(`Vocals relabelled by ${data.vocal_source}: ${track.section_map.filter(s => s.has_vocals).length}` +
+                     `/${track.section_map.length} sections`);
+      }
+    } catch (err) {
+      console.warn('Vocal listening pass unavailable:', err);
+    }
   }
 
   // --- Quick Select Dropdowns ---
@@ -821,26 +844,26 @@ document.addEventListener('DOMContentLoaded', () => {
         if (data.jev_configured) {
           serverHasJev = true;
           if (jevKeyInput && !jevKeyInput.value) {
-            jevKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
+            jevKeyInput.placeholder = '✓ Active via server environment (Ready)';
           }
         }
         if (data.gemini_configured || data.has_gemini) {
           serverHasGemini = true;
           if (geminiKeyInput && !geminiKeyInput.value) {
-            geminiKeyInput.placeholder = '✓ Active via Render Environment Variable (Ready)';
+            geminiKeyInput.placeholder = '✓ Active via server environment (Ready)';
           }
         }
         if (aiSourceBadge) {
           if (data.jev_configured && data.gemini_configured) {
-            aiSourceBadge.textContent = '⚡ Jev (<200ms) & Gemini Active (Render Env)';
+            aiSourceBadge.textContent = '✨ Gemini + ⚡ Jev fallback Active (Server)';
           } else if (data.jev_configured) {
-            aiSourceBadge.textContent = '⚡ TypeSafe Jev System One Active (Render Env)';
+            aiSourceBadge.textContent = '⚡ TypeSafe Jev System One Active (Server)';
           } else if (data.gemini_configured) {
-            aiSourceBadge.textContent = '✨ Google Gemini AI Active (Render Env)';
+            aiSourceBadge.textContent = '✨ Google Gemini AI Active (Server)';
           }
         }
         if (aiModelSelect && !localStorage.getItem('ai_dj_model')) {
-          aiModelSelect.value = data.jev_configured ? 'jev-latest' : (data.gemini_configured ? 'gemini-3.8-flash' : 'local');
+          aiModelSelect.value = data.gemini_configured ? 'gemini-3.8-flash' : (data.jev_configured ? 'jev-latest' : 'local');
         }
       }
     } catch (e) {
@@ -999,7 +1022,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const jevKey = jevKeyInput ? jevKeyInput.value.trim() : (localStorage.getItem('jev_api_key') || '');
     const geminiKey = geminiKeyInput ? geminiKeyInput.value.trim() : (localStorage.getItem('gemini_api_key') || '');
-    const model = aiModelSelect ? aiModelSelect.value : (localStorage.getItem('ai_dj_model') || 'jev-latest');
+    const model = aiModelSelect ? aiModelSelect.value : (localStorage.getItem('ai_dj_model') || 'gemini-3.8-flash');
     const modelLabel = (model === 'local') ? 'Local Acoustic DSP' : 
                        (model.startsWith('jev') ? 'TypeSafe Jev System One (<200ms)' : 
                        'Gemini 3.8 Flash');
@@ -1093,7 +1116,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (st.gemini_error) {
         aiRationaleText.innerHTML = `
           <div style="background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.4); border-radius: 6px; padding: 8px 12px; margin-bottom: 10px; color: #fbbf24; font-size: 11px;">
-            ⚠️ <strong>Gemini Notice:</strong> ${st.gemini_error}. Strategy calculated using Local Physical Acoustic Engine.
+            ⚠️ <strong>Gemini Notice:</strong> ${st.gemini_error}. Strategy calculated by ${st.engine_source || 'the Local Physical Acoustic Engine'}.
           </div>
           <div>${st.strategic_rationale}</div>
         `;
@@ -1678,6 +1701,8 @@ document.addEventListener('DOMContentLoaded', () => {
   // automation relative to T. Timers only drive the UI and one-shot FX.
   const CUT_TECHNIQUES = new Set(['echo_freeze', 'vinyl_brake', 'spinback', 'noise_riser',
                                   'loop_roll', 'festival_drop', 'hard_cut']);
+  const AI_CHOICE_BUDGET_SEC = 8;    // how long the AI may think before the planner's choice stands
+  const SOUND_CHECK_BUDGET_SEC = 3;  // without AI: time to render and measure the candidates
   let activeTransition = null;
 
   function camelotCompatible(a, b) {
@@ -1787,20 +1812,134 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const bars = selectedBars;
-    const leadIn = {
-      vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
-      festival_drop: 4 * Math.min(bars, 8),
-    }[tech] || 0;  // beats of outgoing FX before the drop
     const beatSecNow = 60 / MixPlanner.deckBpm(t.outTrack, t.outDeck);
-    t.plan = MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars, {
+    const aiModel = aiModelSelect ? aiModelSelect.value : 'local';
+    const planOpts = {
       now: engine.ctx.currentTime,
-      leadSec: t.blend ? 3.0 : leadIn * beatSecNow + 1.0,
       blend: t.blend,
       keyClash: !camelotCompatible(t.outTrack.camelot, t.inTrack.camelot),
       phraseLock: togglePhraseLock ? togglePhraseLock.checked : true,
-    });
-    t.leadInSec = leadIn * t.plan.beatSec;
+    };
     if (!t.inTrack.grid || !t.outTrack.grid) console.warn('Beat grid not analyzed yet: using an estimated grid');
+
+    // Auto: the planner offers a few safe transitions, each is sound-checked (rendered offline and
+    // measured) and, with an AI model, the AI picks one in parallel. The AI's pick plays if it
+    // passed the sound check, otherwise the cleanest one. Candidates start after the budget, so
+    // the fallback is always still on time.
+    if (selectedTechnique === 'auto') {
+      const useAI = aiModel !== 'local';
+      const budget = useAI ? AI_CHOICE_BUDGET_SEC : SOUND_CHECK_BUDGET_SEC;
+      const cands = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
+        leadSec: (t.blend ? 3.0 : cutLeadInBeats(tech, bars) * beatSecNow + 1.0) + budget,
+        barsOptions: bars >= 16 ? [bars, 8] : [bars, 16],
+        cutTechnique: tech,
+      }));
+      if (cands.length > 1) {
+        const who = aiModel.startsWith('jev') ? 'JEV' : 'GEMINI';
+        transitionStatusBanner.textContent = useAI
+          ? `🤖 ${who} IS CHOOSING BETWEEN ${cands.length} TRANSITIONS WHILE EACH ONE IS SOUND-CHECKED...`
+          : `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
+        const checked = Promise.race([measureCandidates(t, cands), new Promise(r => setTimeout(r, budget * 1000))]);
+        const ai = useAI ? chooseWithAI(t, cands, aiModel) : Promise.resolve({ id: null, note: null, who });
+        Promise.all([ai, checked]).then(([pick]) => {
+          if (activeTransition !== t) return;  // aborted while choosing
+          const { plan, verdict } = TransitionLab.settle(cands, pick.id);
+          const note = {
+            ai: pick.note,
+            rejected: `${pick.who} PICKED ${pick.id} BUT IT FAILED THE SOUND CHECK: PLAYING ${plan.id}, THE CLEANEST`,
+            cleanest: `CLEANEST OF ${cands.length} (SOUND-CHECKED)${useAI ? ', AI UNAVAILABLE' : ''}`,
+            planner: useAI ? 'PLANNER PICK (AI UNAVAILABLE)' : null,
+          }[verdict];
+          commitTransitionPlan(t, plan, note);
+        });
+        return;
+      }
+      if (cands.length) {
+        commitTransitionPlan(t, cands[0], null);
+        return;
+      }
+    }
+
+    const leadIn = cutLeadInBeats(tech, bars);
+    commitTransitionPlan(t, MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars, Object.assign({}, planOpts, {
+      leadSec: t.blend ? 3.0 : leadIn * beatSecNow + 1.0,
+    })), null);
+  });
+
+  /** Beats of outgoing FX before an overlap-free technique's drop. */
+  function cutLeadInBeats(tech, bars) {
+    return {
+      vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
+      festival_drop: 4 * Math.min(bars, 8),
+    }[tech] || 0;
+  }
+
+  /** Ask the AI to pick one candidate. Resolves to {plan, note}; the planner's first candidate
+   *  when the AI is unavailable, slow or answers with something that isn't on the list. */
+  async function chooseWithAI(t, cands, model) {
+    const now = engine.ctx.currentTime;
+    const outBpm = MixPlanner.deckBpm(t.outTrack, t.outDeck);
+    const position = t.outDeck.audio.timeAt(now);
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), (AI_CHOICE_BUDGET_SEC + 1.0) * 1000);
+    try {
+      const res = await fetch('/api/ai-choose-transition', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model,
+          budget_sec: AI_CHOICE_BUDGET_SEC,
+          out: MixPlanner.trackSummary(t.outTrack, outBpm, Math.round(position * 10) / 10, position),
+          in: MixPlanner.trackSummary(t.inTrack, t.inTrack.bpm || outBpm),
+          candidates: cands.map(c => MixPlanner.candidateFeatures(c, t.outTrack, t.inTrack, now)),
+        }),
+      });
+      const data = await res.json();
+      console.info('AI transition choice', data);
+      if (cands.some(c => c.id === data.choice)) {
+        const who = data.engine.startsWith('Jev') ? 'JEV' : 'GEMINI';
+        return { id: data.choice, who, note: `${who} PICK ${data.choice}/${cands.length}${data.reason ? ': ' + data.reason : ''}` };
+      }
+    } catch (err) {
+      console.warn('AI transition choice unavailable:', err);
+    } finally {
+      clearTimeout(timer);
+    }
+    return { id: null, who: model.startsWith('jev') ? 'JEV' : 'GEMINI', note: null };
+  }
+
+  /** Render every blend candidate offline from the decks' own buffers and measure it (c.measured). */
+  async function measureCandidates(t, cands) {
+    const blends = cands.filter(c => c.technique === 'blend');
+    if (!blends.length) return;
+    const ratio = blends[0].tempoRatio;  // the master tempo: the same for every blend
+    const stretch = Math.abs(ratio - 1) >= 0.0005;
+    const stretched = stretch
+      ? await Promise.race([stretchedBuffer(t.inTrack, ratio), new Promise(r => setTimeout(() => r(null), 2000))])
+      : null;
+    // Without the keylocked copy yet, measure the vinyl-rate fallback the deck would play
+    const inc = stretched ? { buffer: stretched, tempoRatio: ratio, rate: 1 }
+                          : { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: stretch ? ratio : 1 };
+    const out = { buffer: t.outDeck.audio.buffer, tempoRatio: t.outDeck.audio.tempoRatio,
+                  rate: t.outDeck.audio.playbackRate, trimDb: t.outDeck.trimDb || 0 };
+    const t0 = performance.now();
+    await TransitionLab.measureAll(cands, out, inc);
+    console.info(`Sound-checked ${blends.length} transitions in ${Math.round(performance.now() - t0)} ms`,
+                 cands.map(c => `${c.id}: ${c.measured ? c.measured.penalty : '-'}`).join(', '));
+  }
+
+  /** Lock in a plan and schedule everything from it. */
+  function commitTransitionPlan(t, plan, aiNote) {
+    if (plan.technique) {
+      // A candidate: 'blend', or an overlap-free technique the AI preferred
+      if (plan.technique !== 'blend') t.tech = plan.technique;
+      t.blend = plan.technique === 'blend';
+    }
+    t.plan = plan;
+    t.aiNote = aiNote;
+    const tech = t.tech;
+    t.leadInSec = cutLeadInBeats(tech, plan.bars) * plan.beatSec;
 
     // Incoming at the master tempo, keylocked (usually prefetched already)
     t.bufferPromise = (t.blend && Math.abs(t.plan.tempoRatio - 1) >= 0.0005)
@@ -1808,14 +1947,15 @@ document.addEventListener('DOMContentLoaded', () => {
       : Promise.resolve(null);
 
     // No AI blueprint here: rendered A/B tests showed its generic fader/HPF curves left 5-13 dB
-    // holes in the blend. The AI advises in the strategy card; the measured local blend mixes.
+    // holes in the blend. The AI chooses between planner candidates; the planner performs them.
 
     // No automatic server export during a live set (it competes with analysis/stretching for a
     // small instance's memory). The Export button renders this transition on demand.
     t.renderPromise = Promise.resolve(null);
     lastRenderedMix = null;
+    const isDir1to2 = t.outDeckNum === 1;
     lastTransitionCues = {
-      direction: transitionDirection,
+      direction: isDir1to2 ? '1_to_2' : '2_to_1',
       technique: tech,
       bars: t.plan.bars,
       cue_1: isDir1to2 ? t.plan.exitNative : t.plan.inStartNative,
@@ -1825,7 +1965,7 @@ document.addEventListener('DOMContentLoaded', () => {
     startTransitionHud(t);
     // Arm shortly before the first outgoing FX (or the start): from then on it's all scheduled
     atCtx(t, t.plan.startCtx - t.leadInSec - 0.4, () => armTransition(t));
-  });
+  }
 
   function startTransitionHud(t) {
     const p = t.plan;
@@ -1839,7 +1979,8 @@ document.addEventListener('DOMContentLoaded', () => {
         phraseHudCounter.textContent = `IN ON THE 1: ${Math.floor(beats / 4)} BARS (${Math.floor(beats % 4) + 1}/4)`;
         phraseHudProgress.style.width = `${(100 * (1 - remain / total0)).toFixed(1)}%`;
         transitionStatusBanner.textContent = `🎯 ${label} → ${t.inName} IN ${remain.toFixed(1)}s ` +
-          `@ ${p.masterBpm.toFixed(2)} BPM${t.blend && p.vocalClash ? ' (VOCAL CLASH: MIDS SWAP WITH BASS)' : ''}`;
+          `@ ${p.masterBpm.toFixed(2)} BPM${t.blend && p.vocalClash ? ' (VOCAL CLASH: MIDS SWAP WITH BASS)' : ''}` +
+          (t.aiNote ? ` · ${t.aiNote.toUpperCase()}` : '');
       } else {
         phraseHud.classList.add('hidden');
         if (t.blend && t.marks) {

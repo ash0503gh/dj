@@ -59,7 +59,9 @@ const MixPlanner = (() => {
     if (!lv || !lv.length || !track.grid) return null;
     const g = gridOf(track);
     const firstDownbeat = g.first + (track.grid.downbeat_offset || 0) * g.period;
-    const i = Math.floor((t - firstDownbeat) / (4 * g.period) + 1e-6);
+    // Phrase/downbeat times are rounded to the ms and can sit a hair before the computed bar
+    // line: a downbeat within 2% of a bar belongs to the bar it starts, not the one before
+    const i = Math.floor((t - firstDownbeat) / (4 * g.period) + 0.02);
     return (i >= 0 && i < lv.length) ? lv[i] : null;
   }
 
@@ -109,6 +111,17 @@ const MixPlanner = (() => {
     }
     // Swapping at the very end: keep the outgoing going (bass killed) for a few more bars
     const tailBars = swapBar >= bars ? Math.min(4, Math.max(1, bars / 2)) : 0;
+    // Holes: bars where the deck that should carry the floor has (almost) no kick/bass. Incoming
+    // from the swap until 4 bars after the blend (it must not fall into its breakdown right away)
+    const holeDb = 10;
+    let inHoles = 0;
+    if (opts.blend && inTrack.bar_low_db && inTrack.bar_low_db.length) {
+      const ref = median(inTrack.bar_low_db) - holeDb;
+      for (let b = swapBar; b < bars + tailBars + 4; b++) {
+        const lv = barLevel(inTrack, inStart + b * inBar);
+        if (lv !== null && lv < ref) inHoles++;
+      }
+    }
     // Trim: match the incoming track's body loudness to what the room hears now
     const inTrimDb = (outTrack.loudness_db != null && inTrack.loudness_db != null)
       ? Math.max(-6, Math.min(6, outTrack.loudness_db + (outDeck.trimDb || 0) - inTrack.loudness_db))
@@ -119,8 +132,7 @@ const MixPlanner = (() => {
     const inVocal = hasVocals(inTrack, inStart, inStart + bars * inBar);
     const slots = opts.phraseLock === false ? outTrack.downbeat_times : outTrack.phrase_8_times;
     const cands = (slots || []).filter(t => t >= outNow && t + blendNative <= dur - 0.5);
-    let best = null;
-    let bestScore = -Infinity;
+    const exits = [];
     for (const t of cands) {
       let score = 0;
       if (nearTime(outTrack.phrase_16_times, t)) score += 20;
@@ -130,22 +142,31 @@ const MixPlanner = (() => {
       const secs = sectionsIn(outTrack, t, t + blendNative);
       if (secs.some(s => s.section_type === 'outro' || s.section_type === 'breakdown')) score += 20;
       if (secs.some(s => s.section_type === 'drop')) score -= 20;
-      if (secs.length >= 2 && secs[secs.length - 1].energy < secs[0].energy) score += 10;
+      const energyFalling = secs.length >= 2 && secs[secs.length - 1].energy < secs[0].energy;
+      if (energyFalling) score += 10;
       const outVocal = hasVocals(outTrack, t, t + blendNative);
       if (outVocal && inVocal) score -= 30;
       else if (outVocal) score -= 5;
       // The outgoing bass must carry the floor until the swap: penalize exits where it drops out
+      let bassDropouts = 0;
+      let outHoles = 0;
       if (outTrack.bar_low_db && outTrack.bar_low_db.length) {
-        const ref = median(outTrack.bar_low_db) - 6;
+        const med = median(outTrack.bar_low_db);
         for (let b = 0; b < Math.min(swapBar, bars); b++) {
           const lv = barLevel(outTrack, t + b * outBar);
-          if (lv !== null && lv < ref) score -= 8;
+          if (lv !== null && lv < med - 6) { score -= 8; bassDropouts++; }
+          // A stop bar while the incoming is still held back: the floor falls silent
+          if (opts.blend && lv !== null && lv < med - holeDb) { score -= 25; outHoles++; }
         }
       }
       const waitSec = (t - outNow) / speed;
       score -= Math.max(0, waitSec - 20) * 0.4;
-      if (score > bestScore) { bestScore = score; best = t; }
+      exits.push({ t, score, outVocal, bassDropouts, outHoles, energyFalling });
     }
+    // Best first; ties keep the earliest exit
+    exits.sort((a, b) => b.score - a.score || a.t - b.t);
+    const chosen = (opts.exit !== undefined && exits.find(e => Math.abs(e.t - opts.exit) < 0.05)) || exits[0];
+    let best = chosen ? chosen.t : null;
 
     // Near the end: take the next downbeat and shorten the blend to what's left
     if (best === null) {
@@ -176,6 +197,94 @@ const MixPlanner = (() => {
       vocalClash,
       keyClash: !!opts.keyClash,
       outOfRange: Math.abs(outBpm / (inTrack.bpm || outBpm) - 1) > MAX_STRETCH,
+      exit: chosen || null,       // the scored exit this plan uses (null: forced near the end)
+      exits,                      // every scored exit, best first
+      holes: (chosen ? chosen.outHoles : 0) + inHoles,  // bars the floor would lose its bass
+    };
+  }
+
+  function sectionAt(track, t) {
+    const s = (track.section_map || []).find(x => t >= x.time - 0.05 && t < x.time + x.duration);
+    return s ? s.section_type : 'unknown';
+  }
+
+  /**
+   * A few transitions that are all safe to perform (same planner, same automation), for the AI
+   * to choose from. The planner's own choice is always first. opts = plan() opts plus
+   *   barsOptions: blend lengths to offer (default [16, 8]), perBars: exits per length (default 3),
+   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5).
+   * Each candidate is a plan with `technique` ('blend' or a cut technique) and `id` ('A', 'B', ...).
+   */
+  function candidates(outTrack, outDeck, inTrack, opts) {
+    const list = [];
+    const seen = new Set();
+    const add = (p, technique) => {
+      const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      list.push(Object.assign(p, { technique }));
+    };
+    const barsOptions = opts.blend ? (opts.barsOptions || [16, 8]) : [(opts.barsOptions || [16])[0]];
+    const perBars = opts.perBars || 3;
+    for (const bars of barsOptions) {
+      const base = plan(outTrack, outDeck, inTrack, bars, opts);
+      const tech = opts.blend ? 'blend' : (opts.cutTechnique || 'echo_freeze');
+      add(base, tech);
+      for (const e of base.exits.slice(1, opts.blend ? perBars : perBars + 1)) {
+        add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t })), tech);
+      }
+    }
+    // A clean, overlap-free exit when every blend would lay two lead vocals on top of each other
+    // (key clashes are handled inside the blend: the mids swap together with the bass)
+    if (opts.blend && list.length && list.every(c => c.vocalClash)) {
+      add(plan(outTrack, outDeck, inTrack, barsOptions[0], Object.assign({}, opts, { blend: false })), 'echo_freeze');
+    }
+    // Never offer a transition with a hole in it while a hole-free one exists (the planner's own
+    // first choice included): keep the fewest holes, planner order otherwise
+    const fewest = Math.min(...list.map(c => c.holes || 0));
+    const safe = list.filter(c => (c.holes || 0) === fewest);
+    return safe.slice(0, opts.max || 5).map((c, i) => Object.assign(c, { id: String.fromCharCode(65 + i) }));
+  }
+
+  /** What the AI needs to judge a candidate: plain facts, in native track seconds. */
+  function candidateFeatures(c, outTrack, inTrack, now) {
+    const e = c.exit || {};
+    const r = x => Math.round(x * 100) / 100;
+    return {
+      id: c.id,
+      technique: c.technique,
+      bars: c.bars,
+      wait_s: r(c.startCtx - now),
+      exit_at: r(c.exitNative),
+      exit_phrase: nearTime(outTrack.phrase_32_times, c.exitNative) ? '32-bar'
+        : nearTime(outTrack.phrase_16_times, c.exitNative) ? '16-bar' : '8-bar',
+      exit_section: sectionAt(outTrack, c.exitNative),
+      in_start_at: r(c.inStartNative),
+      in_section: sectionAt(inTrack, c.inStartNative),
+      drop_aligned: !!c.dropAligned,
+      swap_bar: c.swapBar,
+      vocal_clash: c.technique === 'blend' && !!c.vocalClash,
+      out_vocals: c.technique === 'blend' && !!e.outVocal,
+      key_clash: !!c.keyClash,
+      out_bass_dropouts: e.bassDropouts || 0,
+      bass_holes: c.holes || 0,
+      out_energy_falling: !!e.energyFalling,
+      planner_score: e.score !== undefined ? r(e.score) : null,
+    };
+  }
+
+  /** Compact track description for the AI (sections from `from` seconds on). */
+  function trackSummary(track, bpm, position = null, from = 0) {
+    return {
+      title: track.title || track.filename || track.file_id,
+      bpm: Math.round(bpm * 100) / 100,
+      camelot: track.camelot,
+      duration: track.duration,
+      position,
+      sections: (track.section_map || []).filter(s => s.time + s.duration > from).slice(0, 14).map(s => ({
+        time: Math.round(s.time * 10) / 10, type: s.section_type, energy: Math.round((s.energy || 0) * 100) / 100,
+        vocals: !!(s.has_vocals && s.vocal_score > 0.35),
+      })),
     };
   }
 
@@ -333,8 +442,8 @@ const MixPlanner = (() => {
     return { start: T, swap, end: T + D };
   }
 
-  return { MAX_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, scheduleBlend, scheduleBlueprint,
-           neutral, clearAutomation, holdAutomation, cutAt, hasVocals };
+  return { MAX_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, candidates, candidateFeatures,
+           trackSummary, scheduleBlend, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals };
 })();
 
 window.MixPlanner = MixPlanner;

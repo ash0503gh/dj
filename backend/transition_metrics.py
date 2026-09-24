@@ -6,6 +6,7 @@ transition_metrics.py - Objective scores for a rendered transition, from per-dec
                    >10 ms starts to smear, >20 ms is a trainwreck.
   bass overlap     seconds where BOTH decks carry full bass (two kicks/basslines = mud).
   bass gap         seconds inside the transition where NEITHER deck carries bass (a hole).
+  mid clash        seconds where both decks carry vocals/melody at similar level (two leads).
   loudness         per-bar level of the mix across the transition versus each track alone:
                    a dip is a hole in the dancefloor, a bump is a volume spike.
 """
@@ -83,6 +84,24 @@ def bass_activity(out_stem, in_stem, sr, start, end, beat_sec):
             "bass_gap_s": round(float(neither.sum() * beat_sec), 2)}
 
 
+def mid_clash(out_stem, in_stem, sr, start, end, beat_sec):
+    """Seconds where both decks carry vocals/melody (300 Hz-3 kHz) at similar level: two leads
+    fighting each other. A mid that is 6 dB+ under the other is heard as background, not a clash."""
+    sos = butter(4, [300, 3000], btype='band', fs=sr, output='sos')
+    n = int(beat_sec * sr)
+    levels, active = [], []
+    for s in (out_stem, in_stem):
+        mid = sosfiltfilt(sos, s.astype(np.float64))
+        rms = np.array([np.sqrt(np.mean(mid[i:i + n] ** 2)) for i in range(0, len(mid) - n, n)])
+        db = _db(rms)
+        levels.append(db)
+        active.append((db > _db(np.percentile(rms, 95)) - 10.0) & (rms > 1e-5))
+    a0, a1 = int(start / beat_sec), int(end / beat_sec)
+    close = np.abs(levels[0][a0:a1] - levels[1][a0:a1]) < 6.0
+    both = active[0][a0:a1] & active[1][a0:a1] & close
+    return {"mid_clash_s": round(float(both.sum() * beat_sec), 2)}
+
+
 def loudness_profile(out_stem, in_stem, sr, start, end, beat_sec):
     n = int(4 * beat_sec * sr)
     mix = out_stem + in_stem
@@ -115,5 +134,6 @@ def score_transition(out_stem, in_stem, sr, start, end, beat_sec, swap=None):
     result = {}
     result.update(kick_phase(out_stem, in_stem, sr, start, beat_sec, start, swap, end))
     result.update(bass_activity(out_stem, in_stem, sr, start, end, beat_sec))
+    result.update(mid_clash(out_stem, in_stem, sr, start, end, beat_sec))
     result.update(loudness_profile(out_stem, in_stem, sr, start, end, beat_sec))
     return result

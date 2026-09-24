@@ -48,7 +48,8 @@ def call_gemini_api(
     api_key: str,
     model_name: str = "gemini-3.8-flash",
     audio_b64: Optional[str] = None,
-    audio_mime: str = "audio/wav"
+    audio_mime: str = "audio/wav",
+    timeout: float = 20.0
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """Calls Google Gemini API via HTTPS REST endpoint with optional multimodal audio audition."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
@@ -78,7 +79,7 @@ def call_gemini_api(
     req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers, method="POST")
     
     try:
-        with urllib.request.urlopen(req, timeout=20.0) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text), None
@@ -796,40 +797,67 @@ def generate_local_acoustic_strategy(
         "vocal_clash_risk": "HIGH" if (vocal_out_detected and vocal_in_detected) else ("SAFE" if not vocal_in_detected else "MODERATE")
     }
 
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"
+
+
+def engine_order(model_name: Optional[str]) -> list:
+    """AI engines to try, in order, for the selected model (each falls back to the next).
+    Gemini leads by default: it reasons about the music; Jev is the fast fallback."""
+    name = (model_name or "").lower()
+    if name.startswith("local"):
+        return []
+    return ["jev", "gemini"] if name.startswith("jev") else ["gemini", "jev"]
+
+
 def generate_ai_dj_strategy(
     info_out: Dict[str, Any],
     info_in: Dict[str, Any],
     direction: str = "1_to_2",
     gemini_api_key: Optional[str] = None,
     jev_api_key: Optional[str] = None,
-    model_name: str = "jev-latest"
+    model_name: str = DEFAULT_GEMINI_MODEL
 ) -> Dict[str, Any]:
     """
-    Main entry point:
-    1. If Jev is requested or Jev API key is available, query TypeSafe System One (fast, sub-200ms).
-    2. If Gemini is requested and Gemini API key is available, query Gemini LLM.
-    3. Otherwise (or on failure), fall back to Local Physical Acoustic Engine.
+    Main entry point. Engines are tried in engine_order(model_name): Gemini then Jev by default,
+    Jev then Gemini when Jev is selected, and the Local Physical Acoustic Engine last (or only).
     """
-    # 1. Prioritize TypeSafe Jev System One (sub-200ms single-pass decision engine)
-    resolved_jev_key = get_jev_api_key(jev_api_key)
-    # Honour the selected model: Gemini keys usually come from the server env, not the request,
-    # so "no gemini_api_key param" must not route a Gemini selection to Jev.
-    wants_gemini = model_name.lower().startswith("gemini") and bool(get_gemini_api_key(gemini_api_key))
-    wants_local = model_name.lower().startswith("local")
-    is_jev_target = not wants_gemini and not wants_local and (model_name.lower().startswith("jev") or bool(resolved_jev_key))
-    if resolved_jev_key and is_jev_target:
-        jev_result, jev_err = call_jev_system_one(info_out, info_in, direction=direction, api_key=resolved_jev_key)
-        if jev_result:
-            return jev_result
-        print(f"Jev System One error ({jev_err}). Falling back to next available engine...")
+    gemini_model = model_name if (model_name or "").lower().startswith("gemini") else DEFAULT_GEMINI_MODEL
+    errors = {}
+    for engine in engine_order(model_name):
+        if engine == "jev":
+            key = get_jev_api_key(jev_api_key)
+            result, err = call_jev_system_one(info_out, info_in, direction=direction, api_key=key) if key else (None, None)
+        else:
+            key = get_gemini_api_key(gemini_api_key)
+            result, err = _gemini_strategy(info_out, info_in, direction, key, gemini_model) if key else (None, None)
+        if result:
+            if "gemini" in errors:
+                result["gemini_error"] = errors["gemini"]
+            return result
+        if key:
+            errors[engine] = err or f"{engine} call failed"
+            print(f"{engine} strategy error ({errors[engine]}). Falling back to next available engine...")
 
-    # 2. Google Gemini LLM
-    resolved_gemini_key = get_gemini_api_key(gemini_api_key)
-    if resolved_gemini_key and model_name and not model_name.lower().startswith("local"):
-        deck_out_num = "1" if direction == "1_to_2" else "2"
-        deck_in_num = "2" if direction == "1_to_2" else "1"
-        
-        prompt = f"""
+    local_strat = generate_local_acoustic_strategy(info_out, info_in, direction=direction)
+    if errors:
+        local_strat["engine_source"] = "Local Physical Acoustic Engine (AI fallback)"
+        if "gemini" in errors:
+            local_strat["gemini_error"] = errors["gemini"]
+    return local_strat
+
+
+def _gemini_strategy(
+    info_out: Dict[str, Any],
+    info_in: Dict[str, Any],
+    direction: str,
+    resolved_gemini_key: str,
+    model_name: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Full transition strategy from Gemini, or (None, error)."""
+    deck_out_num = "1" if direction == "1_to_2" else "2"
+    deck_in_num = "2" if direction == "1_to_2" else "1"
+    
+    prompt = f"""
 You are an elite, world-class DJ and audio engineer (headlining Tomorrowland and Ultra Music Festival).
 Analyze these two audio tracks and create an exact, professional DJ transition plan transitioning from Deck {deck_out_num} (Outgoing) to Deck {deck_in_num} (Incoming).
 
@@ -922,22 +950,15 @@ Return valid JSON with these exact fields:
   }}
 }}
 """
-        gemini_result, gemini_err = call_gemini_api(prompt, resolved_gemini_key, model_name=model_name)
-        if gemini_result and isinstance(gemini_result, dict) and "recommended_technique" in gemini_result:
-            gemini_result["engine_source"] = f"Google Gemini AI ({model_name})"
-            gemini_result["direction"] = direction
-            gemini_result["outgoing_deck"] = int(deck_out_num)
-            gemini_result["incoming_deck"] = int(deck_in_num)
-            gemini_result["camelot_compatibility"] = check_camelot_compatibility(
-                info_out.get('camelot', '8A'), info_in.get('camelot', '8A')
-            )
-            gemini_result["delta_bpm"] = round(abs(float(info_out.get('bpm', 128)) - float(info_in.get('bpm', 128))), 1)
-            return gemini_result
-            
-        local_strat = generate_local_acoustic_strategy(info_out, info_in, direction=direction)
-        local_strat["gemini_error"] = gemini_err or "Gemini API call failed"
-        local_strat["engine_source"] = f"Local Physical Acoustic Engine (Gemini fallback)"
-        return local_strat
-            
-    # Fallback to local acoustic engine
-    return generate_local_acoustic_strategy(info_out, info_in, direction=direction)
+    gemini_result, gemini_err = call_gemini_api(prompt, resolved_gemini_key, model_name=model_name)
+    if gemini_result and isinstance(gemini_result, dict) and "recommended_technique" in gemini_result:
+        gemini_result["engine_source"] = f"Google Gemini AI ({model_name})"
+        gemini_result["direction"] = direction
+        gemini_result["outgoing_deck"] = int(deck_out_num)
+        gemini_result["incoming_deck"] = int(deck_in_num)
+        gemini_result["camelot_compatibility"] = check_camelot_compatibility(
+            info_out.get('camelot', '8A'), info_in.get('camelot', '8A')
+        )
+        gemini_result["delta_bpm"] = round(abs(float(info_out.get('bpm', 128)) - float(info_in.get('bpm', 128))), 1)
+        return gemini_result, None
+    return None, gemini_err or "Gemini returned no strategy"

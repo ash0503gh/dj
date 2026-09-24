@@ -282,7 +282,7 @@ class DJDeckAudio {
     // Color FX / Filter (HPF / LPF)
     this.filterLPF = this.ctx.createBiquadFilter();
     this.filterLPF.type = 'lowpass';
-    this.filterLPF.frequency.value = 20000;
+    this.filterLPF.frequency.value = Math.min(20000, this.ctx.sampleRate / 2);  // offline sound checks run at 11 kHz
 
     this.filterHPF = this.ctx.createBiquadFilter();
     this.filterHPF.type = 'highpass';
@@ -434,7 +434,7 @@ class DJDeckAudio {
 
     this.drumHiHats = this.ctx.createBiquadFilter();
     this.drumHiHats.type = 'highshelf';
-    this.drumHiHats.frequency.value = 6500;
+    this.drumHiHats.frequency.value = Math.min(6500, this.ctx.sampleRate / 2);
     this.drumHiHats.gain.value = 3.5;
 
     this.drumVocalCut = this.ctx.createBiquadFilter();
