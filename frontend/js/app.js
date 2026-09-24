@@ -889,222 +889,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // ═══════════════════════════════════════════════════
-  // JEV AUTONOMOUS DJ BRAIN: Client-Side Audio Profiling
-  // ═══════════════════════════════════════════════════
-  function profileTrackForJev(deckNum) {
-    const trackData = (deckNum === 1) ? track1Data : track2Data;
-    const deck = (deckNum === 1) ? engine.deck1 : engine.deck2;
-    if (!trackData) return null;
-
-    // Base profile from server analysis cache
-    const profile = {
-      title: trackData.title || trackData.filename || `Deck ${deckNum}`,
-      bpm: trackData.bpm || 128.0,
-      camelot: trackData.camelot || '8A',
-      key: trackData.key || 'Unknown',
-      duration: trackData.duration || 180.0,
-      current_position: deck.audio.currentTime || 0.0,
-      hot_cues: trackData.hot_cues || computeTrackHotCues(trackData),
-    };
-
-    // Extract spectral energy from pre-computed waveform bins
-    const wf = trackData.waveform;
-    if (wf && wf.low && wf.mid && wf.high && wf.low.length > 0) {
-      const pos = deck.audio.currentTime || 0;
-      const dur = trackData.duration || 180;
-      const totalBins = wf.low.length;
-      // Analyze a window around current position (±15 seconds)
-      const windowSec = 15;
-      const startSec = Math.max(0, pos - windowSec);
-      const endSec = Math.min(dur, pos + windowSec);
-      const startBin = Math.floor((startSec / dur) * totalBins);
-      const endBin = Math.min(totalBins, Math.ceil((endSec / dur) * totalBins));
-      const count = Math.max(1, endBin - startBin);
-
-      let sumLow = 0, sumMid = 0, sumHigh = 0, peaks = 0;
-      let prevVal = 0;
-      for (let i = startBin; i < endBin; i++) {
-        sumLow += wf.low[i];
-        sumMid += wf.mid[i];
-        sumHigh += wf.high[i];
-        // Count transient peaks (sharp rises > 0.3)
-        const overall = (wf.overall ? wf.overall[i] : (wf.low[i] + wf.mid[i] + wf.high[i]) / 3);
-        if (overall - prevVal > 0.3) peaks++;
-        prevVal = overall;
-      }
-
-      profile.energy_low = Math.round((sumLow / count) * 1000) / 1000;
-      profile.energy_mid = Math.round((sumMid / count) * 1000) / 1000;
-      profile.energy_high = Math.round((sumHigh / count) * 1000) / 1000;
-
-      const totalEnergy = profile.energy_low + profile.energy_mid + profile.energy_high;
-      profile.spectral_centroid = totalEnergy > 0
-        ? Math.round((profile.energy_high / totalEnergy) * 1000) / 1000
-        : 0.33;
-
-      // Transient density: peaks per second in the analysis window
-      const windowDuration = endSec - startSec;
-      profile.transient_density = windowDuration > 0
-        ? Math.round((peaks / windowDuration) * 100) / 100
-        : 0.5;
-
-      // Energy trajectory: compare first half vs second half of window
-      const midBin = Math.floor((startBin + endBin) / 2);
-      let firstHalf = 0, secondHalf = 0;
-      for (let i = startBin; i < midBin; i++) {
-        firstHalf += (wf.overall ? wf.overall[i] : (wf.low[i] + wf.mid[i] + wf.high[i]) / 3);
-      }
-      for (let i = midBin; i < endBin; i++) {
-        secondHalf += (wf.overall ? wf.overall[i] : (wf.low[i] + wf.mid[i] + wf.high[i]) / 3);
-      }
-      const halfCount = Math.max(1, midBin - startBin);
-      const avgFirst = firstHalf / halfCount;
-      const avgSecond = secondHalf / Math.max(1, endBin - midBin);
-      if (avgSecond > avgFirst * 1.15) profile.energy_trajectory = 'building';
-      else if (avgFirst > avgSecond * 1.15) profile.energy_trajectory = 'dropping';
-      else profile.energy_trajectory = 'sustain';
-    } else {
-      profile.energy_low = 0.5;
-      profile.energy_mid = 0.5;
-      profile.energy_high = 0.5;
-      profile.spectral_centroid = 0.33;
-      profile.transient_density = 0.5;
-      profile.energy_trajectory = 'sustain';
-    }
-
-    // Vocal presence from server acoustic profile
-    const ap = trackData.acoustic_profile || {};
-    profile.vocal_presence = Math.max(
-      parseFloat(ap.intro_vocal_score || 0),
-      parseFloat(ap.outro_vocal_score || 0)
-    );
-
-    // Phrase position
-    if (profile.bpm > 0) {
-      const beatLen = 60.0 / profile.bpm;
-      const currentBeat = profile.current_position / beatLen;
-      profile.phrase_position = Math.floor(currentBeat % 16);
-    } else {
-      profile.phrase_position = 0;
-    }
-
-    return profile;
-  }
-
-  // ═══════════════════════════════════════════════════
-  // JEV BLUEPRINT: Effect Trigger Manager
-  // ═══════════════════════════════════════════════════
-  function triggerBlueprintEffects(bp, p, fxState, outDeck, inDeck, outTrack) {
-    const fx = bp.effects;
-    const bpm = outTrack.bpm || bp.meta.bpm || 128;
-
-    // Echo wash
-    if (fx.echo_wash && p >= fx.echo_wash.engage_at && !fxState.echoEngaged) {
-      fxState.echoEngaged = true;
-      const spb = 60.0 / bpm;
-      outDeck.engageSubtleEcho(bpm, fx.echo_wash.wet_level);
-      // Override delay and feedback with Jev-specified values
-      const now = outDeck.ctx.currentTime;
-      outDeck.delayNode.delayTime.setValueAtTime(spb * fx.echo_wash.delay_beats, now);
-      outDeck.delayFeedback.gain.cancelScheduledValues(now);
-      outDeck.delayFeedback.gain.setValueAtTime(fx.echo_wash.feedback, now);
-    }
-
-    // Vocal ducking
-    if (fx.vocal_ducking) {
-      if (p >= fx.vocal_ducking.start_at && p < fx.vocal_ducking.end_at) {
-        const duckProgress = Math.min(1, (p - fx.vocal_ducking.start_at) / 0.15);
-        const duckDb = fx.vocal_ducking.duck_db * duckProgress;
-        outDeck.duckMids(duckDb, 0.1);
-        fxState.vocalDucked = true;
-      } else if (fxState.vocalDucked && p >= fx.vocal_ducking.end_at) {
-        outDeck.unduckMids();
-        fxState.vocalDucked = false;
-      }
-    }
-
-    // Loop roll
-    if (fx.loop_roll && p >= fx.loop_roll.start_at && !fxState.loopRollStarted) {
-      fxState.loopRollStarted = true;
-      outDeck.triggerLoopRoll(bpm, fx.loop_roll.total_bars);
-    }
-
-    // Noise riser
-    if (fx.noise_riser && p >= fx.noise_riser.start_at && !fxState.noiseRiserStarted) {
-      fxState.noiseRiserStarted = true;
-      engine.triggerNoiseRiser(bpm, fx.noise_riser.bars);
-    }
-
-    // Pre-drop gap
-    if (fx.predrop_gap && p >= fx.predrop_gap.trigger_at && !fxState.predropGapTriggered) {
-      fxState.predropGapTriggered = true;
-      const gapSec = (60.0 / bpm) * fx.predrop_gap.duration_beats;
-      outDeck.triggerPreDropGap(gapSec);
-      inDeck.triggerPreDropGap(gapSec);
-    }
-
-    // Drop impact
-    if (fx.drop_impact && p >= fx.drop_impact.trigger_at && !fxState.dropImpactTriggered) {
-      fxState.dropImpactTriggered = true;
-      if (fx.drop_impact.style !== 'silent_drop') {
-        engine.triggerDropImpact(bpm);
-      }
-    }
-
-    // Vinyl brake
-    if (fx.vinyl_brake && p >= fx.vinyl_brake.start_at && !fxState.vinylBrakeStarted) {
-      fxState.vinylBrakeStarted = true;
-      const dur = fx.vinyl_brake.duration_sec;
-      const startRate = outDeck.audio.playbackRate;
-      const brakeStart = performance.now();
-      function brakeFrame() {
-        if (!fxState.vinylBrakeStarted) return;
-        const elapsed = (performance.now() - brakeStart) / 1000;
-        const brkProgress = Math.min(1, elapsed / dur);
-        outDeck.setPlaybackRate(startRate * (1 - brkProgress * 0.95));
-        if (brkProgress < 1) requestAnimationFrame(brakeFrame);
-      }
-      requestAnimationFrame(brakeFrame);
-    }
-
-    // 4-Stem Isolation Mashup
-    if (fx.stem_mashup && p >= fx.stem_mashup.switch_at && !fxState.stemsSwitched) {
-      fxState.stemsSwitched = true;
-      if (fx.stem_mashup.outgoing_mute === 'bass_first') {
-        outDeck.setStemLevels({ bass: 0.001, vocals: 1.0, drums: 1.0, other: 1.0 }, 0.08);
-      } else if (fx.stem_mashup.outgoing_mute === 'vocals_first') {
-        outDeck.setStemLevels({ vocals: 0.001, bass: 1.0, drums: 1.0, other: 1.0 }, 0.08);
-      }
-
-      if (fx.stem_mashup.incoming_focus === 'drums_first') {
-        inDeck.setStemLevels({ drums: 1.0, bass: 0.001, vocals: 0.001, other: 0.001 }, 0.08);
-      } else if (fx.stem_mashup.incoming_focus === 'vocals_first') {
-        inDeck.setStemLevels({ vocals: 1.0, drums: 0.001, bass: 0.001, other: 0.001 }, 0.08);
-      } else if (fx.stem_mashup.incoming_focus === 'bass_and_drums') {
-        inDeck.setStemLevels({ drums: 1.0, bass: 1.0, vocals: 0.001, other: 0.001 }, 0.08);
-      }
-    }
-
-    // Resonant LFO Flanger Sweep
-    if (fx.flanger && p >= fx.flanger.start_at && !fxState.flangerEngaged) {
-      fxState.flangerEngaged = true;
-      outDeck.engageFlanger(fx.flanger.speed, fx.flanger.depth, 0.55, fx.flanger.wet);
-    }
-
-    // Beat-Synced Masher Stutter
-    if (fx.beat_masher && p >= fx.beat_masher.start_at && !fxState.beatMasherStarted) {
-      fxState.beatMasherStarted = true;
-      outDeck.triggerBeatMasher(bpm, fx.beat_masher.division, fx.beat_masher.bars);
-    }
-
-    // Turntable Pitch Bend
-    if (fx.pitch_bend && p >= fx.pitch_bend.start_at && !fxState.pitchBendStarted) {
-      fxState.pitchBendStarted = true;
-      outDeck.triggerPitchBend(fx.pitch_bend.semitones, 2.0, fx.pitch_bend.style);
-    }
-  }
-
   function hideTransitionButtons() {
     ['btn-abort-transition', 'btn-manual-override'].forEach(id => {
       const b = document.getElementById(id);
@@ -1746,10 +1530,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const d1BtnPfl = document.getElementById('d1-btn-pfl');
   const d2BtnPfl = document.getElementById('d2-btn-pfl');
-  const aiAuditionMonitor = document.getElementById('ai-audition-monitor');
-  const auditionBadge = document.getElementById('audition-badge');
-  const auditionMeterFill = document.getElementById('audition-meter-fill');
-  const auditionFeedbackText = document.getElementById('audition-feedback-text');
 
   if (d1BtnPfl) {
     d1BtnPfl.addEventListener('click', () => {
@@ -1926,43 +1706,6 @@ document.addEventListener('DOMContentLoaded', () => {
     t.intervals.forEach(clearInterval);
   }
 
-  /** Optional AI blueprint. Never blocks: used only if it arrives before the planned start. */
-  function requestBlueprint(t, timeoutMs) {
-    const profileOut = profileTrackForJev(t.outDeckNum);
-    const profileIn = profileTrackForJev(t.inDeckNum);
-    if (!profileOut || !profileIn) return Promise.resolve(null);
-    const cueTime = t.plan.inStartNative;
-    const payload = {
-      profile_out: profileOut,
-      profile_in: profileIn,
-      audio_clip_b64: t.inDeck.sliceAuditionWavBase64(cueTime, 10.0, 16000),
-      audio_mime: 'audio/wav',
-      file_id_in: t.inTrack.file_id,
-      cue_time: cueTime,
-    };
-    const jevKey = jevKeyInput ? jevKeyInput.value.trim() : '';
-    const geminiKey = geminiKeyInput ? geminiKeyInput.value.trim() : '';
-    if (jevKey) payload.jev_api_key = jevKey;
-    if (geminiKey) payload.gemini_api_key = geminiKey;
-    const controller = new AbortController();
-    setTimeout(() => controller.abort(), timeoutMs);
-    return fetch('/api/jev-blueprint', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    })
-      .then(r => (r.ok ? r.json() : null))
-      .then(d => {
-        const bp = d && d.status === 'success' ? d.blueprint : null;
-        if (bp && bp.meta && bp.meta.audition_heard && auditionFeedbackText) {
-          auditionFeedbackText.textContent = `🎧 HEARD: ${bp.meta.audition_heard}`;
-        }
-        return bp && bp.keyframes ? bp : null;
-      })
-      .catch(() => null);
-  }
-
   btnTriggerTransition.addEventListener('click', () => {
     unlockAudio();
     if (!track1Data || !track2Data) {
@@ -2037,14 +1780,8 @@ document.addEventListener('DOMContentLoaded', () => {
       ? stretchedBuffer(t.inTrack, t.plan.tempoRatio)
       : Promise.resolve(null);
 
-    // AI blueprint runs in parallel with the countdown and is dropped if it's late
-    t.blueprint = null;
-    const hasAIEngine = Boolean(serverHasJev || serverHasGemini ||
-      (jevKeyInput && jevKeyInput.value.trim()) || (geminiKeyInput && geminiKeyInput.value.trim()));
-    const budgetMs = (t.plan.startCtx - engine.ctx.currentTime - 1.0) * 1000;
-    if (t.blend && hasAIEngine && (selectedTechnique === 'auto' || selectedTechnique === 'bass_swap') && budgetMs > 1500) {
-      requestBlueprint(t, budgetMs).then(bp => { if (activeTransition === t) t.blueprint = bp; });
-    }
+    // No AI blueprint here: rendered A/B tests showed its generic fader/HPF curves left 5-13 dB
+    // holes in the blend. The AI advises in the strategy card; the measured local blend mixes.
 
     // No automatic server export during a live set (it competes with analysis/stretching for a
     // small instance's memory). The Export button renders this transition on demand.
@@ -2086,7 +1823,7 @@ document.addEventListener('DOMContentLoaded', () => {
             ? (p.dropAligned ? 'HATS & MIDS IN, BASS SWAPS ON THE DROP' : 'HATS & MIDS IN')
             : 'BASS SWAPPED ON THE 1, OUTGOING OUT';
           transitionStatusBanner.textContent =
-            `🎚️ ${t.blueprint ? 'AI BLUEPRINT' : 'BLEND'} BAR ${bar}/${total}: ${stage}`;
+            `🎚️ BLEND BAR ${bar}/${total}: ${stage}`;
         }
       }
     }, 50));
@@ -2127,7 +1864,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const side = deck => ({ buffer: deck.audio.buffer, tempoRatio: deck.audio.tempoRatio,
                             rate: deck.audio.playbackRate, trimDb: deck.trimDb || 0 });
     lastPerformed = t.blend ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
-                                blueprint: t.blueprint, technique: t.tech } : null;
+                                technique: t.tech } : null;
     if (t.blend) runBlend(t); else runCut(t);
   }
 
@@ -2135,19 +1872,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const p = t.plan;
     const T = p.startCtx;
     t.inDeck.play(T, p.inStartNative);
-    t.marks = t.blueprint
-      ? MixPlanner.scheduleBlueprint(t.blueprint, p, t.outDeck, t.inDeck)
-      : MixPlanner.scheduleBlend(p, t.outDeck, t.inDeck);
+    t.marks = MixPlanner.scheduleBlend(p, t.outDeck, t.inDeck);
     atCtx(t, T, () => setPlayUI(t.inBtnPlay, true));
-    if (t.blueprint) {
-      // Effects that bend the outgoing deck's speed would pull it off the grid mid-overlap
-      ['vinyl_brake', 'pitch_bend'].forEach(k => { if (t.blueprint.effects) delete t.blueprint.effects[k]; });
-      const fxState = {};
-      t.intervals.push(setInterval(() => {
-        const prog = (engine.ctx.currentTime - T) / p.blendSec;
-        if (prog >= 0 && prog <= 1) triggerBlueprintEffects(t.blueprint, prog, fxState, t.outDeck, t.inDeck, t.outTrack);
-      }, 25));
-    }
     atCtx(t, t.marks.end + 0.05, () => completeTransition(t));
   }
 
@@ -2337,7 +2063,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const res = await TransitionLab.exportPerformed(lastPerformed);
         const p = lastPerformed.plan;
         lastRenderedMix = {
-          technique: lastPerformed.blueprint ? 'ai_blueprint_blend' : lastPerformed.technique,
+          technique: lastPerformed.technique,
           total_duration: Math.round(res.duration * 100) / 100,
           bars: p.bars + (p.tailBars || 0),
           mix_start_sec: Math.round(res.marks.start * 100) / 100,
