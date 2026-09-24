@@ -7,9 +7,10 @@ only makes the musical choice between them: which phrase to leave on, how long t
 whether to echo out instead. The planner then performs the chosen one exactly as planned, so an
 AI answer can never put a hole or a flam in the mix.
 
-Gemini and Jev are asked in parallel; the answer of the engine preferred by
-ai_advisor.engine_order (Gemini by default) wins if it arrives within the time budget. With no
-usable answer the caller keeps the planner's own first choice.
+Gemini and Jev are asked in parallel within a time budget: Gemini picks one candidate and
+explains why; Jev (a fast classifier that answers many typed questions in one request) rates
+every candidate on phrasing, energy, vocals, crowd and overall. The console combines both with
+its own sound-check measurements. With no usable answer the planner's own choice stands.
 """
 
 import functools
@@ -99,25 +100,39 @@ Return JSON: {{"choice": "<option id>", "reason": "<one sentence a DJ would say>
     return None, err or "Gemini returned no choice"
 
 
-def _jev_choice(out_t, in_t, cands, key, timeout) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+# What Jev rates for every candidate, each on a 0-4 scale (criteria = what each level means)
+JEV_CRITERIA = {
+    "phrasing": ["Cuts across a phrase or leaves mid-idea", "Weak phrase alignment", "Acceptable phrasing",
+                 "Leaves and lands on phrase lines", "Perfect: major phrase out, phrase start in"],
+    "energy": ["Energy crashes or spikes awkwardly", "Noticeable energy dip or jump", "Neutral energy flow",
+               "Energy carries smoothly into the new track", "Energy lifts the floor exactly when it should"],
+    "vocals": ["Two lead vocals or melodies collide", "Likely clash", "Some overlap, manageable",
+               "Mostly clean", "No vocal or melody collision at all"],
+    "crowd": ["The dancefloor would stall", "Loses the room a little", "Holds the room",
+              "Keeps the floor moving", "Builds excitement, crowd-pleasing"],
+    "overall": ["Poor transition", "Below average", "Fine", "Very good", "Excellent: a headline DJ would pick it"],
+}
+
+
+def _jev_scores(out_t, in_t, cands, key, timeout) -> Tuple[Optional[Dict[str, Dict[str, float]]], Optional[str]]:
+    """One Jev request rating every candidate on every criterion (candidates x 5 questions).
+    Returns {id: {criterion: 0-4}} or (None, error)."""
     state = {
         "outgoing_track": {k: out_t.get(k) for k in ("title", "bpm", "camelot", "duration", "position")},
         "incoming_track": {k: in_t.get(k) for k in ("title", "bpm", "camelot", "duration")},
-        "note": "All options are beatmatched, bass-swapped on a downbeat and loudness matched.",
+        "candidates": {c["id"]: describe(c) for c in cands},
+        "note": "All candidates are beatmatched, bass-swapped on a downbeat and loudness matched. "
+                "Blends keep the floor moving; an echo-out is a reset to use sparingly.",
     }
-    payload = {
-        "model": "jev-latest",
-        "state": state,
-        "questions": {
-            "pick": {
-                "type": "choice",
-                "instructions": "Which transition sounds best on a club dancefloor: good phrasing and energy "
-                                "flow, no vocal or melody clash, no needless waiting? Blends keep the floor "
-                                "moving; an echo-out is a reset to use sparingly.",
-                "criteria": {c["id"]: describe(c) for c in cands},
+    questions = {}
+    for c in cands:
+        for crit, levels in JEV_CRITERIA.items():
+            questions[f"{c['id']}_{crit}"] = {
+                "type": "score",
+                "instructions": f"Club DJ transition, candidate {c['id']}: {describe(c)}. Rate its {crit}.",
+                "criteria": levels,
             }
-        },
-    }
+    payload = {"model": "jev-latest", "state": state, "questions": questions}
     req = urllib.request.Request(
         "https://api.typesafe.ai/v1/systemone",
         data=json.dumps(payload).encode("utf-8"),
@@ -128,52 +143,88 @@ def _jev_choice(out_t, in_t, cands, key, timeout) -> Tuple[Optional[Dict[str, st
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
-        ans = data.get("answers", data).get("pick", {})
-        choice = ans.get("choice") or ans.get("value")
-        if choice:
-            return {"choice": str(choice).strip(), "reason": "Jev System One single-pass pick"}, None
-        return None, "Jev returned no choice"
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - network/API failure: no scores this time
         return None, str(e)
+    answers = data.get("answers", data)
+    scores: Dict[str, Dict[str, float]] = {}
+    for c in cands:
+        row = {}
+        for crit in JEV_CRITERIA:
+            ans = answers.get(f"{c['id']}_{crit}") or {}
+            val = ans.get("score") if isinstance(ans, dict) and ans.get("score") is not None else (
+                ans.get("value") if isinstance(ans, dict) else ans)
+            try:
+                row[crit] = round(max(0.0, min(4.0, float(val))), 2)
+            except (TypeError, ValueError):
+                continue
+        if row:
+            row["mean"] = round(sum(row.values()) / len(row), 2)
+            scores[c["id"]] = row
+    if len(scores) < len(cands):
+        return None, f"Jev scored {len(scores)}/{len(cands)} candidates"
+    return scores, None
 
 
 def choose_transition(out_t: Dict[str, Any], in_t: Dict[str, Any], candidates: List[Dict[str, Any]],
                       model: Optional[str] = None, budget_sec: float = 8.0,
                       gemini_api_key: Optional[str] = None, jev_api_key: Optional[str] = None) -> Dict[str, Any]:
-    """Returns {choice, reason, engine, latency_ms, errors}; choice is None when no engine answered
-    in time with a valid candidate id (the caller then keeps the planner's first candidate).
-    All engines are asked at once; the first in engine_order(model) that answers validly within
-    the budget wins, so a slow Gemini still leaves Jev's answer instead of nothing."""
+    """Gemini picks one candidate while Jev rates every candidate on five criteria, in parallel and
+    within the time budget. Returns {choice, reason, engine, gemini_choice, scores, latency_ms,
+    errors}: choice is the preferred engine's pick (Gemini by default; Jev's best-rated when Jev is
+    selected or Gemini has no answer), None when neither answered. The console combines the
+    Gemini pick, the Jev scores and its own sound check into the final choice."""
     t0 = time.monotonic()
-    ids = {c.get("id") for c in candidates}
+    ids = [c.get("id") for c in candidates]
     errors: Dict[str, str] = {}
+    order = engine_order(model) if len(candidates) > 1 else []
     gemini_model = model if (model or "").lower().startswith("gemini") else DEFAULT_GEMINI_MODEL
     calls = {}
-    for engine in engine_order(model) if len(candidates) > 1 else []:
-        if engine == "gemini":
-            key = get_gemini_api_key(gemini_api_key)
-            if key:
-                calls[engine] = (f"Gemini ({gemini_model})", functools.partial(
-                    _gemini_choice, out_t, in_t, candidates, key, gemini_model, budget_sec))
-        else:
-            key = get_jev_api_key(jev_api_key)
-            if key:
-                calls[engine] = ("Jev System One", functools.partial(
-                    _jev_choice, out_t, in_t, candidates, key, min(budget_sec, 4.0)))
+    if "gemini" in order and get_gemini_api_key(gemini_api_key):
+        calls["gemini"] = functools.partial(_gemini_choice, out_t, in_t, candidates,
+                                            get_gemini_api_key(gemini_api_key), gemini_model, budget_sec)
+    if "jev" in order and get_jev_api_key(jev_api_key):
+        calls["jev"] = functools.partial(_jev_scores, out_t, in_t, candidates,
+                                         get_jev_api_key(jev_api_key), min(budget_sec, 5.0))
+    results: Dict[str, Any] = {}
+    latency: Dict[str, int] = {}
+    def timed(engine, fn):
+        try:
+            return fn()
+        finally:
+            latency[engine] = int((time.monotonic() - t0) * 1000)
+
     if calls:
         pool = ThreadPoolExecutor(max_workers=len(calls))
-        futures = {engine: pool.submit(fn) for engine, (_, fn) in calls.items()}
+        futures = {engine: pool.submit(timed, engine, fn) for engine, fn in calls.items()}
         pool.shutdown(wait=False)
-        for engine, (name, _) in calls.items():  # preference order
+        for engine, fut in futures.items():
             try:
-                res, err = futures[engine].result(timeout=max(0.0, budget_sec - (time.monotonic() - t0)))
+                res, err = fut.result(timeout=max(0.0, budget_sec - (time.monotonic() - t0)))
             except FutureTimeout:
                 res, err = None, "timed out"
-            except Exception as e:  # noqa: BLE001 - any engine failure falls through to the next
+            except Exception as e:  # noqa: BLE001 - any engine failure: carry on without it
                 res, err = None, str(e)
-            if res and res["choice"] in ids:
-                return {"choice": res["choice"], "reason": res["reason"], "engine": name,
-                        "latency_ms": int((time.monotonic() - t0) * 1000), "errors": errors}
-            errors[engine] = err or f"invalid choice {res and res.get('choice')!r}"
-    return {"choice": None, "reason": "", "engine": "planner",
-            "latency_ms": int((time.monotonic() - t0) * 1000), "errors": errors}
+            if engine == "gemini" and res and res["choice"] not in ids:
+                res, err = None, f"invalid choice {res['choice']!r}"
+            if res:
+                results[engine] = res
+            else:
+                errors[engine] = err or f"{engine} gave no answer"
+
+    gemini = results.get("gemini")
+    scores = results.get("jev")
+    jev_best = max(ids, key=lambda i: (scores[i]["mean"], -ids.index(i))) if scores else None
+    picks = {
+        "gemini": gemini and (gemini["choice"], gemini["reason"], f"Gemini ({gemini_model})"),
+        "jev": jev_best and (jev_best, f"highest Jev rating ({scores[jev_best]['mean']:.1f}/4)", "Jev System One"),
+    }
+    choice, reason, engine = None, "", "planner"
+    for name in order:
+        if picks.get(name):
+            choice, reason, engine = picks[name]
+            break
+    return {"choice": choice, "reason": reason, "engine": engine,
+            "gemini_choice": gemini["choice"] if gemini else None,
+            "gemini_reason": gemini["reason"] if gemini else "",
+            "scores": scores, "latency_ms": int((time.monotonic() - t0) * 1000),
+            "engine_latency_ms": latency, "errors": errors}

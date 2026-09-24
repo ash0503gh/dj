@@ -1827,16 +1827,20 @@ document.addEventListener('DOMContentLoaded', () => {
         transitionStatusBanner.textContent = useAI
           ? `🤖 ${who} IS CHOOSING BETWEEN ${cands.length} TRANSITIONS WHILE EACH ONE IS SOUND-CHECKED...`
           : `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
-        renderSoundCheck(cands, null, null);
+        renderSoundCheck(cands, null, {}, {});
         const checked = Promise.race([measureCandidates(t, cands), new Promise(r => setTimeout(r, budget * 1000))]);
-        const ai = useAI ? chooseWithAI(t, cands, aiModel) : Promise.resolve({ id: null, note: null, who });
+        const ai = useAI ? chooseWithAI(t, cands, aiModel) : Promise.resolve({});
         Promise.all([ai, checked]).then(([pick]) => {
           if (activeTransition !== t) return;  // aborted while choosing
-          const { plan, verdict } = TransitionLab.settle(cands, pick.id);
-          renderSoundCheck(cands, plan.id, pick.id);
+          const { plan, verdict, totals } = TransitionLab.settle(cands, { gemini: pick.gemini, scores: pick.scores });
+          renderSoundCheck(cands, plan.id, pick, totals);
+          const jev = id => (pick.scores && pick.scores[id] ? ` · JEV ${pick.scores[id].mean.toFixed(1)}/4` : '');
           const note = {
-            ai: pick.note,
-            rejected: `${pick.who} PICKED ${pick.id} BUT IT FAILED THE SOUND CHECK: PLAYING ${plan.id}, THE CLEANEST`,
+            ai: `GEMINI PICK ${plan.id}${jev(plan.id)}${pick.reason ? ': ' + pick.reason : ''}`,
+            combined: pick.gemini
+              ? `PLAYING ${plan.id}${jev(plan.id)}: RATED ABOVE GEMINI'S ${pick.gemini} ONCE SOUND-CHECKED`
+              : `JEV'S TOP-RATED ${plan.id}${jev(plan.id)}, SOUND-CHECKED`,
+            rejected: `GEMINI PICKED ${pick.gemini} BUT IT FAILED THE SOUND CHECK: PLAYING ${plan.id}${jev(plan.id)}`,
             cleanest: `CLEANEST OF ${cands.length} (SOUND-CHECKED)${useAI ? ', AI UNAVAILABLE' : ''}`,
             planner: useAI ? 'PLANNER PICK (AI UNAVAILABLE)' : null,
           }[verdict];
@@ -1887,30 +1891,33 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       const data = await res.json();
       console.info('AI transition choice', data);
-      if (cands.some(c => c.id === data.choice)) {
-        const who = data.engine.startsWith('Jev') ? 'JEV' : 'GEMINI';
-        return { id: data.choice, who, note: `${who} PICK ${data.choice}/${cands.length}${data.reason ? ': ' + data.reason : ''}` };
-      }
+      return {
+        gemini: cands.some(c => c.id === data.gemini_choice) ? data.gemini_choice : null,
+        reason: data.gemini_reason || '',
+        scores: data.scores || null,
+      };
     } catch (err) {
       console.warn('AI transition choice unavailable:', err);
     } finally {
       clearTimeout(timer);
     }
-    return { id: null, who: model.startsWith('jev') ? 'JEV' : 'GEMINI', note: null };
+    return {};
   }
 
   /** The sound-check panel: each candidate's measured score, which one plays, and the AI's pick. */
   const soundCheckList = document.getElementById('sound-check-list');
-  function renderSoundCheck(cands, playedId, aiId) {
+  function renderSoundCheck(cands, playedId, ai, totals) {
     if (!soundCheckList) return;
     const scores = cands.map(c => (c.measured ? c.measured.penalty : null));
     const worst = Math.max(10, ...scores.filter(v => v !== null));
     soundCheckList.replaceChildren(...cands.map((c, i) => {
       const score = scores[i];
       const plays = c.id === playedId;
+      const failed = totals[c.id] === null;
       const verdict = playedId === null ? (score === null ? (c.technique === 'blend' ? 'CHECKING' : 'NO OVERLAP') : 'MEASURED')
-        : plays ? 'PLAYS' : c.id === aiId ? 'AI PICK · FAIL' : 'SKIPPED';
-      const color = plays ? 'var(--ok)' : c.id === aiId ? 'var(--bad)' : score !== null && score > 6 ? 'var(--warn)' : 'var(--muted)';
+        : plays ? 'PLAYS' : c.id === ai.gemini ? (failed ? 'AI PICK · FAIL' : 'GEMINI PICK') : failed ? 'FAILED' : 'SKIPPED';
+      const color = plays ? 'var(--ok)' : c.id === ai.gemini && failed ? 'var(--bad)'
+        : score !== null && score > 6 ? 'var(--warn)' : 'var(--muted)';
       const row = document.createElement('div');
       row.className = 'check-row';
       row.style.setProperty('--sc', color);
@@ -1922,8 +1929,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const fill = document.createElement('span'); fill.style.width = `${score === null ? 0 : Math.max(4, Math.min(100, 100 * score / worst))}%`;
       bar.append(fill);
       const val = document.createElement('span'); val.className = 'check-score'; val.textContent = score === null ? '–' : score.toFixed(1);
+      val.title = 'Measured sound: lower is cleaner';
+      const jevScore = ai.scores && ai.scores[c.id];
+      const jev = document.createElement('span'); jev.className = 'check-jev';
+      jev.textContent = jevScore ? jevScore.mean.toFixed(1) : '';
+      if (jevScore) {
+        jev.title = `Jev rating out of 4: phrasing ${jevScore.phrasing}, energy ${jevScore.energy}, `
+          + `vocals ${jevScore.vocals}, crowd ${jevScore.crowd}, overall ${jevScore.overall}`;
+      }
       const tag = document.createElement('span'); tag.className = 'check-verdict'; tag.textContent = verdict;
-      row.append(id, bar, val, tag);
+      row.append(id, bar, val, jev, tag);
       return row;
     }));
   }

@@ -312,16 +312,35 @@ const TransitionLab = (() => {
     return cands.filter(c => c.measured).sort((a, b) => a.measured.penalty - b.measured.penalty)[0] || cands[0];
   }
 
+  // How the final choice weighs its signals, among candidates that passed the sound check
+  const WEIGHTS = { jev: 0.45, gemini: 0.35, clean: 0.2 };
+
   /**
-   * Final choice: the AI's pick when it passed the sound check, else the cleanest candidate.
-   * Returns { plan, verdict: 'ai' | 'rejected' | 'cleanest' | 'planner' }.
+   * Final choice. Only candidates that passed the sound check can win; among them each gets
+   * 45% Jev's mean rating (0-4 over phrasing, energy, vocals, crowd, overall), 35% if it is
+   * Gemini's pick, 20% how close it sounds to the cleanest. ai = { gemini: id, scores: {id: {mean}} }.
+   * Returns { plan, verdict: 'ai' | 'combined' | 'rejected' | 'cleanest' | 'planner', totals }.
    */
-  function settle(cands, aiId) {
+  function settle(cands, ai = {}) {
     const ok = acceptable(cands);
-    const ai = cands.find(c => c.id === aiId);
-    if (ai && ok.includes(ai)) return { plan: ai, verdict: 'ai' };
     const measured = cands.some(c => c.measured);
-    return { plan: measured ? cleanest(ok) : cands[0], verdict: ai ? 'rejected' : (measured ? 'cleanest' : 'planner') };
+    const scores = ai.scores || null;
+    const gemini = cands.find(c => c.id === ai.gemini) ? ai.gemini : null;
+    if (!scores && !gemini) {
+      return { plan: measured ? cleanest(ok) : cands[0], verdict: measured ? 'cleanest' : 'planner', totals: {} };
+    }
+    const penalties = ok.filter(c => c.measured).map(c => c.measured.penalty);
+    const best = penalties.length ? Math.min(...penalties) : null;
+    const totals = {};
+    for (const c of cands) {
+      if (!ok.includes(c)) { totals[c.id] = null; continue; }
+      const jev = scores && scores[c.id] ? scores[c.id].mean / 4 : 0.5;
+      const clean = c.measured && best !== null ? 1 - Math.min(1, (c.measured.penalty - best) / ACCEPT_MARGIN) : 1;
+      totals[c.id] = +(WEIGHTS.jev * jev + WEIGHTS.gemini * (c.id === gemini ? 1 : 0) + WEIGHTS.clean * clean).toFixed(3);
+    }
+    const plan = ok.reduce((a, b) => (totals[b.id] > totals[a.id] ? b : a));
+    const verdict = gemini && totals[gemini] === null ? 'rejected' : plan.id === gemini ? 'ai' : 'combined';
+    return { plan, verdict, totals };
   }
 
   /** One number for "how clean did it sound" (lower is better): flams, bass holes/mud, level
@@ -337,7 +356,7 @@ const TransitionLab = (() => {
   /**
    * Which engine picks the best transition? For one track pair: build the live console's
    * candidates, render and score every one, then ask each engine to pick.
-   * opts: { outId, inId, bars=16, outStart, models=['planner', 'gemini-3.8-flash', 'jev-latest'],
+   * opts: { outId, inId, bars=16, outStart, models (any non-'planner' entry asks the AI once),
    *         listen=true (use Gemini's vocal labels) }
    */
   async function benchmark(opts) {
@@ -372,26 +391,31 @@ const TransitionLab = (() => {
     await measureAll(cands, { buffer: outBuf, tempoRatio: 1, rate: 1 },
                      stretched ? { buffer: stretched, tempoRatio: cands[0].tempoRatio, rate: 1 }
                                : { buffer: inBuf, tempoRatio: 1, rate: 1 });
-    const picks = {};
-    for (const model of models) {
-      let res = { choice: null, engine: 'planner', latency_ms: 0 };
-      if (model !== 'planner' && cands.length > 1) {
-        res = await (await fetch('/api/ai-choose-transition', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.assign({ model }, body)),
-        })).json();
-      }
-      // What the live console would play: the AI's pick if it passed the sound check, else the cleanest
-      const final = cands.length ? settle(cands, res.choice) : { plan: null, verdict: 'none' };
-      picks[model] = { choice: res.choice, engine: res.engine, reason: res.reason, latency_ms: res.latency_ms,
-                       errors: res.errors, played: final.plan && final.plan.id, verdict: final.verdict };
+    // One AI call (Gemini picks, Jev rates) and every policy the console could follow with it
+    let ai = { choice: null, gemini_choice: null, scores: null, engine: 'planner', errors: {} };
+    if (cands.length > 1 && models.some(m => m !== 'planner')) {
+      ai = await (await fetch('/api/ai-choose-transition', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(Object.assign({ model: 'gemini-3.8-flash' }, body)),
+      })).json();
     }
-    picks['planner-first (before)'] = { choice: cands.length ? cands[0].id : null, played: cands.length ? cands[0].id : null,
-                                        verdict: 'planner' };
+    const policy = (sig) => {
+      const f = cands.length ? settle(cands, sig) : { plan: null, verdict: 'none', totals: {} };
+      return { played: f.plan && f.plan.id, verdict: f.verdict, totals: f.totals };
+    };
+    const picks = {
+      'planner-first (before)': { played: cands.length ? cands[0].id : null, verdict: 'planner' },
+      'planner (cleanest)': policy({}),
+      'gemini + sound check': policy({ gemini: ai.gemini_choice }),
+      'jev + sound check': policy({ scores: ai.scores }),
+      'combined (jev + gemini + sound check)': policy({ gemini: ai.gemini_choice, scores: ai.scores }),
+    };
     const ranked = Object.values(scored).map(s => s.penalty).filter(v => v !== null).sort((a, b) => a - b);
     return {
       pair: `${outTrack.title || outTrack.file_id} -> ${inTrack.title || inTrack.file_id}`,
       out_start: outStart,
+      ai: { gemini: ai.gemini_choice, gemini_reason: ai.gemini_reason, scores: ai.scores,
+            latency: ai.engine_latency_ms, errors: ai.errors },
       best_penalty: ranked.length ? ranked[0] : null,
       candidates: Object.values(scored).map(s => ({ id: s.id, technique: s.technique, bars: s.bars,
         exit_at: s.exit_at, wait_s: s.wait_s, penalty: s.penalty, quick: (cands.find(c => c.id === s.id).measured || {}),
