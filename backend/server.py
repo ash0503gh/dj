@@ -52,6 +52,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.middleware("http")
+async def revalidate_html(request: Request, call_next):
+    """The page must never be reused from cache without checking (phones kept an old copy of it,
+    with old script versions). Scripts and styles are versioned (?v=), so they may be cached."""
+    response = await call_next(request)
+    if response.headers.get("content-type", "").startswith("text/html"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 # Load pre-analyzed tracks cache
 ANALYSIS_CACHE = {}
 

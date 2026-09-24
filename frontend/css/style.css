@@ -33,6 +33,10 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); }
+/* A console, not a document: taps and drags go to the controls, never to page zoom */
+html { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
+button, .knob, .fader, canvas { touch-action: manipulation; }
+.knob, .fader { touch-action: none; }
 body { min-height: 100vh; -webkit-font-smoothing: antialiased; }
 button, input, select { font-family: inherit; }
 button { cursor: pointer; }
@@ -312,7 +316,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .mixer-header { display: flex; justify-content: space-between; font-size: 11px; letter-spacing: 0.16em; color: var(--muted); }
 .ch-a { color: var(--deck-a); font-family: var(--font-cond); font-weight: 700; letter-spacing: 0.1em; }
 .ch-b { color: var(--deck-b); font-family: var(--font-cond); font-weight: 700; letter-spacing: 0.1em; }
-.mixer-body { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 14px; flex-grow: 1; min-height: 0; }
+.mixer-body { display: grid; grid-template-columns: auto minmax(96px, 1fr) auto; gap: 20px; flex-grow: 1; min-height: 0; }
 .channel-strip { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; align-items: center; }
 .strip-a { --deck: var(--deck-a); }
 .strip-b { --deck: var(--deck-b); }
@@ -638,7 +642,7 @@ html.landscape-ui .master-waveform-panel { padding: 4px 6px; border-radius: 8px;
 html.landscape-ui .waveform-canvas-container { gap: 3px; }
 html.landscape-ui .legend-tag { display: none; }
 
-html.landscape-ui .console-body { grid-template-columns: minmax(0, 1fr) 208px minmax(0, 1fr); gap: 6px; }
+html.landscape-ui .console-body { grid-template-columns: minmax(0, 1fr) 256px minmax(0, 1fr); gap: 6px; }
 html.landscape-ui .center-mixer { grid-column: auto; order: 0; padding: 8px; gap: 6px; border-radius: 8px; }
 
 html.landscape-ui .deck-panel { padding: 8px; gap: 5px; border-radius: 8px; }
@@ -672,7 +676,7 @@ html.landscape-ui .btn-play::before { width: 12px; height: 13px; }
 html.landscape-ui .btn-play.playing::before { width: 11px; height: 12px; }
 
 html.landscape-ui .mixer-header { font-size: 9px; }
-html.landscape-ui .mixer-body { gap: 6px; }
+html.landscape-ui .mixer-body { gap: 8px; grid-template-columns: auto minmax(100px, 1fr) auto; }
 html.landscape-ui .channel-strip { gap: 4px; }
 html.landscape-ui .knob-group { display: grid; grid-template-columns: 28px auto; column-gap: 4px; row-gap: 1px; align-items: center; }
 html.landscape-ui .knob-group .knob { grid-row: span 2; width: 28px; height: 28px; }
@@ -699,6 +703,45 @@ html.landscape-ui .tech-more-list, html.landscape-ui .opt-toggles { bottom: auto
 html.landscape-ui .btn-pro-mix { height: 44px; }
 html.landscape-ui .bars-selector .pill { height: 44px; width: 44px; }
 html.landscape-ui .status-banner { font-size: 16px; }
+
+/* The smallest phones held sideways (~360 px tall): slightly smaller jog wheels and lanes */
+@media (max-height: 380px) {
+  html.landscape-ui .dj-console { --jog: 72px; --wave-h: 34px; }
+}
+html.forced-landscape.short-phone .dj-console { --jog: 72px; --wave-h: 34px; }
+
+/* In-page pickers (mobile.js) replace the phone's native select picker in the landscape console */
+.picker { display: none; position: relative; min-width: 0; }
+html.landscape-ui .deck-source select, html.landscape-ui #ai-model-select { display: none; }
+html.landscape-ui .picker { display: block; flex: 1 1 auto; }
+.picker-button {
+  width: 100%; height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 22px 0 8px;
+  border-radius: 6px; border: 1px solid var(--line-2); background: var(--inset); color: var(--text);
+  font-size: 12px; text-align: left; position: relative;
+}
+.picker-button::after {
+  content: ""; position: absolute; right: 8px; top: 50%; width: 6px; height: 6px; margin-top: -4px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg);
+}
+.picker-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.picker-list {
+  position: absolute; z-index: 40; top: calc(100% + 4px); left: 0; width: max(100%, 260px); max-height: 220px;
+  overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line-3); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.7);
+}
+.deck-2 .picker-list { left: auto; right: 0; }
+.picker-item {
+  width: 100%; min-height: 36px; display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 6px 8px; border: none; border-radius: 6px; background: transparent; color: var(--text);
+  font-size: 13px; text-align: left;
+}
+.picker-item > span:first-child { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.picker-item:hover, .picker-item:focus-visible { background: var(--raised); }
+.picker-item[aria-selected="true"] { background: var(--deck-b-bg); color: var(--accent); }
+.deck-1 .picker-item[aria-selected="true"] { background: var(--deck-a-bg); color: var(--deck-a); }
+.picker-meta { flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.picker-empty { display: block; padding: 10px 8px; font-size: 12px; color: var(--muted); }
+html.landscape-ui .ai-config-item .picker-button { height: 36px; font-size: 13px; }
 
 /* The app turns the console itself when the browser can't rotate (iPhones, rotation lock) */
 html.forced-landscape, html.forced-landscape body { height: 100%; overflow: hidden; }
