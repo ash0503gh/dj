@@ -22,12 +22,9 @@ class JogWheel {
 
   setupEvents() {
     const getAngle = (e) => {
-      const rect = this.canvas.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-      return Math.atan2(clientY - cy, clientX - cx);
+      // In the wheel's own axes (the console may be turned sideways on phones)
+      const p = UI.local(e, this.canvas);
+      return Math.atan2(p.y - p.h / 2, p.x - p.w / 2);
     };
 
     const onStart = (e) => {

@@ -620,91 +620,104 @@ kbd {
   .rotate-hint .btn-close { width: 32px; height: 32px; }
 }
 
-/* ── Phones and small tablets held sideways: decks and mixer side by side ── */
-@media (orientation: landscape) and (max-height: 520px) {
-  .dj-console {
-    --wave-h: 40px; --jog: 84px; max-width: none; gap: 6px;
-    padding: 0 max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left));
-  }
-  .top-nav { height: 40px; margin: 0 -8px; padding: 0 12px; gap: 12px; flex-wrap: nowrap; }
-  .brand-name, .nav-key, .ai-engine-chip, #btn-shortcuts, .nav-stat .nav-label, .nav-unit { display: none; }
-  .nav-bpm { font-size: 16px; }
-  .phase-meter-hud { padding: 3px 8px; gap: 6px; }
-  .phase-meter-hud .nav-label { display: none; }
-  .phase-bar-track { width: 64px; }
-  .phase-status { min-width: 0; font-size: 11px; }
-  .nav-spacer { display: block; }
-  .mini-trigger {
-    display: inline-flex; height: 30px; padding: 0 16px; border: none; border-radius: 6px;
-    background: var(--accent); color: #1a0d00; font-family: var(--font-cond); font-size: 16px; letter-spacing: 0.12em;
-  }
-  .mini-trigger.in-transition { background: #3a2412; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
-  .top-nav .btn-outline { height: 30px; padding: 0 10px; font-size: 11px; }
-
-  .master-waveform-panel { padding: 4px 6px; border-radius: 8px; }
-  .waveform-canvas-container { gap: 3px; }
-  .legend-tag { display: none; }
-  .btn-icon { width: 22px; height: 22px; }
-
-  .console-body { grid-template-columns: minmax(0, 1fr) 208px minmax(0, 1fr); gap: 6px; }
-  .center-mixer { grid-column: auto; order: 0; padding: 8px; gap: 6px; border-radius: 8px; }
-
-  .deck-panel { padding: 8px; gap: 5px; border-radius: 8px; }
-  .deck-top { flex-wrap: nowrap; align-items: center; column-gap: 6px; }
-  .deck-top > .track-meta { display: none; }
-  .deck-top > .deck-source { order: 0; flex: 1 1 auto; min-width: 0; gap: 4px; }
-  .deck-badge { width: 24px; height: 24px; font-size: 16px; border-radius: 5px; }
-  .track-select-dropdown { height: 26px; font-size: 12px; padding: 0 6px; }
-  .btn-upload { height: 26px; padding: 0 7px; font-size: 0; gap: 0; }
-  .grid-menu > summary, .deck-state { font-size: 9px; padding: 2px 5px; }
-  .lcd-screen { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
-  .lcd-screen .lcd-item:nth-child(4) { display: none; }
-  .lcd-item { padding: 2px 7px; border-radius: 5px; }
-  .lcd-label { font-size: 8px; }
-  .lcd-val { font-size: 15px; }
-  .deck-interaction-row { min-height: var(--jog); gap: 16px; }
-  .tempo-slider-wrap { height: var(--jog); gap: 2px; }
-  .tempo-name { display: none; }
-  .tempo-sign { font-size: 10px; }
-  .fader-tempo { width: 28px; }
-  .fader-v { --cap-h: 14px; }
-  .jog-center { width: 34px; height: 34px; margin: -17px 0 0 -17px; }
-  .jog-deck-num { font-size: 15px; }
-  .hot-cue-strip { gap: 4px; }
-  .btn-hot-cue { height: 24px; font-size: 9px; gap: 3px; border-radius: 5px; }
-  .transport-strip { gap: 4px; }
-  .transport-spacer { display: none; }
-  .btn-transport { flex: 1; width: auto; height: 30px; font-size: 12px; border-radius: 6px; }
-  .btn-transport.btn-play { font-size: 0; }
-  .btn-play::before { width: 12px; height: 13px; }
-  .btn-play.playing::before { width: 11px; height: 12px; }
-
-  .mixer-header { font-size: 9px; }
-  .mixer-body { gap: 6px; }
-  .channel-strip { gap: 4px; }
-  .knob-group { display: grid; grid-template-columns: 28px auto; column-gap: 4px; row-gap: 1px; align-items: center; }
-  .knob-group .knob { grid-row: span 2; width: 28px; height: 28px; }
-  .knob-cap { inset: 3px; border-width: 1px; }
-  .knob-cap::after { top: 1px; height: 7px; }
-  .knob-label { font-size: 8px; }
-  .btn-kill { height: 14px; padding: 0 4px; font-size: 7px; border-radius: 3px; }
-  .mixer-center { padding: 6px; gap: 6px; }
-  .fader-row { gap: 8px; }
-  .fader-channel { width: 26px; }
-  .master-meter-strip { gap: 2px; padding: 3px 0; }
-  .vu-bar { width: 7px; }
-  .pfl-row { gap: 4px; }
-  .btn-pfl-cue { height: 20px; padding: 0 5px; font-size: 8px; white-space: nowrap; }
-  .crossfader-section { gap: 0; }
-  .crossfader-track { gap: 6px; }
-  .cf-label { display: none; }
-  .fader-h { height: 24px; --cap-w: 18px; }
-
-  .transition-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 8px 10px; gap: 10px; border-radius: 8px; }
-  .tb-controls { grid-column: 1 / -1; }
-  .tb-divider { display: none; }
-  .tech-more-list, .opt-toggles { bottom: auto; top: calc(100% + 6px); }
-  .btn-pro-mix { height: 44px; }
-  .bars-selector .pill { height: 44px; width: 44px; }
-  .status-banner { font-size: 16px; }
+/* ── Landscape console (html.landscape-ui, set by mobile.js): phones and small tablets held
+   sideways, or turned by the app ("Switch to landscape"): decks and mixer side by side ── */
+html.landscape-ui .dj-console {
+  --wave-h: 40px; --jog: 84px; max-width: none; gap: 6px;
+  padding: 0 max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left));
 }
+html.landscape-ui .top-nav { height: 40px; margin: 0 -8px; padding: 0 12px; gap: 12px; flex-wrap: nowrap; }
+html.landscape-ui .brand-name, html.landscape-ui .nav-key, html.landscape-ui .ai-engine-chip, html.landscape-ui #btn-shortcuts, html.landscape-ui .nav-stat .nav-label, html.landscape-ui .nav-unit { display: none; }
+html.landscape-ui .nav-bpm { font-size: 16px; }
+html.landscape-ui .phase-meter-hud { padding: 3px 8px; gap: 6px; }
+html.landscape-ui .phase-meter-hud .nav-label { display: none; }
+html.landscape-ui .phase-bar-track { width: 64px; }
+html.landscape-ui .phase-status { min-width: 0; font-size: 11px; }
+html.landscape-ui .nav-spacer { display: block; }
+html.landscape-ui .mini-trigger {
+  display: inline-flex; height: 30px; padding: 0 16px; border: none; border-radius: 6px;
+  background: var(--accent); color: #1a0d00; font-family: var(--font-cond); font-size: 16px; letter-spacing: 0.12em;
+}
+html.landscape-ui .mini-trigger.in-transition { background: #3a2412; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+html.landscape-ui .top-nav .btn-outline { height: 30px; padding: 0 10px; font-size: 11px; }
+
+html.landscape-ui .master-waveform-panel { padding: 4px 6px; border-radius: 8px; }
+html.landscape-ui .waveform-canvas-container { gap: 3px; }
+html.landscape-ui .legend-tag { display: none; }
+html.landscape-ui .btn-icon { width: 22px; height: 22px; }
+
+html.landscape-ui .console-body { grid-template-columns: minmax(0, 1fr) 208px minmax(0, 1fr); gap: 6px; }
+html.landscape-ui .center-mixer { grid-column: auto; order: 0; padding: 8px; gap: 6px; border-radius: 8px; }
+
+html.landscape-ui .deck-panel { padding: 8px; gap: 5px; border-radius: 8px; }
+html.landscape-ui .deck-top { flex-wrap: nowrap; align-items: center; column-gap: 6px; }
+html.landscape-ui .deck-top > .track-meta { display: none; }
+html.landscape-ui .deck-top > .deck-source { order: 0; flex: 1 1 auto; min-width: 0; gap: 4px; }
+html.landscape-ui .deck-badge { width: 24px; height: 24px; font-size: 16px; border-radius: 5px; }
+html.landscape-ui .track-select-dropdown { height: 26px; font-size: 12px; padding: 0 6px; }
+html.landscape-ui .btn-upload { height: 26px; padding: 0 7px; font-size: 0; gap: 0; }
+html.landscape-ui .grid-menu > summary, html.landscape-ui .deck-state { font-size: 9px; padding: 2px 5px; }
+html.landscape-ui .lcd-screen { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+html.landscape-ui .lcd-screen .lcd-item:nth-child(4) { display: none; }
+html.landscape-ui .lcd-item { padding: 2px 7px; border-radius: 5px; }
+html.landscape-ui .lcd-label { font-size: 8px; }
+html.landscape-ui .lcd-val { font-size: 15px; }
+html.landscape-ui .deck-interaction-row { min-height: var(--jog); gap: 16px; }
+html.landscape-ui .tempo-slider-wrap { height: var(--jog); gap: 2px; }
+html.landscape-ui .tempo-name { display: none; }
+html.landscape-ui .tempo-sign { font-size: 10px; }
+html.landscape-ui .fader-tempo { width: 28px; }
+html.landscape-ui .fader-v { --cap-h: 14px; }
+html.landscape-ui .jog-center { width: 34px; height: 34px; margin: -17px 0 0 -17px; }
+html.landscape-ui .jog-deck-num { font-size: 15px; }
+html.landscape-ui .hot-cue-strip { gap: 4px; }
+html.landscape-ui .btn-hot-cue { height: 24px; font-size: 9px; gap: 3px; border-radius: 5px; }
+html.landscape-ui .transport-strip { gap: 4px; }
+html.landscape-ui .transport-spacer { display: none; }
+html.landscape-ui .btn-transport { flex: 1; width: auto; height: 30px; font-size: 12px; border-radius: 6px; }
+html.landscape-ui .btn-transport.btn-play { font-size: 0; }
+html.landscape-ui .btn-play::before { width: 12px; height: 13px; }
+html.landscape-ui .btn-play.playing::before { width: 11px; height: 12px; }
+
+html.landscape-ui .mixer-header { font-size: 9px; }
+html.landscape-ui .mixer-body { gap: 6px; }
+html.landscape-ui .channel-strip { gap: 4px; }
+html.landscape-ui .knob-group { display: grid; grid-template-columns: 28px auto; column-gap: 4px; row-gap: 1px; align-items: center; }
+html.landscape-ui .knob-group .knob { grid-row: span 2; width: 28px; height: 28px; }
+html.landscape-ui .knob-cap { inset: 3px; border-width: 1px; }
+html.landscape-ui .knob-cap::after { top: 1px; height: 7px; }
+html.landscape-ui .knob-label { font-size: 8px; }
+html.landscape-ui .btn-kill { height: 14px; padding: 0 4px; font-size: 7px; border-radius: 3px; }
+html.landscape-ui .mixer-center { padding: 6px; gap: 6px; }
+html.landscape-ui .fader-row { gap: 8px; }
+html.landscape-ui .fader-channel { width: 26px; }
+html.landscape-ui .master-meter-strip { gap: 2px; padding: 3px 0; }
+html.landscape-ui .vu-bar { width: 7px; }
+html.landscape-ui .pfl-row { gap: 4px; }
+html.landscape-ui .btn-pfl-cue { height: 20px; padding: 0 5px; font-size: 8px; white-space: nowrap; }
+html.landscape-ui .crossfader-section { gap: 0; }
+html.landscape-ui .crossfader-track { gap: 6px; }
+html.landscape-ui .cf-label { display: none; }
+html.landscape-ui .fader-h { height: 24px; --cap-w: 18px; }
+
+html.landscape-ui .transition-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 8px 10px; gap: 10px; border-radius: 8px; }
+html.landscape-ui .tb-controls { grid-column: 1 / -1; }
+html.landscape-ui .tb-divider { display: none; }
+html.landscape-ui .tech-more-list, html.landscape-ui .opt-toggles { bottom: auto; top: calc(100% + 6px); }
+html.landscape-ui .btn-pro-mix { height: 44px; }
+html.landscape-ui .bars-selector .pill { height: 44px; width: 44px; }
+html.landscape-ui .status-banner { font-size: 16px; }
+
+/* The app turns the console itself when the browser can't rotate (iPhones, rotation lock) */
+html.forced-landscape, html.forced-landscape body { height: 100%; overflow: hidden; }
+html.forced-landscape .dj-console {
+  position: fixed; top: 0; left: 100vw; margin: 0;
+  width: 100vh; width: 100dvh; height: 100vw;
+  transform: rotate(90deg); transform-origin: top left;
+  overflow-x: hidden; overflow-y: auto; -webkit-overflow-scrolling: touch;
+  background: var(--bg);
+}
+html.forced-landscape .rotate-hint { display: none; }
+.exit-landscape { display: none; }
+html.forced-landscape .exit-landscape { display: inline-flex; height: 30px; padding: 0 8px; }
+.rotate-hint[hidden] { display: none !important; }

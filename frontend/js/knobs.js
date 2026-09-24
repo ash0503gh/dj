@@ -47,14 +47,14 @@
       e.preventDefault();
       input.focus({ preventScroll: true });
       el.setPointerCapture(e.pointerId);
-      startY = e.clientY;
+      startY = UI.local(e, el).y;
       startV = parseFloat(input.value);
     });
     el.addEventListener('pointermove', (e) => {
       if (!el.hasPointerCapture(e.pointerId)) return;
       const range = parseFloat(input.max) - parseFloat(input.min);
       const fine = e.shiftKey ? 0.25 : 1;
-      setValue(input, startV + ((startY - e.clientY) / DRAG_PX) * range * fine);
+      setValue(input, startV + ((startY - UI.local(e, el).y) / DRAG_PX) * range * fine);
     });
     el.addEventListener('pointerup', (e) => el.releasePointerCapture(e.pointerId));
     el.addEventListener('dblclick', () => setValue(input, 0));
@@ -93,14 +93,16 @@
       e.preventDefault();
       input.focus({ preventScroll: true });
       el.setPointerCapture(e.pointerId);
-      start = vertical ? e.clientY : e.clientX;
+      const p = UI.local(e, el);
+      start = vertical ? p.y : p.x;
       startV = parseFloat(input.value);
     });
     el.addEventListener('pointermove', (e) => {
       if (!el.hasPointerCapture(e.pointerId)) return;
       const len = vertical ? el.clientHeight : el.clientWidth;
       const range = parseFloat(input.max) - parseFloat(input.min);
-      const d = vertical ? start - e.clientY : e.clientX - start;
+      const p = UI.local(e, el);
+      const d = vertical ? start - p.y : p.x - start;
       setValue(input, startV + (d / Math.max(40, len - 24)) * range * (e.shiftKey ? 0.25 : 1));
     });
     el.addEventListener('pointerup', (e) => el.releasePointerCapture(e.pointerId));
