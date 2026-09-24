@@ -49,9 +49,11 @@ def call_gemini_api(
     model_name: str = "gemini-3.8-flash",
     audio_b64: Optional[str] = None,
     audio_mime: str = "audio/wav",
-    timeout: float = 20.0
+    timeout: float = 20.0,
+    usage: Optional[Dict[str, Any]] = None
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
-    """Calls Google Gemini API via HTTPS REST endpoint with optional multimodal audio audition."""
+    """Calls Google Gemini API via HTTPS REST endpoint with optional multimodal audio audition.
+    `usage`, when given, receives Gemini's token counts (usageMetadata) for cost tracking."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
     
     parts = []
@@ -81,6 +83,8 @@ def call_gemini_api(
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+            if usage is not None:
+                usage.update(data.get("usageMetadata") or {})
             text = data["candidates"][0]["content"]["parts"][0]["text"]
             return json.loads(text), None
     except urllib.error.HTTPError as he:

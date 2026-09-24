@@ -64,24 +64,43 @@ def describe(c: Dict[str, Any]) -> str:
     return ", ".join(parts)
 
 
-def _track_lines(label: str, t: Dict[str, Any]) -> str:
+def _track_lines(label: str, t: Dict[str, Any], window: Optional[Tuple[float, float]] = None) -> str:
+    """The track as the AI reads it. `window` (start, end) keeps only the sections it overlaps."""
     lines = [f"{label}: {t.get('title', '?')} | {float(t.get('bpm', 0)):.1f} BPM | key {t.get('camelot', '?')}"
              f" | length {_mmss(t.get('duration'))}"]
     if t.get("position") is not None:
         lines.append(f"  now playing at {_mmss(t.get('position'))}")
-    for s in (t.get("sections") or [])[:14]:
+    sections = t.get("sections") or []
+    if window:
+        sections = [s for s in sections if float(s.get("time", 0)) < window[1]
+                    and float(s.get("time", 0)) + 30 > window[0]]
+    for s in sections[:14]:
         lines.append(f"  {_mmss(s.get('time'))} {s.get('type', '?')} energy {float(s.get('energy', 0)):.2f}"
                      f"{' vocals' if s.get('vocals') else ''}")
     return "\n".join(lines)
 
 
-def _gemini_choice(out_t, in_t, cands, key, model, timeout) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
+def _windows(out_t, in_t, cands) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """Where the candidates play: outgoing from the earliest exit to the latest blend end, incoming
+    from the earliest entry to well past the latest (sections are ~8-16 bars)."""
+    def bar(t):
+        return 4 * 60.0 / max(60.0, float(t.get("bpm") or 120))
+    exits = [float(c.get("exit_at", 0)) for c in cands]
+    ends = [float(c.get("exit_at", 0)) + (int(c.get("bars") or 8) + 4) * bar(out_t) for c in cands]
+    entries = [float(c.get("in_start_at", 0)) for c in cands]
+    ins = [float(c.get("in_start_at", 0)) + (int(c.get("bars") or 8) + 16) * bar(in_t) for c in cands]
+    return (min(exits) - 8 * bar(out_t), max(ends) + 4 * bar(out_t)), (min(entries) - 4 * bar(in_t), max(ins))
+
+
+def _gemini_choice(out_t, in_t, cands, key, model, timeout, compact=False, usage=None
+                   ) -> Tuple[Optional[Dict[str, str]], Optional[str]]:
     options = "\n".join(f"{c['id']}: {describe(c)}" for c in cands)
+    out_w, in_w = _windows(out_t, in_t, cands) if compact else (None, None)
     prompt = f"""You are a headline club DJ deciding how to mix into the next record.
 
-{_track_lines('OUTGOING (playing now)', out_t)}
+{_track_lines('OUTGOING (playing now)', out_t, out_w)}
 
-{_track_lines('INCOMING (cued)', in_t)}
+{_track_lines('INCOMING (cued)', in_t, in_w)}
 
 Every option below is already technically perfect: beatmatched at one master tempo, keylocked,
 bass swapped on a downbeat with an isolator, loudness matched. Choose on musicality only:
@@ -94,7 +113,7 @@ OPTIONS:
 {options}
 
 Return JSON: {{"choice": "<option id>", "reason": "<one sentence a DJ would say>"}}"""
-    res, err = call_gemini_api(prompt, key, model_name=model, timeout=timeout)
+    res, err = call_gemini_api(prompt, key, model_name=model, timeout=timeout, usage=usage)
     if res and isinstance(res, dict) and res.get("choice"):
         return {"choice": str(res["choice"]).strip(), "reason": str(res.get("reason", ""))}, None
     return None, err or "Gemini returned no choice"
@@ -167,7 +186,8 @@ def _jev_scores(out_t, in_t, cands, key, timeout) -> Tuple[Optional[Dict[str, Di
 
 def choose_transition(out_t: Dict[str, Any], in_t: Dict[str, Any], candidates: List[Dict[str, Any]],
                       model: Optional[str] = None, budget_sec: float = 8.0,
-                      gemini_api_key: Optional[str] = None, jev_api_key: Optional[str] = None) -> Dict[str, Any]:
+                      gemini_api_key: Optional[str] = None, jev_api_key: Optional[str] = None,
+                      compact: bool = False, engines: Optional[List[str]] = None) -> Dict[str, Any]:
     """Gemini picks one candidate while Jev rates every candidate on five criteria, in parallel and
     within the time budget. Returns {choice, reason, engine, gemini_choice, scores, latency_ms,
     errors}: choice is the preferred engine's pick (Gemini by default; Jev's best-rated when Jev is
@@ -176,12 +196,14 @@ def choose_transition(out_t: Dict[str, Any], in_t: Dict[str, Any], candidates: L
     t0 = time.monotonic()
     ids = [c.get("id") for c in candidates]
     errors: Dict[str, str] = {}
-    order = engine_order(model) if len(candidates) > 1 else []
+    order = [e for e in engine_order(model) if engines is None or e in engines] if len(candidates) > 1 else []
+    usage: Dict[str, Any] = {}
     gemini_model = model if (model or "").lower().startswith("gemini") else DEFAULT_GEMINI_MODEL
     calls = {}
     if "gemini" in order and get_gemini_api_key(gemini_api_key):
         calls["gemini"] = functools.partial(_gemini_choice, out_t, in_t, candidates,
-                                            get_gemini_api_key(gemini_api_key), gemini_model, budget_sec)
+                                            get_gemini_api_key(gemini_api_key), gemini_model, budget_sec,
+                                            compact, usage)
     if "jev" in order and get_jev_api_key(jev_api_key):
         calls["jev"] = functools.partial(_jev_scores, out_t, in_t, candidates,
                                          get_jev_api_key(jev_api_key), min(budget_sec, 5.0))
@@ -226,5 +248,5 @@ def choose_transition(out_t: Dict[str, Any], in_t: Dict[str, Any], candidates: L
     return {"choice": choice, "reason": reason, "engine": engine,
             "gemini_choice": gemini["choice"] if gemini else None,
             "gemini_reason": gemini["reason"] if gemini else "",
-            "scores": scores, "latency_ms": int((time.monotonic() - t0) * 1000),
+            "scores": scores, "gemini_usage": usage or None, "latency_ms": int((time.monotonic() - t0) * 1000),
             "engine_latency_ms": latency, "errors": errors}

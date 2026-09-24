@@ -283,15 +283,18 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         file_id = f"{deck}_{clean_name.replace(' ', '_')}"
         save_path = os.path.join(UPLOAD_DIR, file_id)
         
-        # Purge prior temporary files for this deck to keep disk usage lean
-        try:
-            for existing in os.listdir(UPLOAD_DIR):
-                if existing.startswith(f"{deck}_") and existing != file_id:
-                    p = os.path.join(UPLOAD_DIR, existing)
-                    if os.path.isfile(p):
-                        os.remove(p)
-        except Exception:
-            pass
+        # With a bucket (Cloud Run) the library lives there and local files are only a cache on an
+        # in-memory disk: drop this deck's previous local copy. Without one, the local file IS the
+        # library: never delete it.
+        if storage.enabled():
+            try:
+                for existing in os.listdir(UPLOAD_DIR):
+                    if existing.startswith(f"{deck}_") and existing != file_id:
+                        p = os.path.join(UPLOAD_DIR, existing)
+                        if os.path.isfile(p):
+                            os.remove(p)
+            except Exception:
+                pass
 
         with open(save_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
@@ -307,8 +310,9 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
 
         await persist_analysis(file_id, analysis)
 
-        # Keep cache lean (max 10 recent items)
-        if len(ANALYSIS_CACHE) > 10:
+        # Keep the in-memory cache lean (max 10 recent items) when the bucket holds every analysis;
+        # without one this cache is the only record of the library
+        if storage.enabled() and len(ANALYSIS_CACHE) > 10:
             for k in list(ANALYSIS_CACHE.keys())[:-10]:
                 ANALYSIS_CACHE.pop(k, None)
 
@@ -406,8 +410,14 @@ async def ai_choose_transition(request: Request):
     if not cands:
         raise HTTPException(status_code=400, detail="no candidates")
     budget = max(1.0, min(15.0, float(body.get("budget_sec", 8.0))))
-    result = await run_in_threadpool(choose_transition, body.get("out") or {}, body.get("in") or {}, cands,
-                                     body.get("model"), budget)
+    engines = body.get("engines")  # optional subset, e.g. ["gemini"] (tests)
+    result = await run_in_threadpool(functools.partial(
+        choose_transition, body.get("out") or {}, body.get("in") or {}, cands, body.get("model"), budget,
+        compact=bool(body.get("compact", False)), engines=engines if isinstance(engines, list) else None))
+    u = result.get("gemini_usage") or {}
+    if u:  # real spend, visible in the Cloud Run logs
+        print(f"[ai-choose] gemini tokens: prompt {u.get('promptTokenCount')} output {u.get('candidatesTokenCount')} "
+              f"thinking {u.get('thoughtsTokenCount')} | jev {'ok' if result.get('scores') else 'none'}")
     return JSONResponse(content={"status": "success", **result})
 
 def slice_audio_file_to_b64(file_path: str, start_sec: float, duration_sec: float = 10.0) -> Optional[str]:

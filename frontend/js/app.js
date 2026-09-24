@@ -188,6 +188,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const aiProTipText = document.getElementById('ai-pro-tip-text');
 
   let currentAIStrategy = null;
+  // The Co-Pilot strategy (a Gemini call, ~₹0.9) is advice for the panel only: transitions never
+  // read it. Changes just mark it stale; it's fetched when the panel is open or opened.
+  let strategyStale = true;
 
   // Load stored Jev key, Gemini key, and model
   if (jevKeyInput) {
@@ -203,7 +206,7 @@ document.addEventListener('DOMContentLoaded', () => {
     aiModelSelect.addEventListener('change', () => {
       localStorage.setItem('ai_dj_model', aiModelSelect.value);
       updateEngineChip();
-      fetchAIStrategy();
+      strategyInputsChanged();
     });
   }
   function updateEngineChip() {
@@ -222,7 +225,7 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('jev_api_key', keyVal);
       btnSaveJevKey.textContent = 'SAVED!';
       setTimeout(() => { btnSaveJevKey.textContent = 'SAVE'; }, 1500);
-      fetchAIStrategy();
+      strategyInputsChanged();
     });
   }
   if (btnSaveGeminiKey && geminiKeyInput) {
@@ -231,8 +234,16 @@ document.addEventListener('DOMContentLoaded', () => {
       localStorage.setItem('gemini_api_key', keyVal);
       btnSaveGeminiKey.textContent = 'SAVED!';
       setTimeout(() => { btnSaveGeminiKey.textContent = 'SAVE'; }, 1500);
-      fetchAIStrategy();
+      strategyInputsChanged();
     });
+  }
+
+  function strategyInputsChanged() {
+    strategyStale = true;
+    if (aiModal && !aiModal.classList.contains('hidden')) {
+      strategyStale = false;
+      fetchAIStrategy();
+    }
   }
 
   function toggleAIModal(forceState = null) {
@@ -240,7 +251,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const shouldOpen = (forceState !== null) ? forceState : aiModal.classList.contains('hidden');
     if (shouldOpen) {
       aiModal.classList.remove('hidden');
-      fetchAIStrategy();
+      if (strategyStale) {
+        strategyStale = false;
+        fetchAIStrategy();
+      }
     } else {
       aiModal.classList.add('hidden');
     }
@@ -331,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
     transitionStatusBanner.textContent = `MIX FLOW: ${dir === '1_to_2' ? 'DECK 1 ➔ DECK 2' : 'DECK 2 ➔ DECK 1'}`;
     updateHarmonicCompatibility();
     updateAIRecCard();
-    fetchAIStrategy();
+    strategyInputsChanged();
     updateTransitionOverlay();
     prefetchIncoming();
   }
@@ -640,7 +654,7 @@ document.addEventListener('DOMContentLoaded', () => {
           updateAIRecCard();
           if (track1Data && track2Data) {
             btnExportMix.disabled = false;
-            fetchAIStrategy();
+            strategyInputsChanged();
           }
           transitionStatusBanner.textContent = `${deckName}: ANALYSIS COMPLETE (${currentTrack.bpm.toFixed(1)} BPM, ${currentTrack.camelot})`;
           prefetchIncoming();
@@ -763,7 +777,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (track1Data && track2Data) {
       btnExportMix.disabled = false;
-      fetchAIStrategy();
+      strategyInputsChanged();
     }
     updateHarmonicCompatibility();
     updateAIRecCard();
@@ -1691,6 +1705,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                   'loop_roll', 'festival_drop', 'hard_cut']);
   const AI_CHOICE_BUDGET_SEC = 8;    // how long the AI may think before the planner's choice stands
   const SOUND_CHECK_BUDGET_SEC = 3;  // without AI: time to render and measure the candidates
+  const CHECK_BEFORE_AI_SEC = 1.5;   // with AI: sound check first (~0.6 s), then ask only if it matters
   let activeTransition = null;
 
   function camelotCompatible(a, b) {
@@ -1816,7 +1831,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // the fallback is always still on time.
     if (selectedTechnique === 'auto') {
       const useAI = aiModel !== 'local';
-      const budget = useAI ? AI_CHOICE_BUDGET_SEC : SOUND_CHECK_BUDGET_SEC;
+      const budget = useAI ? AI_CHOICE_BUDGET_SEC + CHECK_BEFORE_AI_SEC : SOUND_CHECK_BUDGET_SEC;
       const cands = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
         leadSec: (t.blend ? 3.0 : cutLeadInBeats(tech, bars) * beatSecNow + 1.0) + budget,
         barsOptions: bars >= 16 ? [bars, 8] : [bars, 16],
@@ -1824,14 +1839,25 @@ document.addEventListener('DOMContentLoaded', () => {
       }));
       if (cands.length > 1) {
         const who = aiModel.startsWith('jev') ? 'JEV' : 'GEMINI';
-        transitionStatusBanner.textContent = useAI
-          ? `🤖 ${who} IS CHOOSING BETWEEN ${cands.length} TRANSITIONS WHILE EACH ONE IS SOUND-CHECKED...`
-          : `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
+        transitionStatusBanner.textContent = `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
         renderSoundCheck(cands, null, {}, {});
-        const checked = Promise.race([measureCandidates(t, cands), new Promise(r => setTimeout(r, budget * 1000))]);
-        const ai = useAI ? chooseWithAI(t, cands, aiModel) : Promise.resolve({});
-        Promise.all([ai, checked]).then(([pick]) => {
-          if (activeTransition !== t) return;  // aborted while choosing
+        const measured = measureCandidates(t, cands);
+        const checkCap = (useAI ? CHECK_BEFORE_AI_SEC : budget) * 1000;
+        Promise.race([measured, new Promise(r => setTimeout(r, checkCap))]).then(() => {
+          if (activeTransition !== t) return null;
+          // With fewer than two candidates passing, the AI's answer can't change what plays: don't
+          // pay for it (unmeasured candidates count as passing)
+          const passing = TransitionLab.acceptable(cands).length;
+          const ask = useAI && passing >= 2;
+          if (ask) {
+            transitionStatusBanner.textContent = `🤖 ${who} IS CHOOSING BETWEEN ${passing} SOUND-CHECKED TRANSITIONS...`;
+          }
+          const ai = ask ? chooseWithAI(t, cands, aiModel) : Promise.resolve({});
+          const settled = Promise.race([measured, new Promise(r => setTimeout(r, useAI ? (AI_CHOICE_BUDGET_SEC + 1) * 1000 : 0))]);
+          return Promise.all([ai, settled]).then(([pick]) => ({ pick, ask }));
+        }).then((r) => {
+          if (!r || activeTransition !== t) return;  // aborted while choosing
+          const { pick, ask } = r;
           const { plan, verdict, totals } = TransitionLab.settle(cands, { gemini: pick.gemini, scores: pick.scores });
           renderSoundCheck(cands, plan.id, pick, totals);
           const jev = id => (pick.scores && pick.scores[id] ? ` · JEV ${pick.scores[id].mean.toFixed(1)}/4` : '');
@@ -1841,7 +1867,9 @@ document.addEventListener('DOMContentLoaded', () => {
               ? `PLAYING ${plan.id}${jev(plan.id)}: RATED ABOVE GEMINI'S ${pick.gemini} ONCE SOUND-CHECKED`
               : `JEV'S TOP-RATED ${plan.id}${jev(plan.id)}, SOUND-CHECKED`,
             rejected: `GEMINI PICKED ${pick.gemini} BUT IT FAILED THE SOUND CHECK: PLAYING ${plan.id}${jev(plan.id)}`,
-            cleanest: `CLEANEST OF ${cands.length} (SOUND-CHECKED)${useAI ? ', AI UNAVAILABLE' : ''}`,
+            cleanest: useAI && !ask
+              ? `ONLY ${plan.id} PASSED THE SOUND CHECK`
+              : `CLEANEST OF ${cands.length} (SOUND-CHECKED)${useAI ? ', AI UNAVAILABLE' : ''}`,
             planner: useAI ? 'PLANNER PICK (AI UNAVAILABLE)' : null,
           }[verdict];
           commitTransitionPlan(t, plan, note);

@@ -425,6 +425,57 @@ const TransitionLab = (() => {
     };
   }
 
+  /**
+   * Prompt A/B for one pair: does the compact prompt (only sections near the candidates) make
+   * Gemini pick differently from the full prompt? Asks Gemini alone `repeats` times per variant
+   * (its own run-to-run variation is the yardstick) and returns picks with token usage, plus how
+   * many candidates passed the sound check (with fewer than 2, no AI call is needed at all).
+   */
+  async function promptAB({ outId, inId, repeats = 2, bars = 16 }) {
+    let [outTrack, inTrack] = await Promise.all([loadTrack(outId), loadTrack(inId)]);
+    [outTrack, inTrack] = await Promise.all([listened(outTrack), listened(inTrack)]);
+    const [outBuf, inBuf] = await Promise.all([decode(outTrack.audio_url), decode(inTrack.audio_url)]);
+    const outStart = Math.max(0, outTrack.suggested_cue_outro - 40);
+    const planDeck = { audio: { timeAt: t => outStart + t, ctxTimeAt: n => n - outStart,
+                                tempoRatio: 1, playbackRate: 1, duration: outBuf.duration } };
+    const blend = Math.abs(outTrack.bpm / inTrack.bpm - 1) <= MixPlanner.MAX_STRETCH;
+    const cands = MixPlanner.candidates(outTrack, planDeck, inTrack, {
+      now: 0, leadSec: 11, blend, phraseLock: true, cutTechnique: 'echo_freeze',
+      barsOptions: bars >= 16 ? [bars, 8] : [bars, 16],
+      keyClash: !camelotCompatible(outTrack.camelot, inTrack.camelot),
+    });
+    const stretched = blend && cands.length ? await stretchedFor(inTrack, cands[0].tempoRatio) : null;
+    await measureAll(cands, { buffer: outBuf, tempoRatio: 1, rate: 1 },
+                     stretched ? { buffer: stretched, tempoRatio: cands[0].tempoRatio, rate: 1 }
+                               : { buffer: inBuf, tempoRatio: 1, rate: 1 });
+    const result = { pair: `${outTrack.title} -> ${inTrack.title}`, n: cands.length,
+                     accepted: acceptable(cands).length, full: [], compact: [] };
+    if (cands.length < 2) return result;
+    const body = {
+      model: 'gemini-3.8-flash', engines: ['gemini'], budget_sec: 15,
+      out: MixPlanner.trackSummary(outTrack, outTrack.bpm, outStart, outStart),
+      in: MixPlanner.trackSummary(inTrack, inTrack.bpm),
+      candidates: cands.map(c => MixPlanner.candidateFeatures(c, outTrack, inTrack, 0)),
+    };
+    for (let r = 0; r < repeats; r++) {
+      for (const variant of ['full', 'compact']) {
+        let res = null;
+        for (let attempt = 0; attempt < 2 && !(res && res.gemini_choice); attempt++) {
+          if (attempt) await new Promise(ok => setTimeout(ok, 2500));
+          res = await (await fetch('/api/ai-choose-transition', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.assign({ compact: variant === 'compact' }, body)),
+          })).json();
+        }
+        const u = res.gemini_usage || {};
+        result[variant].push({ choice: res.gemini_choice, ms: res.engine_latency_ms && res.engine_latency_ms.gemini,
+          prompt: u.promptTokenCount, output: u.candidatesTokenCount, thinking: u.thoughtsTokenCount,
+          error: res.errors && res.errors.gemini });
+      }
+    }
+    return result;
+  }
+
   /** Export the blend that was just performed live: same buffers, plan and automation, 44.1 kHz. */
   async function exportPerformed(L) {
     const { rendered, marks } = await renderBlend({
@@ -433,7 +484,7 @@ const TransitionLab = (() => {
     return { blob: wav16(rendered), duration: rendered.duration, marks };
   }
 
-  return { run, benchmark, quickScore, measureAll, settle, renderBlend, exportPerformed };
+  return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed };
 })();
 
 window.TransitionLab = TransitionLab;
