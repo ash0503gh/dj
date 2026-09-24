@@ -1558,20 +1558,6 @@ document.addEventListener('DOMContentLoaded', () => {
     applyDeckEQ(deckNum, 'low', -24, true, true);
   }
 
-  function getTrackIntroCue(track) {
-    if (!track) return 0.0;
-    if (track.suggested_cue_intro !== undefined && track.suggested_cue_intro >= 0) {
-      return track.suggested_cue_intro;
-    }
-    if (track.downbeat_times && track.downbeat_times.length > 0) {
-      return track.downbeat_times[0];
-    }
-    if (track.beat_times && track.beat_times.length > 0) {
-      return track.beat_times[0];
-    }
-    return 0.0;
-  }
-
   // Mixer EQ Range Sliders (Bidirectional sync with Web Audio & Kill Buttons)
   [
     { elem: d1EqHi, deck: 1, band: 'hi' },
@@ -1941,7 +1927,7 @@ document.addEventListener('DOMContentLoaded', () => {
   /** Beats of outgoing FX before an overlap-free technique's drop. */
   function cutLeadInBeats(tech, bars) {
     return {
-      vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
+      echo_freeze: 1, vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
       festival_drop: 4 * Math.min(bars, 8),
     }[tech] || 0;
   }
@@ -2168,18 +2154,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
     MixPlanner.neutral(inDeck, T - 0.05, 1);
     MixPlanner.setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
-    inDeck.play(T, getTrackIntroCue(t.inTrack));
+    inDeck.play(T, p.inStartNative);
     let cutTime = T;
     let tail = 0.1;
 
     if (t.tech === 'echo_freeze') {
-      atCtx(t, T, () => {
+      // Echo the outgoing's last beat out (bass off as the echo opens); the incoming eases in
+      // over its first bar instead of landing at full level on top of the echo
+      atCtx(t, T - beat, () => {
         applyDeckEQ(outDeckNum, 'low', -24);
         applyDeckEQ(outDeckNum, 'mid', -6);
-        outDeck.triggerEchoFreeze(bpm, 4.5);
       });
-      cutTime = null;  // the echo freeze gates the dry signal itself
-      tail = 5.0;
+      outDeck.triggerEchoFreeze(bpm, T, 4);
+      const inBar = 4 * 60 / (t.inTrack.bpm || bpm);
+      inDeck.faderGain.gain.setValueAtTime(0.5, T - 0.05);
+      inDeck.faderGain.gain.linearRampToValueAtTime(1, T + inBar);
+      cutTime = null;  // the echo gates the dry signal itself
+      tail = 4 * beat + 0.3;
     } else if (t.tech === 'vinyl_brake') {
       atCtx(t, T - 2 * beat, () => {
         applyDeckEQ(outDeckNum, 'low', -24);

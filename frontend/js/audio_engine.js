@@ -552,45 +552,38 @@ class DJDeckAudio {
     this.cuePosition = 0;
   }
 
-  triggerEchoFreeze(bpm = 128.0, tailSec = 4.5) {
+  /** Echo out at ctx time `at`, as a DJ does it: the echo (one repeat per beat) opens a beat
+   *  early while the track still plays, the dry signal fades over the last half beat, and after
+   *  `at` only the echo is left, dying out within `tailBeats`. Kept short so it barely overlaps a
+   *  next track at another tempo. The deck stops at `at`. */
+  triggerEchoFreeze(bpm = 128.0, at = this.ctx.currentTime, tailBeats = 4) {
     const now = this.ctx.currentTime;
     const spb = 60.0 / bpm;
-    // Set 3/4 beat delay time
-    this.delayNode.delayTime.setValueAtTime(spb * 0.75, now);
+    const t0 = Math.max(now, at - spb), end = at + tailBeats * spb;
+    [this.delayNode.delayTime, this.delayWetGain.gain, this.delayFeedback.gain,
+     this.delayInputGate.gain, this.echoSend.gain].forEach(p => p.cancelScheduledValues(t0));
+    this.delayNode.delayTime.setValueAtTime(spb, t0);
+    // Only the last beat before `at` enters the loop
+    this.delayInputGate.gain.setValueAtTime(1.0, t0);
+    this.delayInputGate.gain.setValueAtTime(1.0, at - 0.03);
+    this.delayInputGate.gain.linearRampToValueAtTime(0.0, at);
+    this.delayWetGain.gain.setValueAtTime(0.0001, t0);
+    this.delayWetGain.gain.exponentialRampToValueAtTime(0.7, at);
+    this.delayWetGain.gain.exponentialRampToValueAtTime(0.001, end);
+    this.delayFeedback.gain.setValueAtTime(0.55, t0);
+    this.delayFeedback.gain.setValueAtTime(0.55, at);
+    this.delayFeedback.gain.exponentialRampToValueAtTime(0.001, end);
+    this.echoSend.gain.setValueAtTime(1.0, Math.max(t0, at - spb / 2));
+    this.echoSend.gain.linearRampToValueAtTime(0.0, at);
 
-    // Immediately open wet output to master bus
-    this.delayWetGain.gain.cancelScheduledValues(now);
-    this.delayWetGain.gain.setValueAtTime(0.85, now);
-    this.delayWetGain.gain.exponentialRampToValueAtTime(0.001, now + tailSec);
-
-    // Engage feedback and smooth exponential decay
-    this.delayFeedback.gain.cancelScheduledValues(now);
-    this.delayFeedback.gain.setValueAtTime(0.74, now);
-    this.delayFeedback.gain.exponentialRampToValueAtTime(0.001, now + tailSec);
-
-    // Close input gate immediately (15ms anti-click) so NO NEW AUDIO enters the delay loop
-    this.delayInputGate.gain.cancelScheduledValues(now);
-    this.delayInputGate.gain.setValueAtTime(1.0, now);
-    this.delayInputGate.gain.linearRampToValueAtTime(0.0, now + 0.015);
-
-    // Mute dry path cleanly (15ms anti-click ramp)
-    this.echoSend.gain.cancelScheduledValues(now);
-    this.echoSend.gain.setValueAtTime(1.0, now);
-    this.echoSend.gain.linearRampToValueAtTime(0.0, now + 0.015);
-
-    // Pause the incoming track after 25ms so vocal track stops immediately
-    setTimeout(() => {
-      this.pause();
-    }, 25);
-
-    // Reset loop after tail decays
+    setTimeout(() => this.pause(), Math.max(0, (at + 0.05 - now) * 1000));
     setTimeout(() => {
       const resetNow = this.ctx.currentTime;
       this.delayWetGain.gain.setValueAtTime(0.0, resetNow);
       this.delayFeedback.gain.setValueAtTime(0.0, resetNow);
       this.delayInputGate.gain.setValueAtTime(1.0, resetNow);
       this.echoSend.gain.setValueAtTime(1.0, resetNow);
-    }, (tailSec + 0.5) * 1000);
+    }, (end + 0.5 - now) * 1000);
   }
 
   /** Fetch + decode into the deck. Resolves with the native AudioBuffer (null on failure). */

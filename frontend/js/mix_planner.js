@@ -96,6 +96,12 @@ const MixPlanner = (() => {
       inStart = Math.max(introCue, drop - inBars * inBar);
     }
     if (opts.blend) bars = inBars;
+    // Overlap-free: nothing plays over the incoming's intro, which would leave the floor near
+    // empty after a full groove. It lands on its first drop instead, where the bass comes in.
+    if (!opts.blend) {
+      const firstDrop = (inTrack.drop_times || []).find(d => d > introCue + 0.05);
+      if (firstDrop !== undefined) inStart = firstDrop;
+    }
     // Bass swap bar. When the incoming drop lands at the end of the blend, swap on it. Otherwise
     // swap on the first downbeat past half-way where the incoming track really has bass, so the
     // swap never leaves bars with no bass at all (intros are often bass-less).

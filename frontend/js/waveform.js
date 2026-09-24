@@ -187,6 +187,24 @@ class RGBWaveform {
    * If the underlying array has low resolution (< 2500 bins), applies beat-synchronized
    * transient modulation so the waveform NEVER renders as flat blocks.
    */
+  /** Loudest point of the waveform between t0 and t1 (falls back to sampling low-res arrays). */
+  peakOver(t0, t1, dur) {
+    const wf = this.trackData && this.trackData.waveform;
+    const overall = (wf && wf.overall) || [];
+    const N = overall.length;
+    const i0 = Math.max(0, Math.floor((t0 / dur) * N)), i1 = Math.min(N, Math.ceil((t1 / dur) * N));
+    if (i1 - i0 < 2) return this.sampleWaveformAt((t0 + t1) / 2, dur);
+    const lowArr = wf.low_red || wf.low || overall;
+    const highArr = wf.high_blue || wf.high || overall;
+    let tot = 0, r = 0, b = 0;
+    for (let i = i0; i < i1; i++) {
+      if (overall[i] > tot) tot = overall[i];
+      if (lowArr[i] > r) r = lowArr[i];
+      if (highArr[i] > b) b = highArr[i];
+    }
+    return { tot, r, g: 0, b };
+  }
+
   sampleWaveformAt(t, dur) {
     if (!this.trackData || !this.trackData.waveform) {
       return { tot: 0.1, r: 0.05, g: 0.05, b: 0.05 };
@@ -359,12 +377,15 @@ class RGBWaveform {
 
     // Bars: 3 px wide, 1 px apart. Outer body = full level (softer); bright core = the bass share;
     // light tips where the highs dominate. The part already played is dimmed.
+    // Each bar is a fixed slice of the track (not a fixed screen column), showing that slice's
+    // peak, so bars scroll with the music instead of re-sampling and flickering every frame.
     const BAR = 3, STEP = 4;
     const played = scrolling ? centerX : timeToX(this.currentTime);
-    for (let x = 0; x < w; x += STEP) {
-      const t = xToTime(x + BAR / 2);
-      if (t < 0 || t > dur) continue;
-      const s = this.sampleWaveformAt(t, dur);
+    const slot = (STEP / w) * (scrolling ? visibleDur : dur);
+    const k0 = Math.max(0, Math.floor(viewStart / slot)), k1 = Math.min(Math.ceil(dur / slot), Math.ceil(viewEnd / slot));
+    for (let k = k0; k < k1; k++) {
+      const x = timeToX(k * slot);
+      const s = this.peakOver(k * slot, (k + 1) * slot, dur);
       const h = Math.max(1, s.tot * maxBarH);
       const lowShare = Math.min(1, s.r / Math.max(0.01, s.tot));
       const highShare = Math.min(1, s.b / Math.max(0.01, s.tot));
