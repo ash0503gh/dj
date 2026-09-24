@@ -1330,7 +1330,8 @@ Return ONLY valid JSON matching this exact structure:
     bp["meta"]["engine"] = f"Gemini Multimodal DJ Ear ({model_name})"
     bp["meta"]["ai_ears"] = True
     bp["meta"]["audio_auditioned"] = has_audio
-    bp["meta"]["audition_heard"] = decisions["audition_heard"]
+    # Without an audio clip the model can only guess from titles: never present that as "heard"
+    bp["meta"]["audition_heard"] = decisions["audition_heard"] if has_audio else None
     bp["meta"]["tactical_advice"] = decisions["tactical_advice"]
 
     return bp, None

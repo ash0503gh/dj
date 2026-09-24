@@ -15,7 +15,7 @@ import librosa
 import gc
 from typing import Dict, Any, Optional
 
-from .audio_analyzer import analyze_track, check_camelot_compatibility
+from .audio_analyzer import analyze_track, check_camelot_compatibility, load_stereo_window
 from .audio_dsp import (
     pitch_shift_audio,
     time_stretch_audio,
@@ -352,22 +352,36 @@ def ai_analyze_and_recommend_transition(
 
     return best
 
-def scale_track_times(info: Dict[str, Any], ratio: float) -> Dict[str, Any]:
-    """Analysis of a track played `ratio` x faster: every time divides by ratio, BPM multiplies."""
+EXPORT_LEAD_IN_SEC = 16.0
+EXPORT_TAIL_SEC = 16.0
+
+
+def _map_track_times(info: Dict[str, Any], fn) -> Dict[str, Any]:
     out = dict(info)
-    out['bpm'] = info['bpm'] * ratio
-    out['duration'] = info.get('duration', 0.0) / ratio
     for key in ('beat_times', 'downbeat_times', 'phrase_8_times', 'phrase_16_times',
                 'phrase_32_times', 'drop_times', 'section_boundaries'):
         if info.get(key):
-            out[key] = [t / ratio for t in info[key]]
+            out[key] = [fn(t) for t in info[key]]
     for key in ('suggested_cue_intro', 'suggested_cue_outro'):
         if info.get(key) is not None:
-            out[key] = info[key] / ratio
+            out[key] = fn(info[key])
     if info.get('section_map'):
-        out['section_map'] = [dict(s, time=s['time'] / ratio, duration=s['duration'] / ratio)
+        out['section_map'] = [dict(s, time=fn(s['time']), duration=fn(s['time'] + s['duration']) - fn(s['time']))
                               for s in info['section_map']]
     return out
+
+
+def scale_track_times(info: Dict[str, Any], ratio: float) -> Dict[str, Any]:
+    """Analysis of a track played `ratio` x faster: every time divides by ratio, BPM multiplies."""
+    out = _map_track_times(info, lambda t: t / ratio)
+    out['bpm'] = info['bpm'] * ratio
+    out['duration'] = info.get('duration', 0.0) / ratio
+    return out
+
+
+def shift_track_times(info: Dict[str, Any], offset: float) -> Dict[str, Any]:
+    """Analysis re-expressed for audio loaded from `offset` seconds into the track."""
+    return _map_track_times(info, lambda t: t - offset)
 
 
 def render_pro_transition(
@@ -400,7 +414,7 @@ def render_pro_transition(
     if abs(tempo_ratio - 1.0) > 0.0005 and 0.8 <= tempo_ratio <= 1.25:
         if progress_cb: progress_cb(0.10, f"Keylock-stretching Track 2 to {info_1['bpm']:.2f} BPM...")
         track_2_path = stretch_file(track_2_path, round(tempo_ratio, 6),
-                                    os.path.join(os.path.dirname(output_path), "stretch"))
+                                    os.path.join(os.path.dirname(output_path), "stretch"), info_2.get('grid'))
         info_2 = scale_track_times(info_2, tempo_ratio)
         if custom_cue_2 is not None:
             custom_cue_2 = custom_cue_2 / tempo_ratio
@@ -410,23 +424,10 @@ def render_pro_transition(
     selected_technique = ai_choice["recommended_technique"] if technique == "auto" else technique
     
     sr = 44100
-    y1, _ = librosa.load(track_1_path, sr=sr, mono=False)
-    y2, _ = librosa.load(track_2_path, sr=sr, mono=False)
-    
-    if y1.ndim == 1: y1 = np.vstack([y1, y1])
-    if y2.ndim == 1: y2 = np.vstack([y2, y2])
-    
     bpm_1 = info_1['bpm']
     bpm_2 = info_2['bpm']
-    
-    # Harmonic pitch shifting if enabled
-    pitch_shift_semitones = 0
     camelot_info = check_camelot_compatibility(info_1['camelot'], info_2['camelot'])
-    if harmonic_lock and camelot_info['recommended_pitch_shift'] != 0 and selected_technique != "echo_freeze":
-        pitch_shift_semitones = camelot_info['recommended_pitch_shift']
-        if progress_cb: progress_cb(0.15, f"Pitch-shifting Track 2 by {pitch_shift_semitones:+d} semitones...")
-        y2 = pitch_shift_audio(y2, sr, pitch_shift_semitones)
-        
+
     # Cue points with 16-bar phrase quantization
     cue_1_sec = custom_cue_1 if custom_cue_1 and custom_cue_1 > 0 else info_1['suggested_cue_outro']
     cue_2_sec = custom_cue_2 if custom_cue_2 and custom_cue_2 >= 0 else info_2['suggested_cue_intro']
@@ -448,7 +449,28 @@ def render_pro_transition(
         downbeats_2 = info_2['downbeat_times']
         idx_2 = np.argmin(np.abs(np.array(downbeats_2) - cue_2_sec))
         cue_2_sec = downbeats_2[idx_2]
-        
+
+    # Export the transition window only (16 s lead-in, the blend, 30 s of the new track), not
+    # both full tracks: ~2 minutes of stereo audio instead of ~10 keeps an export inside 512 MB.
+    window_beats = max(bars, 16) * 4
+    offset_1 = max(0.0, cue_1_sec - EXPORT_LEAD_IN_SEC)
+    offset_2 = max(0.0, cue_2_sec - 8.0)
+    y1 = load_stereo_window(track_1_path, sr, offset_1,
+                            (cue_1_sec - offset_1) + window_beats * 60.0 / bpm_1 + 20.0)
+    y2 = load_stereo_window(track_2_path, sr, offset_2,
+                            (cue_2_sec - offset_2) + window_beats * 60.0 / bpm_2 + EXPORT_TAIL_SEC)
+    cue_1_sec -= offset_1
+    cue_2_sec -= offset_2
+    info_1 = shift_track_times(info_1, offset_1)
+    info_2 = shift_track_times(info_2, offset_2)
+
+    # Harmonic pitch shifting if enabled
+    pitch_shift_semitones = 0
+    if harmonic_lock and camelot_info['recommended_pitch_shift'] != 0 and selected_technique != "echo_freeze":
+        pitch_shift_semitones = camelot_info['recommended_pitch_shift']
+        if progress_cb: progress_cb(0.15, f"Pitch-shifting Track 2 by {pitch_shift_semitones:+d} semitones...")
+        y2 = pitch_shift_audio(y2, sr, pitch_shift_semitones)
+
     seconds_per_beat_1 = 60.0 / bpm_1
     seconds_per_beat_2 = 60.0 / bpm_2
 
@@ -1405,7 +1427,7 @@ def render_pro_transition(
 
     # Apply soft limiter to master mix
     if progress_cb: progress_cb(0.90, "Applying peak limiter and exporting 24-bit WAV...")
-    master_mix = soft_limit(master_mix, threshold=0.96)
+    master_mix = soft_limit(master_mix.astype(np.float32, copy=False), threshold=0.96)
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     sf.write(output_path, master_mix.T, sr, subtype='PCM_16')

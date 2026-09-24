@@ -812,7 +812,11 @@ def generate_ai_dj_strategy(
     """
     # 1. Prioritize TypeSafe Jev System One (sub-200ms single-pass decision engine)
     resolved_jev_key = get_jev_api_key(jev_api_key)
-    is_jev_target = model_name.lower().startswith("jev") or (resolved_jev_key and not gemini_api_key)
+    # Honour the selected model: Gemini keys usually come from the server env, not the request,
+    # so "no gemini_api_key param" must not route a Gemini selection to Jev.
+    wants_gemini = model_name.lower().startswith("gemini") and bool(get_gemini_api_key(gemini_api_key))
+    wants_local = model_name.lower().startswith("local")
+    is_jev_target = not wants_gemini and not wants_local and (model_name.lower().startswith("jev") or bool(resolved_jev_key))
     if resolved_jev_key and is_jev_target:
         jev_result, jev_err = call_jev_system_one(info_out, info_in, direction=direction, api_key=resolved_jev_key)
         if jev_result:
@@ -918,7 +922,7 @@ Return valid JSON with these exact fields:
   }}
 }}
 """
-        gemini_result, gemini_err = call_gemini_api(prompt, resolved_key, model_name=model_name)
+        gemini_result, gemini_err = call_gemini_api(prompt, resolved_gemini_key, model_name=model_name)
         if gemini_result and isinstance(gemini_result, dict) and "recommended_technique" in gemini_result:
             gemini_result["engine_source"] = f"Google Gemini AI ({model_name})"
             gemini_result["direction"] = direction

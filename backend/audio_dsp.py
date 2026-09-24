@@ -65,8 +65,10 @@ def split_3band(y: np.ndarray, sr: int, f_low: float = 250.0, f_high: float = 25
     """
     Splits mono or stereo audio into (low_band, mid_band, high_band) using Linkwitz-Riley crossover.
     """
-    sos_lp, sos_hp_mid, sos_lp_mid, sos_hp = create_linkwitz_riley_3band(sr, f_low, f_high)
-    
+    # float32 filters keep the bands float32 (half the memory of float64 on a 512 MB server)
+    sos_lp, sos_hp_mid, sos_lp_mid, sos_hp = (s.astype(np.float32) for s in create_linkwitz_riley_3band(sr, f_low, f_high))
+    y = y.astype(np.float32, copy=False)
+
     def apply_band(ch):
         # 4th order Linkwitz-Riley: run sosfilt twice in forward direction
         low = signal.sosfilt(sos_lp, signal.sosfilt(sos_lp, ch))
@@ -571,7 +573,7 @@ def apply_vocal_ducking(mid_1: np.ndarray, mid_2: np.ndarray, sr: int, max_duck_
 
     # Moving average box filter
     box = np.ones(window_samples) / window_samples
-    smooth_energy = np.convolve(energy, box, mode='same')
+    smooth_energy = signal.fftconvolve(energy, box, mode='same')  # direct convolve: ~6e9 MACs per 32 s
 
     # Normalize energy to [0, 1]
     peak = np.percentile(smooth_energy, 95) if len(smooth_energy) > 0 else 1.0

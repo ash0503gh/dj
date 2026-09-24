@@ -48,6 +48,21 @@ const MixPlanner = (() => {
     return sectionsIn(track, t0, t1).some(s => s.has_vocals && s.vocal_score > 0.35);
   }
 
+  function median(a) {
+    const s = [...a].sort((x, y) => x - y);
+    return s[Math.floor(s.length / 2)];
+  }
+
+  /** Track-relative kick/bass level (dB) of the bar containing native time t, or null. */
+  function barLevel(track, t) {
+    const lv = track.bar_low_db;
+    if (!lv || !lv.length || !track.grid) return null;
+    const g = gridOf(track);
+    const firstDownbeat = g.first + (track.grid.downbeat_offset || 0) * g.period;
+    const i = Math.floor((t - firstDownbeat) / (4 * g.period) + 1e-6);
+    return (i >= 0 && i < lv.length) ? lv[i] : null;
+  }
+
   function nearTime(list, t, tol = 0.05) {
     return (list || []).some(x => Math.abs(x - t) < tol);
   }
@@ -79,9 +94,28 @@ const MixPlanner = (() => {
       inStart = Math.max(introCue, drop - inBars * inBar);
     }
     if (opts.blend) bars = inBars;
+    // Bass swap bar. When the incoming drop lands at the end of the blend, swap on it. Otherwise
+    // swap on the first downbeat past half-way where the incoming track really has bass, so the
+    // swap never leaves bars with no bass at all (intros are often bass-less).
+    const dropAligned = opts.blend && drop !== undefined && Math.abs(inStart + bars * inBar - drop) < 0.1;
+    let swapBar = dropAligned ? bars : Math.max(1, Math.round(bars / 2));
+    if (opts.blend && !dropAligned && inTrack.bar_low_db && inTrack.bar_low_db.length) {
+      const ref = median(inTrack.bar_low_db) - 3;
+      swapBar = bars;
+      for (let b = Math.max(1, Math.round(bars / 2)); b <= bars; b++) {
+        const lv = barLevel(inTrack, inStart + b * inBar);
+        if (lv !== null && lv >= ref) { swapBar = b; break; }
+      }
+    }
+    // Swapping at the very end: keep the outgoing going (bass killed) for a few more bars
+    const tailBars = swapBar >= bars ? Math.min(4, Math.max(1, bars / 2)) : 0;
+    // Trim: match the incoming track's body loudness to what the room hears now
+    const inTrimDb = (outTrack.loudness_db != null && inTrack.loudness_db != null)
+      ? Math.max(-6, Math.min(6, outTrack.loudness_db + (outDeck.trimDb || 0) - inTrack.loudness_db))
+      : 0;
 
     // ── Exit point on the outgoing track: score its phrase starts ──
-    const blendNative = bars * outBar;
+    const blendNative = (bars + tailBars) * outBar;
     const inVocal = hasVocals(inTrack, inStart, inStart + bars * inBar);
     const slots = opts.phraseLock === false ? outTrack.downbeat_times : outTrack.phrase_8_times;
     const cands = (slots || []).filter(t => t >= outNow && t + blendNative <= dur - 0.5);
@@ -100,6 +134,14 @@ const MixPlanner = (() => {
       const outVocal = hasVocals(outTrack, t, t + blendNative);
       if (outVocal && inVocal) score -= 30;
       else if (outVocal) score -= 5;
+      // The outgoing bass must carry the floor until the swap: penalize exits where it drops out
+      if (outTrack.bar_low_db && outTrack.bar_low_db.length) {
+        const ref = median(outTrack.bar_low_db) - 6;
+        for (let b = 0; b < Math.min(swapBar, bars); b++) {
+          const lv = barLevel(outTrack, t + b * outBar);
+          if (lv !== null && lv < ref) score -= 8;
+        }
+      }
       const waitSec = (t - outNow) / speed;
       score -= Math.max(0, waitSec - 20) * 0.4;
       if (score > bestScore) { bestScore = score; best = t; }
@@ -113,17 +155,21 @@ const MixPlanner = (() => {
         best = bp.beatTime + bp.period * Math.ceil((outNow - bp.beatTime) / bp.period);
       }
       const barsLeft = Math.floor((dur - best) / outBar);
-      bars = Math.max(1, Math.min(bars, barsLeft));
+      bars = Math.max(1, Math.min(bars + tailBars, barsLeft) - tailBars);
     }
 
     const beatSec = 60 / outBpm;
     const vocalClash = hasVocals(outTrack, best, best + bars * outBar) && inVocal;
     return {
       bars,
+      tailBars,
+      swapBar: Math.min(swapBar, bars),
+      dropAligned,
+      inTrimDb,
       tempoRatio,
       masterBpm: outBpm,
       beatSec,
-      blendSec: bars * 4 * beatSec,
+      blendSec: (bars + tailBars) * 4 * beatSec,
       exitNative: best,
       inStartNative: inStart,
       startCtx: outDeck.audio.ctxTimeAt(best),
@@ -187,22 +233,37 @@ const MixPlanner = (() => {
     [deck.eqLow.gain, deck.eqMid.gain, deck.eqHigh.gain].forEach(p => p.setValueAtTime(0, t));
     [deck.lowCut1.frequency, deck.lowCut2.frequency].forEach(p => p.setValueAtTime(OPEN_HZ, t));
     deck.filterHPF.frequency.setValueAtTime(20, t);
-    deck.filterLPF.frequency.setValueAtTime(20000, t);
+    deck.filterLPF.frequency.setValueAtTime(Math.min(20000, deck.ctx.sampleRate / 2), t);
   }
 
   /**
    * Schedule the default DJ blend. Incoming must be started at p.startCtx by the caller.
    * Returns ctx times of the landmarks.
    */
+  /** Bass swap downbeat: on the incoming drop when it's planned to land at the blend's end,
+   *  otherwise half-way (the incoming track already carries bass from its start). */
+  function swapTime(p) {
+    const bar = 4 * p.beatSec;
+    const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
+    return p.startCtx + swapBar * bar;
+  }
+
+  /** Channel trim (dB) at ctx time t; the deck keeps it after the transition. */
+  function setTrim(deck, db, t) {
+    deck.trimDb = db;
+    deck.source.gain.setValueAtTime(Math.pow(10, db / 20), t);
+  }
+
   function scheduleBlend(p, outDeck, inDeck) {
     const T = p.startCtx;
     const bar = 4 * p.beatSec;
-    const end = T + p.bars * bar;
+    const end = T + (p.bars + (p.tailBars || 0)) * bar;
     const q = Math.max(1, p.bars / 4);                         // a quarter of the blend, in bars
-    const swap = T + Math.max(1, Math.round(p.bars / 2)) * bar; // bass swap on the 1, half-way
+    const swap = swapTime(p);
 
     // Incoming: silent, bass killed, mids down, hats slightly down
     neutral(inDeck, T - 0.05, 0);
+    setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
     bassKill(inDeck, T - 0.01, true);
     inDeck.eqMid.gain.setValueAtTime(-24, T - 0.01);
     inDeck.eqHigh.gain.setValueAtTime(-12, T - 0.01);
@@ -226,11 +287,12 @@ const MixPlanner = (() => {
     if (p.vocalClash || p.keyClash) {
       curve(outDeck.eqMid.gain, swap - p.beatSec, swap, 0, -24, 8);
     } else {
-      curve(outDeck.eqMid.gain, swap, end - bar, 0, -24);
+      curve(outDeck.eqMid.gain, swap, end - (p.tailBars ? 0.5 : 1) * bar, 0, -24);
     }
-    // 5. Outgoing hats and fader out over the last quarter
-    curve(outDeck.eqHigh.gain, end - q * bar, end - 0.5 * bar, 0, -24);
-    curve(outDeck.faderGain.gain, end - q * bar, end, outVol, 0);
+    // 5. Outgoing hats and fader out: over the tail after a drop swap, else the last quarter
+    const fadeFrom = p.tailBars ? swap : end - q * bar;
+    curve(outDeck.eqHigh.gain, fadeFrom, end - 0.5 * bar, 0, -24);
+    curve(outDeck.faderGain.gain, fadeFrom, end, outVol, 0);
 
     return { start: T, swap, end };
   }
@@ -253,20 +315,25 @@ const MixPlanner = (() => {
     };
     const db = v => Math.max(-40, Math.min(6, v));
     neutral(inDeck, T - 0.05, 0);
-    neutral(outDeck, T - 0.05, 1);
+    setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
+    neutral(outDeck, T - 0.05, outDeck.faderGain.gain.value);
     apply(inDeck.eqHigh.gain, kf.incoming_eq_high, db);
     apply(inDeck.eqMid.gain, kf.incoming_eq_mid, db);
-    apply(inDeck.eqLow.gain, kf.incoming_eq_low, db);
     apply(outDeck.eqHigh.gain, kf.outgoing_eq_high, db);
     apply(outDeck.eqMid.gain, kf.outgoing_eq_mid, db);
-    apply(outDeck.eqLow.gain, kf.outgoing_eq_low, db);
     apply(outDeck.filterHPF.frequency, kf.outgoing_hpf_hz, v => Math.max(20, v));
     apply(inDeck.faderGain.gain, kf.incoming_fader, v => Math.max(0, Math.min(1, v)));
     apply(outDeck.faderGain.gain, kf.outgoing_fader, v => Math.max(0, Math.min(1, v)));
-    return { start: T, swap: T + D / 2, end: T + D };
+    // The AI shapes hats/mids/faders, but never the bass: its low-EQ curves can cross-fade two
+    // basslines for bars (mud). Bass always swaps with the isolator in 30 ms on a downbeat.
+    const swap = swapTime(p);
+    bassKill(inDeck, T - 0.01, true);
+    bassKill(outDeck, swap, true);
+    bassKill(inDeck, swap, false);
+    return { start: T, swap, end: T + D };
   }
 
-  return { MAX_STRETCH, gridOf, beatPhase, deckBpm, deckSpeed, plan, scheduleBlend, scheduleBlueprint,
+  return { MAX_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, scheduleBlend, scheduleBlueprint,
            neutral, clearAutomation, holdAutomation, cutAt, hasVocals };
 })();
 

@@ -77,6 +77,8 @@ class BufferTransport {
 
   get duration() { return this.nativeBuffer ? this.nativeBuffer.duration : NaN; }
   get paused() { return this._paused; }
+  /** Actually sounding now (false while a scheduled start is still in the future). */
+  get running() { return !this._paused && this.ctx.currentTime >= this._t0; }
 
   /** Native track time at ctx time `t` (for a running deck, extrapolated at the current rate). */
   timeAt(t) {
@@ -144,7 +146,8 @@ class BufferTransport {
 
   /** Start playing at ctx time `when` (default: now) from the current position, or from `native`. */
   play(when = null, native = null) {
-    if (this.ctx.state === 'suspended') this.ctx.resume();
+    const offline = typeof OfflineAudioContext !== 'undefined' && this.ctx instanceof OfflineAudioContext;
+    if (this.ctx.state === 'suspended' && !offline) this.ctx.resume();
     if (!this.buffer) return Promise.reject(new Error('No track loaded in deck'));
     const now = this.ctx.currentTime;
     const t = Math.max(now, when === null ? now : when);
@@ -595,6 +598,8 @@ class DJDeckAudio {
     this.cuePosition = 0;
     this.isPlaying = false;
     this.audioBuffer = null;
+    this.trimDb = 0;
+    this.source.gain.setValueAtTime(1, this.ctx.currentTime);
     return this.audio.load(url).then(buf => {
       if (buf) this.audioBuffer = buf;
       return buf;

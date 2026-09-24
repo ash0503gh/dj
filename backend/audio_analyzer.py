@@ -392,7 +392,7 @@ def compute_section_map(mono: np.ndarray, sr: int, beat_times: List[float], bpm:
 # track, then find the bar phase and phrase phase from structural changes.
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANALYSIS_VERSION = 2
+ANALYSIS_VERSION = 4
 ANALYSIS_SR = 16000
 ONSET_HOP = 128            # 8 ms onset frames
 BPM_RANGE = (85.0, 185.0)
@@ -420,6 +420,19 @@ def load_mono(path: str, sr: int = ANALYSIS_SR) -> np.ndarray:
     except (FileNotFoundError, subprocess.CalledProcessError):
         y, _ = librosa.load(path, sr=sr, mono=True)
         return y
+
+
+def load_stereo_window(path: str, sr: int, offset: float, duration: float) -> np.ndarray:
+    """Decode only [offset, offset + duration) as stereo float32 (2 x N) with ffmpeg."""
+    import subprocess
+    try:
+        out = subprocess.run(['ffmpeg', '-v', 'error', '-ss', f'{offset:.6f}', '-t', f'{duration:.6f}', '-i', path,
+                              '-f', 'f32le', '-ac', '2', '-ar', str(sr), '-'],
+                             capture_output=True, check=True).stdout
+        return np.frombuffer(out, dtype=np.float32).reshape(-1, 2).T.copy()
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        y, _ = librosa.load(path, sr=sr, mono=False, offset=offset, duration=duration)
+        return y if y.ndim == 2 else np.vstack([y, y])
 
 
 def _band_power(y: np.ndarray, n_fft: int, hop: int, basis: np.ndarray) -> np.ndarray:
@@ -687,7 +700,13 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
     # ── Phrases: sections change on 8/16/32-bar boundaries ──
     bar_t = beat_t[downbeat_offset::4]
     phrase_offset = 0
-    boundaries, drops = [], []
+    boundaries, drops, bar_low_db = [], [], []
+
+    # Track body loudness (mean RMS of its louder half of bars): what a DJ matches with the trim knob
+    bar_rms_db = np.array([20 * np.log10(np.sqrt(np.mean(y[int(a * sr):int(b * sr)] ** 2)) + 1e-9)
+                           for a, b in zip(bar_t[:-1], bar_t[1:]) if b * sr <= len(y)])
+    loudness_db = float(np.mean(np.sort(bar_rms_db)[len(bar_rms_db) // 2:])) if len(bar_rms_db) else -20.0
+
     if len(bar_t) >= 17:
         bar_mel = _sync_mean(logS, fps, bar_t)
         bar_chroma = _sync_mean(beat_chroma, 1.0, np.arange(downbeat_offset, len(beat_t), 4, dtype=float))
@@ -702,14 +721,16 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
             if nov_bar[b] >= thr and nov_bar[b] == nov_bar[max(0, b - 3):b + 4].max():
                 boundaries.append(round(float(bar_t[b]), 3))
 
-        # Drops: a 4-bar-aligned point where kick/bass energy jumps and stays high
+        # Drops: a 4-bar-aligned point where kick/bass energy jumps and STAYS high for 8 bars
+        # (a 4-bar hit followed by a breakdown is not somewhere to land a mix)
         low_db = bar_mel[freqs < 150].mean(axis=0)
+        bar_low_db = [round(float(v), 1) for v in low_db]
         median_low = float(np.median(low_db))
-        for b in range(4, len(low_db) - 3):
-            if (b - phrase_offset) % 4:
-                continue
-            after, before = float(low_db[b:b + 4].mean()), float(low_db[b - 4:b].mean())
-            if after - before > 6.0 and after > median_low:
+        for b in range(4, len(low_db) - 7):
+            if (b - phrase_offset) % 4 or bar_t[b] > 0.5 * duration:
+                continue  # a "drop" in the second half is where the track ends, not where to mix in
+            after, before = float(low_db[b:b + 8].mean()), float(low_db[b - 4:b].mean())
+            if after - before > 6.0 and after > median_low and low_db[b:b + 8].min() > median_low - 3.0:
                 drops.append(round(float(bar_t[b]), 3))
 
     del logS
@@ -726,6 +747,8 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
         },
         "section_boundaries": boundaries,
         "drop_times": drops,
+        "bar_low_db": bar_low_db,          # kick/bass level per bar from the first downbeat
+        "loudness_db": round(loudness_db, 2),
     }
 
 
@@ -796,6 +819,8 @@ def analyze_track(file_path: str) -> Dict[str, Any]:
         "grid": grid,
         "section_boundaries": est["section_boundaries"],
         "drop_times": est["drop_times"],
+        "bar_low_db": est["bar_low_db"],
+        "loudness_db": est["loudness_db"],
         "key": display_key,
         "mode": mode,
         "camelot": camelot,

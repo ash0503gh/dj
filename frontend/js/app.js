@@ -18,6 +18,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let selectedTechnique = 'auto';
   let isTransitioning = false;
   let lastRenderedMix = null;
+  let lastTransitionCues = null;
   let zoomLevel = 1.0;
   let currentAIRec = null;
   let serverHasJev = false;
@@ -581,7 +582,8 @@ document.addEventListener('DOMContentLoaded', () => {
           currentTrack.suggested_cue_outro = sTrack.suggested_cue_outro || currentTrack.suggested_cue_outro;
           currentTrack.acoustic_profile = sTrack.acoustic_profile || currentTrack.acoustic_profile;
           currentTrack.file_id = sTrack.file_id || currentTrack.file_id;
-          ['grid', 'phrase_32_times', 'drop_times', 'section_boundaries', 'section_map'].forEach(k => {
+          ['grid', 'phrase_32_times', 'drop_times', 'section_boundaries', 'section_map',
+           'bar_low_db', 'loudness_db'].forEach(k => {
             if (sTrack[k]) currentTrack[k] = sTrack[k];
           });
           currentTrack.hot_cues = computeTrackHotCues(currentTrack);
@@ -2043,22 +2045,17 @@ document.addEventListener('DOMContentLoaded', () => {
       requestBlueprint(t, budgetMs).then(bp => { if (activeTransition === t) t.blueprint = bp; });
     }
 
-    // Background lossless export of the same transition
-    t.renderPromise = (async () => {
-      const form = new FormData();
-      form.append('file_id_1', track1Data.file_id);
-      form.append('file_id_2', track2Data.file_id);
-      form.append('direction', transitionDirection);
-      form.append('technique', tech);
-      form.append('bars', t.plan.bars);
-      form.append('tempo_ramp', document.getElementById('toggle-tempo-ramp').checked);
-      form.append('harmonic_lock', document.getElementById('toggle-harmonic').checked);
-      form.append('use_stems', document.getElementById('toggle-neural-stems').checked);
-      form.append('cue_1', isDir1to2 ? t.plan.exitNative : t.plan.inStartNative);
-      form.append('cue_2', isDir1to2 ? t.plan.inStartNative : t.plan.exitNative);
-      const res = await fetch('/api/render-mix', { method: 'POST', body: form });
-      return await res.json();
-    })();
+    // No automatic server export during a live set (it competes with analysis/stretching for a
+    // small instance's memory). The Export button renders this transition on demand.
+    t.renderPromise = Promise.resolve(null);
+    lastRenderedMix = null;
+    lastTransitionCues = {
+      direction: transitionDirection,
+      technique: tech,
+      bars: t.plan.bars,
+      cue_1: isDir1to2 ? t.plan.exitNative : t.plan.inStartNative,
+      cue_2: isDir1to2 ? t.plan.inStartNative : t.plan.exitNative,
+    };
 
     startTransitionHud(t);
     // Arm shortly before the first outgoing FX (or the start): from then on it's all scheduled
@@ -2082,10 +2079,13 @@ document.addEventListener('DOMContentLoaded', () => {
         phraseHud.classList.add('hidden');
         if (t.blend && t.marks) {
           const now = engine.ctx.currentTime;
-          const bar = Math.min(p.bars, Math.floor(-remain / (4 * p.beatSec)) + 1);
-          const stage = now < t.marks.swap ? 'HATS & MIDS IN' : 'BASS SWAPPED ON THE 1, OUTGOING OUT';
+          const total = p.bars + (p.tailBars || 0);
+          const bar = Math.min(total, Math.floor(-remain / (4 * p.beatSec)) + 1);
+          const stage = now < t.marks.swap
+            ? (p.dropAligned ? 'HATS & MIDS IN, BASS SWAPS ON THE DROP' : 'HATS & MIDS IN')
+            : 'BASS SWAPPED ON THE 1, OUTGOING OUT';
           transitionStatusBanner.textContent =
-            `🎚️ ${t.blueprint ? 'AI BLUEPRINT' : 'BLEND'} BAR ${bar}/${p.bars}: ${stage}`;
+            `🎚️ ${t.blueprint ? 'AI BLUEPRINT' : 'BLEND'} BAR ${bar}/${total}: ${stage}`;
         }
       }
     }, 50));
@@ -2134,6 +2134,8 @@ document.addEventListener('DOMContentLoaded', () => {
       : MixPlanner.scheduleBlend(p, t.outDeck, t.inDeck);
     atCtx(t, T, () => setPlayUI(t.inBtnPlay, true));
     if (t.blueprint) {
+      // Effects that bend the outgoing deck's speed would pull it off the grid mid-overlap
+      ['vinyl_brake', 'pitch_bend'].forEach(k => { if (t.blueprint.effects) delete t.blueprint.effects[k]; });
       const fxState = {};
       t.intervals.push(setInterval(() => {
         const prog = (engine.ctx.currentTime - T) / p.blendSec;
@@ -2153,6 +2155,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const { outDeck, inDeck, outDeckNum } = t;
 
     MixPlanner.neutral(inDeck, T - 0.05, 1);
+    MixPlanner.setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
     inDeck.play(T, getTrackIntroCue(t.inTrack));
     let cutTime = T;
     let tail = 0.1;
@@ -2291,7 +2294,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function showMixModal(mix) {
     modalStatsGrid.innerHTML = `
       <div class="stat-item"><span class="lbl">TECHNIQUE</span><span class="val">${mix.technique.toUpperCase()}</span></div>
-      <div class="stat-item"><span class="lbl">TOTAL RUNTIME</span><span class="val">${formatTime(mix.total_duration)}</span></div>
+      <div class="stat-item"><span class="lbl">CLIP LENGTH</span><span class="val">${formatTime(mix.total_duration)}</span></div>
       <div class="stat-item"><span class="lbl">TRANSITION WINDOW</span><span class="val">${mix.bars} BARS (${mix.mix_start_sec}s → ${mix.mix_end_sec}s)</span></div>
       <div class="stat-item"><span class="lbl">BASS DROP MOMENT</span><span class="val">${mix.mix_swap_sec}s</span></div>
       <div class="stat-item"><span class="lbl">HARMONIC PITCH SHIFT</span><span class="val">${(mix.pitch_shift_semitones > 0 ? '+' : '') + mix.pitch_shift_semitones} Semitones (${mix.camelot_compatibility ? mix.camelot_compatibility.relationship : 'Harmonic'})</span></div>
@@ -2336,14 +2339,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const form = new FormData();
       form.append('file_id_1', track1Data.file_id);
       form.append('file_id_2', track2Data.file_id);
-      form.append('direction', transitionDirection);
-      form.append('technique', effectiveTech);
-      form.append('bars', bars);
+      // Export the transition that was just performed, if any
+      const c = lastTransitionCues;
+      form.append('direction', c ? c.direction : transitionDirection);
+      form.append('technique', c ? c.technique : effectiveTech);
+      form.append('bars', c ? c.bars : bars);
       form.append('tempo_ramp', tempoRamp);
       form.append('harmonic_lock', harmonicLock);
       form.append('use_stems', neuralStems);
-      form.append('cue_1', isDir1to2 ? (engine.deck1.audio.currentTime || track1Data.suggested_cue_outro) : track1Data.suggested_cue_intro);
-      form.append('cue_2', isDir1to2 ? track2Data.suggested_cue_intro : (engine.deck2.audio.currentTime || track2Data.suggested_cue_outro));
+      form.append('cue_1', c ? c.cue_1 : (isDir1to2 ? (engine.deck1.audio.currentTime || track1Data.suggested_cue_outro) : track1Data.suggested_cue_intro));
+      form.append('cue_2', c ? c.cue_2 : (isDir1to2 ? track2Data.suggested_cue_intro : (engine.deck2.audio.currentTime || track2Data.suggested_cue_outro)));
 
       const res = await fetch('/api/render-mix', { method: 'POST', body: form });
       const data = await res.json();
@@ -2412,7 +2417,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Phase meter: telemetry only (grids + audio clock), no correction loop
     if (track1Data && track2Data) {
-      if (engine.deck1.isPlaying && engine.deck2.isPlaying) {
+      if (engine.deck1.audio.running && engine.deck2.audio.running) {
         const err = isDeck1SyncLocked
           ? computePhaseError(engine.deck2, track2Data, engine.deck1, track1Data)
           : computePhaseError(engine.deck1, track1Data, engine.deck2, track2Data);

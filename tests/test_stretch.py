@@ -25,7 +25,7 @@ def run(ratio, tmpdir):
     audio, truth = make_track(bpm=122.0, first_beat=0.25, pickup_beats=0, pre_bars=0)
     src = os.path.join(tmpdir, "src.wav")
     sf.write(src, audio, SR)
-    out = stretch_file(src, ratio, tmpdir)
+    out = stretch_file(src, ratio, tmpdir, analyze_track(src)["grid"])
     scaled = {
         "bpm": truth["bpm"] * ratio,
         "beat_times": truth["beat_times"] / ratio,

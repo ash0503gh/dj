@@ -8,11 +8,13 @@ import uuid
 import json
 import shutil
 import gc
+import threading
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.concurrency import run_in_threadpool
 import uvicorn
 import numpy as np
 import soundfile as sf
@@ -66,6 +68,20 @@ def save_cache_to_disk():
         print("Failed to save analysis cache:", e)
 
 load_cache_from_disk()
+
+# Heavy CPU/memory work (analysis, stretching, rendering) runs in the threadpool so the event
+# loop keeps serving audio and API calls, and one job at a time so a 512 MB instance never
+# holds two full-track analyses at once.
+HEAVY_LOCK = threading.RLock()
+
+
+def _locked(fn, *args, **kwargs):
+    with HEAVY_LOCK:
+        return fn(*args, **kwargs)
+
+
+async def heavy(fn, *args, **kwargs):
+    return await run_in_threadpool(_locked, fn, *args, **kwargs)
 
 
 def get_cached_analysis(file_id: str) -> Optional[dict]:
@@ -165,7 +181,7 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
             target_id = unquoted
 
     if target_id in ANALYSIS_CACHE:
-        data = dict(get_cached_analysis(target_id))
+        data = dict(await heavy(get_cached_analysis, target_id))
         data["deck"] = deck
         data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
         return JSONResponse(content={"status": "success", "track": data})
@@ -175,8 +191,8 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
         path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(target_id))
         if not os.path.exists(path):
             raise HTTPException(status_code=404, detail=f"Track {file_id} not found")
-        
-    an = analyze_track(path)
+
+    an = await heavy(analyze_track, path)
     an["file_id"] = target_id
     an["deck"] = deck
     an["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
@@ -211,7 +227,7 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
             shutil.copyfileobj(file.file, buffer)
             
         # Analyze track
-        analysis = analyze_track(save_path)
+        analysis = await heavy(analyze_track, save_path)
         analysis["file_id"] = file_id
         analysis["title"] = clean_name
         analysis["deck"] = deck
@@ -249,8 +265,8 @@ async def get_ai_recommendation(file_id_1: str, file_id_2: str, direction: str =
     if not os.path.exists(track_1_path) or not os.path.exists(track_2_path):
         raise HTTPException(status_code=404, detail="Tracks not found")
 
-    an1 = get_cached_analysis(file_id_1)
-    an2 = get_cached_analysis(file_id_2)
+    an1 = await heavy(get_cached_analysis, file_id_1)
+    an2 = await heavy(get_cached_analysis, file_id_2)
 
     from .dj_engine import ai_analyze_and_recommend_transition
     if direction == "2_to_1":
@@ -357,7 +373,8 @@ async def get_jev_blueprint(request: Request):
     try:
         # Priority 1: Google Gemini Multimodal Audio Audition ("AI Headphones")
         if gemini_key:
-            bp, g_err = run_gemini_audition_pipeline(
+            bp, g_err = await run_in_threadpool(
+                run_gemini_audition_pipeline,
                 profile_out, profile_in, gemini_key,
                 audio_b64=audio_b64, audio_mime=audio_mime
             )
@@ -369,7 +386,7 @@ async def get_jev_blueprint(request: Request):
 
         # Priority 2: TypeSafe Jev System One Typed Pipeline
         if not blueprint and jev_key:
-            bp, j_err = run_jev_pipeline(profile_out, profile_in, jev_key)
+            bp, j_err = await run_in_threadpool(run_jev_pipeline, profile_out, profile_in, jev_key)
             if bp:
                 blueprint = bp
             elif j_err:
@@ -409,7 +426,7 @@ async def get_ai_strategy_endpoint(
     fid2 = urllib.parse.unquote(file_id_2)
 
     # 1. Resolve Track 1 Profile
-    an1 = get_cached_analysis(fid1) or get_cached_analysis(file_id_1)
+    an1 = await heavy(get_cached_analysis, fid1) or await heavy(get_cached_analysis, file_id_1)
     if not an1:
         p1 = os.path.join(UPLOAD_DIR, fid1)
         if not os.path.exists(p1):
@@ -449,7 +466,7 @@ async def get_ai_strategy_endpoint(
         }
 
     # 2. Resolve Track 2 Profile
-    an2 = get_cached_analysis(fid2) or get_cached_analysis(file_id_2)
+    an2 = await heavy(get_cached_analysis, fid2) or await heavy(get_cached_analysis, file_id_2)
     if not an2:
         p2 = os.path.join(UPLOAD_DIR, fid2)
         if not os.path.exists(p2):
@@ -493,7 +510,9 @@ async def get_ai_strategy_endpoint(
     else:
         info_out, info_in = an1, an2
 
-    strategy = generate_ai_dj_strategy(
+    # Network-bound LLM call: threadpool (not the heavy lock) so it never freezes the server
+    strategy = await run_in_threadpool(
+        generate_ai_dj_strategy,
         info_out=info_out,
         info_in=info_in,
         direction=direction,
@@ -546,7 +565,10 @@ async def render_mix(
     output_path = os.path.join(OUTPUT_DIR, mix_id)
     
     try:
-        result = render_pro_transition(
+        info_out = await heavy(get_cached_analysis, os.path.basename(out_path))
+        info_in = await heavy(get_cached_analysis, os.path.basename(in_path))
+        result = await heavy(
+            render_pro_transition,
             track_1_path=out_path,
             track_2_path=in_path,
             output_path=output_path,
@@ -557,8 +579,8 @@ async def render_mix(
             use_stems=use_stems,
             custom_cue_1=out_cue,
             custom_cue_2=in_cue,
-            info_1=get_cached_analysis(os.path.basename(out_path)),
-            info_2=get_cached_analysis(os.path.basename(in_path)),
+            info_1=info_out,
+            info_2=info_in,
         )
         result["mix_url"] = f"/api/outputs/{mix_id}"
         result["direction"] = direction
@@ -627,7 +649,8 @@ def get_stretched(file_id: str, ratio: float):
         raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
     if not 0.8 <= ratio <= 1.25:
         raise HTTPException(status_code=400, detail="ratio must be within 0.8 - 1.25")
-    out = stretch_file(path, round(ratio, 6), STRETCH_DIR)
+    grid = (ANALYSIS_CACHE.get(urllib.parse.unquote(file_id)) or {}).get("grid")
+    out = _locked(stretch_file, path, round(ratio, 6), STRETCH_DIR, grid)
     return FileResponse(out, media_type="audio/flac",
                         headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
 
@@ -638,6 +661,7 @@ async def score_transition_endpoint(
     start_sec: float = Form(...),
     end_sec: float = Form(...),
     beat_sec: float = Form(...),
+    swap_sec: Optional[float] = Form(None),
 ):
     """Score a rendered transition. `stems` is a 2-channel WAV: ch0 = outgoing deck, ch1 = incoming deck."""
     import io
@@ -646,7 +670,8 @@ async def score_transition_endpoint(
     if data.ndim != 2 or data.shape[1] != 2:
         raise HTTPException(status_code=400, detail="stems must be a 2-channel WAV (outgoing, incoming)")
     return JSONResponse(content={"status": "success",
-                                 "metrics": score_transition(data[:, 0], data[:, 1], sr, start_sec, end_sec, beat_sec)})
+                                 "metrics": score_transition(data[:, 0], data[:, 1], sr, start_sec, end_sec,
+                                                             beat_sec, swap_sec)})
 
 
 @app.post("/api/grid-adjust")
