@@ -11,7 +11,8 @@ DRAMATIC: echo_freeze, vinyl_brake, echo_dissolve
 import os
 import numpy as np
 import soundfile as sf
-import librosa
+from .lazy import LazyModule
+librosa = LazyModule("librosa")
 import gc
 from typing import Dict, Any, Optional
 

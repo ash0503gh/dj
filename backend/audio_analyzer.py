@@ -4,7 +4,8 @@ Extracts BPM, beat grid, 4/4 downbeats, Camelot musical key, structural phrases,
 """
 
 import numpy as np
-import librosa
+from .lazy import LazyModule
+librosa = LazyModule("librosa")
 import soundfile as sf
 import os
 import gc

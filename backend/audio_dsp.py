@@ -9,8 +9,9 @@ Provides:
 """
 
 import numpy as np
-import scipy.signal as signal
-import librosa
+from .lazy import LazyModule
+signal = LazyModule("scipy.signal")
+librosa = LazyModule("librosa")
 from typing import Tuple, Dict, Any, Optional
 
 def pitch_shift_audio(y: np.ndarray, sr: int, semitones: float) -> np.ndarray:

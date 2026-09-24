@@ -8,7 +8,10 @@ import uuid
 import json
 import shutil
 import gc
-import threading
+import asyncio
+import functools
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from typing import Optional
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -69,22 +72,27 @@ def save_cache_to_disk():
 
 load_cache_from_disk()
 
-# Heavy CPU/memory work (analysis, stretching, rendering) runs in the threadpool so the event
-# loop keeps serving audio and API calls, and one job at a time so a 512 MB instance never
-# holds two full-track analyses at once.
-HEAVY_LOCK = threading.RLock()
+# Heavy CPU/memory work (analysis, stretching, rendering) runs in a short-lived child process,
+# one job at a time: the event loop keeps serving audio and API calls, and every job's memory is
+# returned to the OS when its process exits. (In-process, Python keeps its high-water mark, so an
+# export after two analyses pushed a 512 MB instance over the limit.)
+_HEAVY_POOL = None
 
 
-def _locked(fn, *args, **kwargs):
-    with HEAVY_LOCK:
-        return fn(*args, **kwargs)
+def _heavy_pool():
+    global _HEAVY_POOL
+    if _HEAVY_POOL is None:
+        _HEAVY_POOL = ProcessPoolExecutor(max_workers=1, mp_context=multiprocessing.get_context("spawn"),
+                                          max_tasks_per_child=1)
+    return _HEAVY_POOL
 
 
 async def heavy(fn, *args, **kwargs):
-    return await run_in_threadpool(_locked, fn, *args, **kwargs)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_heavy_pool(), functools.partial(fn, *args, **kwargs))
 
 
-def get_cached_analysis(file_id: str) -> Optional[dict]:
+async def get_cached_analysis(file_id: str) -> Optional[dict]:
     """Cached analysis for an uploaded file, re-analyzing entries written by an older
     analyzer version (v1 grids only covered the first 90 s). None if the file is missing."""
     cached = ANALYSIS_CACHE.get(file_id)
@@ -93,7 +101,7 @@ def get_cached_analysis(file_id: str) -> Optional[dict]:
     path = os.path.join(UPLOAD_DIR, file_id)
     if not os.path.exists(path):
         return cached
-    an = analyze_track(path)
+    an = await heavy(analyze_track, path)
     for keep in ("title", "deck", "audio_url"):
         if cached and keep in cached:
             an[keep] = cached[keep]
@@ -181,7 +189,7 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
             target_id = unquoted
 
     if target_id in ANALYSIS_CACHE:
-        data = dict(await heavy(get_cached_analysis, target_id))
+        data = dict(await get_cached_analysis(target_id))
         data["deck"] = deck
         data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
         return JSONResponse(content={"status": "success", "track": data})
@@ -265,8 +273,8 @@ async def get_ai_recommendation(file_id_1: str, file_id_2: str, direction: str =
     if not os.path.exists(track_1_path) or not os.path.exists(track_2_path):
         raise HTTPException(status_code=404, detail="Tracks not found")
 
-    an1 = await heavy(get_cached_analysis, file_id_1)
-    an2 = await heavy(get_cached_analysis, file_id_2)
+    an1 = await get_cached_analysis(file_id_1)
+    an2 = await get_cached_analysis(file_id_2)
 
     from .dj_engine import ai_analyze_and_recommend_transition
     if direction == "2_to_1":
@@ -426,7 +434,7 @@ async def get_ai_strategy_endpoint(
     fid2 = urllib.parse.unquote(file_id_2)
 
     # 1. Resolve Track 1 Profile
-    an1 = await heavy(get_cached_analysis, fid1) or await heavy(get_cached_analysis, file_id_1)
+    an1 = await get_cached_analysis(fid1) or await get_cached_analysis(file_id_1)
     if not an1:
         p1 = os.path.join(UPLOAD_DIR, fid1)
         if not os.path.exists(p1):
@@ -466,7 +474,7 @@ async def get_ai_strategy_endpoint(
         }
 
     # 2. Resolve Track 2 Profile
-    an2 = await heavy(get_cached_analysis, fid2) or await heavy(get_cached_analysis, file_id_2)
+    an2 = await get_cached_analysis(fid2) or await get_cached_analysis(file_id_2)
     if not an2:
         p2 = os.path.join(UPLOAD_DIR, fid2)
         if not os.path.exists(p2):
@@ -565,8 +573,8 @@ async def render_mix(
     output_path = os.path.join(OUTPUT_DIR, mix_id)
     
     try:
-        info_out = await heavy(get_cached_analysis, os.path.basename(out_path))
-        info_in = await heavy(get_cached_analysis, os.path.basename(in_path))
+        info_out = await get_cached_analysis(os.path.basename(out_path))
+        info_in = await get_cached_analysis(os.path.basename(in_path))
         result = await heavy(
             render_pro_transition,
             track_1_path=out_path,
@@ -640,9 +648,9 @@ async def get_audio(filename: str):
     return FileResponse(path, media_type=media, headers=headers)
 
 @app.get("/api/stretched/{file_id:path}")
-def get_stretched(file_id: str, ratio: float):
+async def get_stretched(file_id: str, ratio: float):
     """The track at `ratio` x tempo with pitch unchanged (keylock), as FLAC.
-    Plain `def` so FastAPI runs the ffmpeg render in its threadpool."""
+    Rendered and kick-aligned in a heavy-job child process."""
     import urllib.parse
     path = os.path.join(UPLOAD_DIR, urllib.parse.unquote(file_id))
     if not os.path.exists(path):
@@ -650,7 +658,7 @@ def get_stretched(file_id: str, ratio: float):
     if not 0.8 <= ratio <= 1.25:
         raise HTTPException(status_code=400, detail="ratio must be within 0.8 - 1.25")
     grid = (ANALYSIS_CACHE.get(urllib.parse.unquote(file_id)) or {}).get("grid")
-    out = _locked(stretch_file, path, round(ratio, 6), STRETCH_DIR, grid)
+    out = await heavy(stretch_file, path, round(ratio, 6), STRETCH_DIR, grid)
     return FileResponse(out, media_type="audio/flac",
                         headers={"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
 
@@ -669,9 +677,9 @@ async def score_transition_endpoint(
     data, sr = sf.read(io.BytesIO(await stems.read()), dtype='float32')
     if data.ndim != 2 or data.shape[1] != 2:
         raise HTTPException(status_code=400, detail="stems must be a 2-channel WAV (outgoing, incoming)")
-    return JSONResponse(content={"status": "success",
-                                 "metrics": score_transition(data[:, 0], data[:, 1], sr, start_sec, end_sec,
-                                                             beat_sec, swap_sec)})
+    metrics = await heavy(score_transition, np.ascontiguousarray(data[:, 0]), np.ascontiguousarray(data[:, 1]),
+                          sr, start_sec, end_sec, beat_sec, swap_sec)
+    return JSONResponse(content={"status": "success", "metrics": metrics})
 
 
 @app.post("/api/grid-adjust")

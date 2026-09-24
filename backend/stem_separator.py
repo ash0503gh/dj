@@ -8,7 +8,8 @@ Supports:
 import os
 import soundfile as sf
 import numpy as np
-import librosa
+from .lazy import LazyModule
+librosa = LazyModule("librosa")
 import gc
 from typing import Dict, Any, Callable, Optional
 
