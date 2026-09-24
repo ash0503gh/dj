@@ -13,6 +13,7 @@ Bucket layout:
 
 import os
 import json
+import uuid
 from typing import Dict, Iterator, Optional, Tuple
 
 BUCKET = os.environ.get("GCS_BUCKET", "").strip()
@@ -42,7 +43,9 @@ def fetch_file(key: str, path: str) -> bool:
         return False
     from google.api_core.exceptions import NotFound
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".part"
+    # Unique per call: on a fresh instance several requests fetch the same track at once, and a
+    # shared temp name let one request rename the file away from under the others
+    tmp = f"{path}.{uuid.uuid4().hex}.part"
     try:
         _b().blob(key).download_to_filename(tmp)
     except NotFound:
