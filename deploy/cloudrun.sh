@@ -27,6 +27,13 @@ echo "==> Enabling APIs"
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com \
   storage.googleapis.com secretmanager.googleapis.com iam.googleapis.com
 
+# New projects no longer give the default compute service account (which Cloud Build uses for
+# source deploys) the permissions it needs to read the uploaded source and push the image
+PROJECT_NUMBER=$(gcloud projects describe "$PROJECT" --format='value(projectNumber)')
+gcloud projects add-iam-policy-binding "$PROJECT" \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/run.builder" --condition=None >/dev/null
+
 echo "==> Bucket gs://$BUCKET (same region as the service: no transfer charges)"
 if ! gcloud storage buckets describe "gs://$BUCKET" >/dev/null 2>&1; then
   gcloud storage buckets create "gs://$BUCKET" --location="$REGION" --uniform-bucket-level-access
