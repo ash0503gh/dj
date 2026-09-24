@@ -131,7 +131,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 6px 8px;
 }
-/* Legend, countdown and zoom float over the top-right of the waveforms */
+/* Legend and mix countdown float over the waveforms */
 .waveform-header {
   position: absolute; top: 4px; left: 6px; right: 6px; z-index: 2;
   display: flex; align-items: center; gap: 12px; pointer-events: none;
@@ -153,13 +153,6 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .phrase-hud-counter { font-family: var(--font-mono); font-size: 13px; color: var(--text); }
 .phrase-hud-meter { width: 160px; height: 4px; background: #1d1d21; border-radius: 2px; overflow: hidden; }
 .phrase-hud-progress { height: 100%; width: 0; background: var(--accent); }
-.wf-controls { display: flex; align-items: center; gap: 4px; margin-left: auto; }
-.phrase-countdown-hud:not(.hidden) + .wf-controls { margin-left: 0; }
-.zoom-tag { font-family: var(--font-mono); font-size: 12px; color: var(--muted); }
-.btn-icon {
-  width: 24px; height: 24px; border-radius: 6px; border: 1px solid var(--line-2);
-  background: #17171a; color: var(--text); font-size: 15px; line-height: 1;
-}
 .waveform-canvas-container { position: relative; display: flex; flex-direction: column; gap: 4px; }
 .waveform-canvas-container canvas { display: block; width: 100%; height: var(--wave-h, 90px); border-radius: 6px; background: var(--bg); }
 .waveform-divider { position: absolute; inset: 0; pointer-events: none; }
@@ -644,7 +637,6 @@ html.landscape-ui .top-nav .btn-outline { height: 30px; padding: 0 10px; font-si
 html.landscape-ui .master-waveform-panel { padding: 4px 6px; border-radius: 8px; }
 html.landscape-ui .waveform-canvas-container { gap: 3px; }
 html.landscape-ui .legend-tag { display: none; }
-html.landscape-ui .btn-icon { width: 22px; height: 22px; }
 
 html.landscape-ui .console-body { grid-template-columns: minmax(0, 1fr) 208px minmax(0, 1fr); gap: 6px; }
 html.landscape-ui .center-mixer { grid-column: auto; order: 0; padding: 8px; gap: 6px; border-radius: 8px; }

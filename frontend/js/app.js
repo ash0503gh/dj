@@ -20,19 +20,25 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastRenderedMix = null;
   let lastTransitionCues = null;
   let lastPerformed = null;
-  let zoomLevel = 1.0;
   let currentAIRec = null;
   let serverHasJev = false;
   let serverHasGemini = false;
 
-  // Auto-unlock AudioContext on first user interaction
+  // iPhones mute web audio with the ring/silent switch unless the page says it plays media
+  // (Audio Session API, Safari 16.4+)
+  if (navigator.audioSession) {
+    try { navigator.audioSession.type = 'playback'; } catch (e) { /* older Safari */ }
+  }
+  // Browsers start audio suspended until a user gesture, and phones suspend it again after the
+  // screen locks or another app takes the audio: resume on any tap/key whenever it isn't running
   const unlockAudio = () => {
-    if (engine.ctx.state === 'suspended') {
-      engine.ctx.resume().then(() => console.log('AudioContext unlocked.'));
+    if (engine.ctx.state !== 'running') {
+      engine.ctx.resume().then(() => console.log('AudioContext running.')).catch(() => {});
     }
   };
-  window.addEventListener('click', unlockAudio, { once: true });
-  window.addEventListener('keydown', unlockAudio, { once: true });
+  ['pointerdown', 'touchend', 'click', 'keydown'].forEach((type) => {
+    window.addEventListener(type, unlockAudio, { capture: true, passive: true });
+  });
 
   // Initialize Waveforms
   const wave1 = new RGBWaveform('canvas-wave-deck1', 1, (targetTime) => {
@@ -128,10 +134,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const d2EqLow = document.getElementById('d2-eq-low');
   const d2Filter = document.getElementById('d2-filter');
 
-  // Waveform Zoom
-  const btnZoomIn = document.getElementById('btn-zoom-in');
-  const btnZoomOut = document.getElementById('btn-zoom-out');
-  const wfZoomLevel = document.getElementById('wf-zoom-level');
 
   // Phrase Countdown HUD
   const phraseHud = document.getElementById('phrase-countdown-hud');
@@ -1257,56 +1259,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       }
     }
-  }
-
-  // --- Zoom Controls ---
-  btnZoomIn.addEventListener('click', () => {
-    if (wave1.mode === 'overview') {
-      wave1.mode = 'scroll';
-      wave2.mode = 'scroll';
-    }
-    zoomLevel = Math.min(4.0, +(zoomLevel + 0.5).toFixed(1));
-    wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
-    wave1.zoom = zoomLevel;
-    wave2.zoom = zoomLevel;
-    wave1.draw();
-    wave2.draw();
-    updateTransitionOverlay();
-  });
-
-  btnZoomOut.addEventListener('click', () => {
-    if (zoomLevel <= 0.5) {
-      wave1.mode = 'overview';
-      wave2.mode = 'overview';
-      wfZoomLevel.textContent = 'FULL';
-    } else {
-      zoomLevel = Math.max(0.5, +(zoomLevel - 0.5).toFixed(1));
-      wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
-      wave1.zoom = zoomLevel;
-      wave2.zoom = zoomLevel;
-    }
-    wave1.draw();
-    wave2.draw();
-    updateTransitionOverlay();
-  });
-
-  if (wfZoomLevel) {
-    wfZoomLevel.style.cursor = 'pointer';
-    wfZoomLevel.title = 'Click to toggle SCROLL / FULL OVERVIEW';
-    wfZoomLevel.addEventListener('click', () => {
-      if (wave1.mode === 'scroll') {
-        wave1.mode = 'overview';
-        wave2.mode = 'overview';
-        wfZoomLevel.textContent = 'FULL';
-      } else {
-        wave1.mode = 'scroll';
-        wave2.mode = 'scroll';
-        wfZoomLevel.textContent = `${zoomLevel.toFixed(1)}x`;
-      }
-      wave1.draw();
-      wave2.draw();
-      updateTransitionOverlay();
-    });
   }
 
   // --- Transport Controls ---
@@ -2653,20 +2605,6 @@ document.addEventListener('DOMContentLoaded', () => {
         crossfader.value = 50;
         engine.setCrossfader(50, 'club');
         flashButton('#crossfader');
-        break;
-
-      case 'Equal': // Waveform Zoom In (+)
-      case 'NumpadAdd':
-        e.preventDefault();
-        flashButton('#btn-zoom-in');
-        btnZoomIn.click();
-        break;
-
-      case 'Minus': // Waveform Zoom Out (-)
-      case 'NumpadSubtract':
-        e.preventDefault();
-        flashButton('#btn-zoom-out');
-        btnZoomOut.click();
         break;
 
       case 'KeyX': // Export Mix
