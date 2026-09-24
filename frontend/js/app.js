@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let isTransitioning = false;
   let lastRenderedMix = null;
   let lastTransitionCues = null;
+  let lastPerformed = null;
   let zoomLevel = 1.0;
   let currentAIRec = null;
   let serverHasJev = false;
@@ -2122,6 +2123,11 @@ document.addEventListener('DOMContentLoaded', () => {
       inDeck.audio.useBuffer(inDeck.audio.nativeBuffer, 1.0);
     }
     setPitchReadout(t.inDeckNum);
+    // Everything needed to re-render exactly this blend for export (in the browser)
+    const side = deck => ({ buffer: deck.audio.buffer, tempoRatio: deck.audio.tempoRatio,
+                            rate: deck.audio.playbackRate, trimDb: deck.trimDb || 0 });
+    lastPerformed = t.blend ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
+                                blueprint: t.blueprint, technique: t.tech } : null;
     if (t.blend) runBlend(t); else runCut(t);
   }
 
@@ -2319,6 +2325,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (!track1Data || !track2Data) {
       alert('Please load both Deck 1 and Deck 2 first!');
+      return;
+    }
+
+    // A blend that was just performed is re-rendered in the browser with the same buffers,
+    // plan and automation: the export is exactly what was heard, and costs the server nothing.
+    if (lastPerformed) {
+      transitionStatusBanner.textContent = 'RENDERING THE PERFORMED TRANSITION (.WAV)...';
+      btnExportMix.disabled = true;
+      try {
+        const res = await TransitionLab.exportPerformed(lastPerformed);
+        const p = lastPerformed.plan;
+        lastRenderedMix = {
+          technique: lastPerformed.blueprint ? 'ai_blueprint_blend' : lastPerformed.technique,
+          total_duration: Math.round(res.duration * 100) / 100,
+          bars: p.bars + (p.tailBars || 0),
+          mix_start_sec: Math.round(res.marks.start * 100) / 100,
+          mix_end_sec: Math.round(res.marks.end * 100) / 100,
+          mix_swap_sec: Math.round(res.marks.swap * 100) / 100,
+          pitch_shift_semitones: 0,
+          camelot_compatibility: null,
+          mix_url: URL.createObjectURL(res.blob),
+        };
+        showMixModal(lastRenderedMix);
+        transitionStatusBanner.textContent = 'TRANSITION EXPORTED: EXACTLY WHAT WAS PLAYED';
+      } catch (e) {
+        console.error(e);
+        alert('Export failed: ' + e.message);
+      } finally {
+        btnExportMix.disabled = false;
+      }
       return;
     }
 

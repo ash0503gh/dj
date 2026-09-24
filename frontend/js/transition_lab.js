@@ -56,6 +56,44 @@ const TransitionLab = (() => {
   const near = (list, t, tol = 0.05) => (list || []).some(x => Math.abs(x - t) < tol);
 
   /**
+   * Render a planned blend offline with the live deck graph and automation.
+   * side: { buffer, tempoRatio, rate, trimDb } for each deck (buffer = what the deck plays).
+   * The outgoing deck is `preroll` seconds before the plan's start at ctx time 0.
+   * stems: channel 0 = outgoing, channel 1 = incoming; otherwise a normal stereo mix.
+   */
+  async function renderBlend({ out, inc, plan, blueprint = null, sr = SR, preroll = 16, tail = 16, stems = false }) {
+    const p = Object.assign({}, plan, { startCtx: preroll });
+    const outSpeed = out.tempoRatio * out.rate;
+    const ctx = new OfflineAudioContext(2, Math.ceil((preroll + p.blendSec + tail) * sr), sr);
+    let busOut, busIn;
+    if (stems) {
+      const merger = ctx.createChannelMerger(2);
+      merger.connect(ctx.destination);
+      busOut = ctx.createGain();
+      busIn = ctx.createGain();
+      busOut.connect(merger, 0, 0);
+      busIn.connect(merger, 0, 1);
+    } else {
+      busOut = busIn = ctx.createGain();
+      busOut.connect(ctx.destination);
+    }
+    const decks = [[new DJDeckAudio(ctx, 1, busOut), out], [new DJDeckAudio(ctx, 2, busIn), inc]];
+    for (const [deck, side] of decks) {
+      deck.audio.buffer = side.buffer;
+      deck.audio.nativeBuffer = { duration: side.buffer.duration * side.tempoRatio };
+      deck.audio.tempoRatio = side.tempoRatio;
+      deck.audio.playbackRate = side.rate;
+      MixPlanner.setTrim(deck, side.trimDb || 0, 0);
+    }
+    const [outDeck, inDeck] = [decks[0][0], decks[1][0]];
+    outDeck.audio.play(0, p.exitNative - preroll * outSpeed);
+    inDeck.audio.play(p.startCtx, p.inStartNative);
+    const marks = blueprint ? MixPlanner.scheduleBlueprint(blueprint, p, outDeck, inDeck)
+                            : MixPlanner.scheduleBlend(p, outDeck, inDeck);
+    return { rendered: await ctx.startRendering(), marks };
+  }
+
+  /**
    * opts: { outId, inId, bars=16, outStart (native s where the outgoing deck is when the plan
    *         is made; default 24 s before its suggested outro), blueprint (optional AI blueprint) }
    */
@@ -82,37 +120,33 @@ const TransitionLab = (() => {
     }
     const stretchMs = Math.round(performance.now() - t0);
 
-    const tail = 16;
-    const len = Math.ceil((p.startCtx + p.blendSec + tail) * SR);
-    const ctx = new OfflineAudioContext(2, len, SR);
-    const merger = ctx.createChannelMerger(2);
-    merger.connect(ctx.destination);
-    const busOut = ctx.createGain();
-    const busIn = ctx.createGain();
-    busOut.connect(merger, 0, 0);
-    busIn.connect(merger, 0, 1);
-    const outDeck = new DJDeckAudio(ctx, 1, busOut);
-    const inDeck = new DJDeckAudio(ctx, 2, busIn);
-    outDeck.audio.nativeBuffer = outDeck.audio.buffer = outBuf;
-    inDeck.audio.nativeBuffer = inDeck.audio.buffer = inBuf;
-    if (stretched) inDeck.audio.useBuffer(stretched, p.tempoRatio);
-
-    outDeck.audio.play(0, outStart);
-    let marks;
+    let rendered, marks;
     if (blend) {
-      inDeck.audio.play(p.startCtx, p.inStartNative);
-      marks = opts.blueprint
-        ? MixPlanner.scheduleBlueprint(opts.blueprint, p, outDeck, inDeck)
-        : MixPlanner.scheduleBlend(p, outDeck, inDeck);
+      ({ rendered, marks } = await renderBlend({
+        out: { buffer: outBuf, tempoRatio: 1, rate: 1 },
+        inc: { buffer: stretched || inBuf, tempoRatio: stretched ? p.tempoRatio : 1, rate: 1 },
+        plan: p, blueprint: opts.blueprint, preroll: p.startCtx, stems: true,
+      }));
     } else {
-      const intro = inTrack.suggested_cue_intro || 0;
+      const ctx = new OfflineAudioContext(2, Math.ceil((p.startCtx + p.blendSec + 16) * SR), SR);
+      const merger = ctx.createChannelMerger(2);
+      merger.connect(ctx.destination);
+      const busOut = ctx.createGain();
+      const busIn = ctx.createGain();
+      busOut.connect(merger, 0, 0);
+      busIn.connect(merger, 0, 1);
+      const outDeck = new DJDeckAudio(ctx, 1, busOut);
+      const inDeck = new DJDeckAudio(ctx, 2, busIn);
+      outDeck.audio.nativeBuffer = outDeck.audio.buffer = outBuf;
+      inDeck.audio.nativeBuffer = inDeck.audio.buffer = inBuf;
+      outDeck.audio.play(0, outStart);
       MixPlanner.neutral(inDeck, p.startCtx - 0.05, 1);
       MixPlanner.setTrim(inDeck, p.inTrimDb || 0, p.startCtx - 0.05);
-      inDeck.audio.play(p.startCtx, intro);
+      inDeck.audio.play(p.startCtx, inTrack.suggested_cue_intro || 0);
       MixPlanner.cutAt(outDeck, p.startCtx);
       marks = { start: p.startCtx, swap: p.startCtx, end: p.startCtx + 4 * p.beatSec };
+      rendered = await ctx.startRendering();
     }
-    const rendered = await ctx.startRendering();
 
     const form = new FormData();
     form.append('stems', wav16(rendered), 'stems.wav');
@@ -149,7 +183,15 @@ const TransitionLab = (() => {
     };
   }
 
-  return { run };
+  /** Export the blend that was just performed live: same buffers, plan and automation, 44.1 kHz. */
+  async function exportPerformed(L) {
+    const { rendered, marks } = await renderBlend({
+      out: L.out, inc: L.inc, plan: L.plan, blueprint: L.blueprint, sr: 44100, preroll: 16, tail: 16,
+    });
+    return { blob: wav16(rendered), duration: rendered.duration, marks };
+  }
+
+  return { run, renderBlend, exportPerformed };
 })();
 
 window.TransitionLab = TransitionLab;

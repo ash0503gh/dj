@@ -73,11 +73,15 @@ def measure_offset(src: str, stretched: str, ratio: float, grid: dict):
     beats = first + period * np.arange(4, n - 4)
     # Only beats with a real kick: pads and basslines stretch differently from transients
     from scipy.signal import butter, sosfiltfilt
-    lo = np.abs(sosfiltfilt(butter(4, 200, btype='low', fs=sr, output='sos'), yn.astype(np.float64)))
-    w = int(0.03 * sr)
-    idx = (beats * sr).astype(int)
-    rise = np.array([lo[i:i + w].max() - lo[max(0, i - w):i].mean() if i + w < len(lo) else 0.0 for i in idx])
-    del lo
+    sos = butter(4, 200, btype='low', fs=sr, output='sos')
+    w, pad = int(0.03 * sr), int(0.05 * sr)
+    rise = np.zeros(len(beats))
+    for j, i in enumerate((beats * sr).astype(int)):
+        if i - w - pad < 0 or i + w + pad > len(yn):
+            continue
+        # filter a short window per beat (filtering the whole track in float64 cost ~200 MB)
+        seg = np.abs(sosfiltfilt(sos, yn[i - w - pad:i + w + pad].astype(np.float64)))
+        rise[j] = seg[pad + w:pad + 2 * w].max() - seg[pad:pad + w].mean()
     beats = beats[rise >= np.percentile(rise, 50)]
     native = _refine_beat_offset(yn, sr, beats, period)
     del yn

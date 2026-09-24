@@ -1406,14 +1406,18 @@ def render_pro_transition(
             pre_drop_1 = mid_1[:, sweep_start:swap_sample]
             mid_1[:, sweep_start:swap_sample] = apply_hpf_sweep(pre_drop_1, sr, 20.0, 1000.0)
             
-        proc_1 = (low_1 * low_fade_1) + (mid_1 * mid_fade_1) + (high_1 * high_fade_1)
-        proc_2 = (low_2 * low_fade_2) + (mid_2 * mid_fade_2) + (high_2 * high_fade_2)
-        
+        # float32 and freed as soon as used: every band/fade kept alive at once cost ~250 MB
+        proc_1 = ((low_1 * low_fade_1) + (mid_1 * mid_fade_1) + (high_1 * high_fade_1)).astype(np.float32)
+        del low_1, mid_1, high_1, low_fade_1, mid_fade_1, high_fade_1
+        proc_2 = ((low_2 * low_fade_2) + (mid_2 * mid_fade_2) + (high_2 * high_fade_2)).astype(np.float32)
+        del low_2, mid_2, high_2, low_fade_2, mid_fade_2, high_fade_2
+
         # Reverb Washout on Track 1 exit
         exit_chunk = s1_trans[:, max(0, swap_sample - int(0.5*sr)):swap_sample]
         reverb_wash = apply_reverb_delay_tail(exit_chunk, sr, delay_sec=seconds_per_beat_1 * 0.75, decay=0.45, feedback_count=4)
-        
+
         mixed_trans = proc_1 + proc_2
+        del proc_1, proc_2
         wash_len = min(reverb_wash.shape[1], mixed_trans.shape[1] - swap_sample)
         if wash_len > 0:
             mixed_trans[:, swap_sample:swap_sample+wash_len] += reverb_wash[:, :wash_len] * 0.35
@@ -1428,7 +1432,10 @@ def render_pro_transition(
 
     # Apply soft limiter to master mix
     if progress_cb: progress_cb(0.90, "Applying peak limiter and exporting 24-bit WAV...")
-    master_mix = soft_limit(master_mix.astype(np.float32, copy=False), threshold=0.96)
+    master_mix = master_mix.astype(np.float32, copy=False)
+    del y1, y2
+    gc.collect()
+    master_mix = soft_limit(master_mix, threshold=0.96)
     
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     sf.write(output_path, master_mix.T, sr, subtype='PCM_16')
