@@ -941,6 +941,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const now = engine.ctx.currentTime;
     MixPlanner.holdAutomation(t.outDeck, now);
     MixPlanner.holdAutomation(t.inDeck, now);
+    // The isolator bass kill has no knob: hand it over to the visible LOW EQ (killed) so the DJ
+    // can bring the bass back
+    [[t.outDeckNum, t.outDeck], [t.inDeckNum, t.inDeck]].forEach(([n, deck]) => {
+      if (deck.lowCut1.frequency.value > 100) {
+        applyDeckEQ(n, 'low', -24, true, true);
+        deck.eqLow.gain.cancelScheduledValues(now);
+        deck.eqLow.gain.setValueAtTime(-24, now);
+        [deck.lowCut1, deck.lowCut2].forEach(f => f.frequency.setValueAtTime(10, now + 0.02));
+      }
+    });
     isTransitioning = false;
     btnTriggerTransition.classList.remove('in-transition');
     phraseHud.classList.add('hidden');
@@ -1269,6 +1279,12 @@ document.addEventListener('DOMContentLoaded', () => {
         transitionStatusBanner.textContent = 'DECK 1: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
         return;
       }
+      if (!engine.deck1.audio.buffer) {
+        // Still downloading/decoding: start as soon as it's ready instead of dropping the press
+        d1BtnPlay.textContent = '… LOADING';
+        transitionStatusBanner.textContent = 'DECK 1: LOADING AUDIO, WILL START WHEN READY...';
+        await engine.deck1.audio.loaded;
+      }
       let when = null, startPos = null;
       if (isDeck1SyncLocked && engine.deck2.isPlaying && track1Data && track2Data) {
         when = engine.ctx.currentTime + 0.05;
@@ -1296,6 +1312,12 @@ document.addEventListener('DOMContentLoaded', () => {
       if (!engine.deck2.audio.src || engine.deck2.audio.src === window.location.href) {
         transitionStatusBanner.textContent = 'DECK 2: PLEASE LOAD A TRACK FIRST (CLICK UPLOAD OR CHOOSE PRESET)';
         return;
+      }
+      if (!engine.deck2.audio.buffer) {
+        // Still downloading/decoding: start as soon as it's ready instead of dropping the press
+        d2BtnPlay.textContent = '… LOADING';
+        transitionStatusBanner.textContent = 'DECK 2: LOADING AUDIO, WILL START WHEN READY...';
+        await engine.deck2.audio.loaded;
       }
       let when = null, startPos = null;
       if (isDeck2SyncLocked && engine.deck1.isPlaying && track1Data && track2Data) {
@@ -1356,8 +1378,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (el) el.textContent = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
   }
 
-  /** SYNC: match the other deck's effective tempo exactly, then snap phase on the audio clock. */
-  function engageSync(slaveNum) {
+  /** SYNC: match the other deck's effective tempo exactly, then snap phase on the audio clock.
+   *  snap=false only re-matches the rate (both rates change at the same instant, so the phase
+   *  lock is kept without restarting playback). */
+  function engageSync(slaveNum, snap = true) {
     const slaveDeck = (slaveNum === 1) ? engine.deck1 : engine.deck2;
     const masterDeck = (slaveNum === 1) ? engine.deck2 : engine.deck1;
     const slaveTrack = (slaveNum === 1) ? track1Data : track2Data;
@@ -1365,7 +1389,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const rate = MixPlanner.deckBpm(masterTrack, masterDeck) / (slaveTrack.bpm * slaveDeck.audio.tempoRatio);
     slaveDeck.setPlaybackRate(rate);
     setPitchReadout(slaveNum);
-    if (masterDeck.isPlaying && slaveDeck.isPlaying) {
+    if (snap && masterDeck.isPlaying && slaveDeck.isPlaying) {
       const when = engine.ctx.currentTime + 0.05;
       slaveDeck.play(when, alignedPosition(masterDeck, masterTrack, slaveDeck, slaveTrack, when));
     }
@@ -1418,6 +1442,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const pct = parseFloat(e.target.value);
     engine.deck1.setPlaybackRate(1 + (pct / 100));
     setPitchReadout(1);
+    if (isDeck2SyncLocked) engageSync(2, false);  // synced deck follows the master's tempo
   });
   d2TempoFader.addEventListener('input', (e) => {
     if (isDeck2SyncLocked) {
@@ -1427,6 +1452,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const pct = parseFloat(e.target.value);
     engine.deck2.setPlaybackRate(1 + (pct / 100));
     setPitchReadout(2);
+    if (isDeck1SyncLocked) engageSync(1, false);  // synced deck follows the master's tempo
   });
 
   // --- Master 3-Band EQ & Kill Engine ---
@@ -1599,7 +1625,8 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.grid-nudge-strip').forEach(strip => {
     const deckNum = parseInt(strip.dataset.deck, 10);
     strip.querySelectorAll('.btn-grid').forEach(btn => {
-      btn.addEventListener('click', async () => {
+      btn.addEventListener('click', async (ev) => {
+        const dir = ev.shiftKey ? -1 : 1;  // Shift-click moves the downbeat / phrase backwards
         const track = (deckNum === 1) ? track1Data : track2Data;
         if (!track || !track.grid) {
           transitionStatusBanner.textContent = `DECK ${deckNum}: NO ANALYZED GRID YET`;
@@ -1612,8 +1639,8 @@ document.addEventListener('DOMContentLoaded', () => {
             body: JSON.stringify({
               file_id: track.file_id,
               shift_ms: parseFloat(btn.dataset.shiftMs || 0),
-              shift_beats: parseInt(btn.dataset.shiftBeats || 0, 10),
-              shift_bars: parseInt(btn.dataset.shiftBars || 0, 10),
+              shift_beats: dir * parseInt(btn.dataset.shiftBeats || 0, 10),
+              shift_bars: dir * parseInt(btn.dataset.shiftBars || 0, 10),
             }),
           });
           if (!res.ok) throw new Error(`Server returned ${res.status}`);
@@ -1812,7 +1839,7 @@ document.addEventListener('DOMContentLoaded', () => {
         phraseHudCounter.textContent = `IN ON THE 1: ${Math.floor(beats / 4)} BARS (${Math.floor(beats % 4) + 1}/4)`;
         phraseHudProgress.style.width = `${(100 * (1 - remain / total0)).toFixed(1)}%`;
         transitionStatusBanner.textContent = `🎯 ${label} → ${t.inName} IN ${remain.toFixed(1)}s ` +
-          `@ ${p.masterBpm.toFixed(2)} BPM${p.vocalClash ? ' (VOCAL CLASH: MIDS SWAP WITH BASS)' : ''}`;
+          `@ ${p.masterBpm.toFixed(2)} BPM${t.blend && p.vocalClash ? ' (VOCAL CLASH: MIDS SWAP WITH BASS)' : ''}`;
       } else {
         phraseHud.classList.add('hidden');
         if (t.blend && t.marks) {
