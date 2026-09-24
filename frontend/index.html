@@ -2,14 +2,22 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=13.2">
+  <link rel="stylesheet" href="/css/style.css?v=13.3">
 </head>
 <body>
   <div class="dj-console">
+
+    <!-- Phones held upright: suggest the landscape console -->
+    <div id="rotate-hint" class="rotate-hint" role="note">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M3 9a9 9 0 0 1 4-5M21 15a9 9 0 0 1-4 5"/></svg>
+      <span id="rotate-hint-text">Turn your phone sideways for the full console.</span>
+      <button type="button" id="btn-landscape" class="btn btn-outline">SWITCH TO LANDSCAPE</button>
+      <button type="button" id="btn-rotate-close" class="btn-close" aria-label="Dismiss">&times;</button>
+    </div>
 
     <!-- ═══ Top bar ═══ -->
     <header class="top-nav">
@@ -30,12 +38,14 @@
         <span id="phase-status" class="phase-status">±0.0 ms (STANDBY)</span>
       </div>
 
-      <div class="nav-stat">
+      <div class="nav-stat nav-key">
         <span class="nav-label">KEY MATCH</span>
         <span id="camelot-status" class="val-pill">READY</span>
       </div>
 
       <div class="nav-spacer"></div>
+
+      <button type="button" id="btn-mini-trigger" class="btn mini-trigger" aria-label="Trigger transition">MIX</button>
 
       <button type="button" id="btn-ai-copilot" class="ai-engine-chip" title="AI co-pilot strategy and engine settings">
         <span class="engine-dot"></span>
@@ -107,18 +117,17 @@
             </div>
           </details>
           <span id="d1-state" class="deck-state">EMPTY</span>
-        </div>
-
-        <div class="deck-source">
-          <label class="visually-hidden" for="d1-quick-select">Library track for deck A</label>
-          <select id="d1-quick-select" class="track-select-dropdown">
-            <option value="">Choose a track…</option>
-          </select>
-          <button type="button" id="d1-btn-upload" class="btn-upload">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
-            UPLOAD
-          </button>
-          <input type="file" id="d1-file-input" accept="audio/*" hidden>
+          <div class="deck-source">
+            <label class="visually-hidden" for="d1-quick-select">Library track for deck A</label>
+            <select id="d1-quick-select" class="track-select-dropdown">
+              <option value="">Choose a track…</option>
+            </select>
+            <button type="button" id="d1-btn-upload" class="btn-upload">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
+              UPLOAD
+            </button>
+            <input type="file" id="d1-file-input" accept="audio/*" hidden>
+          </div>
         </div>
 
         <div class="lcd-screen">
@@ -273,18 +282,17 @@
             </div>
           </details>
           <span id="d2-state" class="deck-state">EMPTY</span>
-        </div>
-
-        <div class="deck-source">
-          <label class="visually-hidden" for="d2-quick-select">Library track for deck B</label>
-          <select id="d2-quick-select" class="track-select-dropdown">
-            <option value="">Choose a track…</option>
-          </select>
-          <button type="button" id="d2-btn-upload" class="btn-upload">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
-            UPLOAD
-          </button>
-          <input type="file" id="d2-file-input" accept="audio/*" hidden>
+          <div class="deck-source">
+            <label class="visually-hidden" for="d2-quick-select">Library track for deck B</label>
+            <select id="d2-quick-select" class="track-select-dropdown">
+              <option value="">Choose a track…</option>
+            </select>
+            <button type="button" id="d2-btn-upload" class="btn-upload">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
+              UPLOAD
+            </button>
+            <input type="file" id="d2-file-input" accept="audio/*" hidden>
+          </div>
         </div>
 
         <div class="lcd-screen">
@@ -555,12 +563,13 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=13.2"></script>
-  <script src="/js/mix_planner.js?v=13.2"></script>
-  <script src="/js/transition_lab.js?v=13.2"></script>
-  <script src="/js/jog_wheel.js?v=13.2"></script>
-  <script src="/js/waveform.js?v=13.2"></script>
-  <script src="/js/knobs.js?v=13.2"></script>
-  <script src="/js/app.js?v=13.2"></script>
+  <script src="/js/audio_engine.js?v=13.3"></script>
+  <script src="/js/mix_planner.js?v=13.3"></script>
+  <script src="/js/transition_lab.js?v=13.3"></script>
+  <script src="/js/jog_wheel.js?v=13.3"></script>
+  <script src="/js/waveform.js?v=13.3"></script>
+  <script src="/js/knobs.js?v=13.3"></script>
+  <script src="/js/mobile.js?v=13.3"></script>
+  <script src="/js/app.js?v=13.3"></script>
 </body>
 </html>

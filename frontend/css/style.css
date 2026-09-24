@@ -92,6 +92,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .nav-bpm { font-family: var(--font-mono); font-weight: 700; font-size: 20px; }
 .nav-unit { font-size: 11px; color: var(--muted); }
 .nav-spacer { flex-grow: 1; }
+.mini-trigger { display: none; }
+.rotate-hint { display: none; }
 
 .phase-meter-hud {
   flex-shrink: 0; display: flex; align-items: center; gap: 10px; padding: 6px 12px;
@@ -193,7 +195,9 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .deck-1 { --deck: var(--deck-a); --deck-bg: var(--deck-a-bg); }
 .deck-2 { --deck: var(--deck-b); --deck-bg: var(--deck-b-bg); }
 .deck-panel.drag-over { border-color: var(--deck); border-style: dashed; }
-.deck-top { display: flex; gap: 12px; align-items: flex-start; }
+.deck-top { display: flex; flex-wrap: wrap; column-gap: 12px; row-gap: 10px; align-items: flex-start; }
+.deck-top > .track-meta { flex: 1 1 0; min-width: 0; }
+.deck-top > .deck-source { order: 4; flex-basis: 100%; min-width: 0; }
 .deck-badge {
   width: 34px; height: 34px; flex-shrink: 0; border-radius: 6px; background: var(--deck); color: #0b0b0c;
   font-family: var(--font-cond); font-weight: 700; font-size: 22px;
@@ -602,4 +606,105 @@ kbd {
   .tech-more-list { width: min(420px, calc(100vw - 48px)); }
   .tb-trigger-row { flex-wrap: wrap; }
   .waveform-header { flex-wrap: wrap; height: auto; }
+}
+
+/* ── Phones held upright: tip to turn sideways ─────────────── */
+@media (orientation: portrait) and (max-width: 600px) {
+  .rotate-hint {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 0;
+    padding: 10px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line-2);
+    color: var(--text-2); font-size: 13px;
+  }
+  .rotate-hint > span { flex: 1 1 160px; }
+  .rotate-hint .btn { height: 32px; font-size: 12px; }
+  .rotate-hint .btn-close { width: 32px; height: 32px; }
+}
+
+/* ── Phones and small tablets held sideways: decks and mixer side by side ── */
+@media (orientation: landscape) and (max-height: 520px) {
+  .dj-console {
+    --wave-h: 40px; --jog: 84px; max-width: none; gap: 6px;
+    padding: 0 max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left));
+  }
+  .top-nav { height: 40px; margin: 0 -8px; padding: 0 12px; gap: 12px; flex-wrap: nowrap; }
+  .brand-name, .nav-key, .ai-engine-chip, #btn-shortcuts, .nav-stat .nav-label, .nav-unit { display: none; }
+  .nav-bpm { font-size: 16px; }
+  .phase-meter-hud { padding: 3px 8px; gap: 6px; }
+  .phase-meter-hud .nav-label { display: none; }
+  .phase-bar-track { width: 64px; }
+  .phase-status { min-width: 0; font-size: 11px; }
+  .nav-spacer { display: block; }
+  .mini-trigger {
+    display: inline-flex; height: 30px; padding: 0 16px; border: none; border-radius: 6px;
+    background: var(--accent); color: #1a0d00; font-family: var(--font-cond); font-size: 16px; letter-spacing: 0.12em;
+  }
+  .mini-trigger.in-transition { background: #3a2412; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+  .top-nav .btn-outline { height: 30px; padding: 0 10px; font-size: 11px; }
+
+  .master-waveform-panel { padding: 4px 6px; border-radius: 8px; }
+  .waveform-canvas-container { gap: 3px; }
+  .legend-tag { display: none; }
+  .btn-icon { width: 22px; height: 22px; }
+
+  .console-body { grid-template-columns: minmax(0, 1fr) 208px minmax(0, 1fr); gap: 6px; }
+  .center-mixer { grid-column: auto; order: 0; padding: 8px; gap: 6px; border-radius: 8px; }
+
+  .deck-panel { padding: 8px; gap: 5px; border-radius: 8px; }
+  .deck-top { flex-wrap: nowrap; align-items: center; column-gap: 6px; }
+  .deck-top > .track-meta { display: none; }
+  .deck-top > .deck-source { order: 0; flex: 1 1 auto; min-width: 0; gap: 4px; }
+  .deck-badge { width: 24px; height: 24px; font-size: 16px; border-radius: 5px; }
+  .track-select-dropdown { height: 26px; font-size: 12px; padding: 0 6px; }
+  .btn-upload { height: 26px; padding: 0 7px; font-size: 0; gap: 0; }
+  .grid-menu > summary, .deck-state { font-size: 9px; padding: 2px 5px; }
+  .lcd-screen { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+  .lcd-screen .lcd-item:nth-child(4) { display: none; }
+  .lcd-item { padding: 2px 7px; border-radius: 5px; }
+  .lcd-label { font-size: 8px; }
+  .lcd-val { font-size: 15px; }
+  .deck-interaction-row { min-height: var(--jog); gap: 16px; }
+  .tempo-slider-wrap { height: var(--jog); gap: 2px; }
+  .tempo-name { display: none; }
+  .tempo-sign { font-size: 10px; }
+  .fader-tempo { width: 28px; }
+  .fader-v { --cap-h: 14px; }
+  .jog-center { width: 34px; height: 34px; margin: -17px 0 0 -17px; }
+  .jog-deck-num { font-size: 15px; }
+  .hot-cue-strip { gap: 4px; }
+  .btn-hot-cue { height: 24px; font-size: 9px; gap: 3px; border-radius: 5px; }
+  .transport-strip { gap: 4px; }
+  .transport-spacer { display: none; }
+  .btn-transport { flex: 1; width: auto; height: 30px; font-size: 12px; border-radius: 6px; }
+  .btn-transport.btn-play { font-size: 0; }
+  .btn-play::before { width: 12px; height: 13px; }
+  .btn-play.playing::before { width: 11px; height: 12px; }
+
+  .mixer-header { font-size: 9px; }
+  .mixer-body { gap: 6px; }
+  .channel-strip { gap: 4px; }
+  .knob-group { display: grid; grid-template-columns: 28px auto; column-gap: 4px; row-gap: 1px; align-items: center; }
+  .knob-group .knob { grid-row: span 2; width: 28px; height: 28px; }
+  .knob-cap { inset: 3px; border-width: 1px; }
+  .knob-cap::after { top: 1px; height: 7px; }
+  .knob-label { font-size: 8px; }
+  .btn-kill { height: 14px; padding: 0 4px; font-size: 7px; border-radius: 3px; }
+  .mixer-center { padding: 6px; gap: 6px; }
+  .fader-row { gap: 8px; }
+  .fader-channel { width: 26px; }
+  .master-meter-strip { gap: 2px; padding: 3px 0; }
+  .vu-bar { width: 7px; }
+  .pfl-row { gap: 4px; }
+  .btn-pfl-cue { height: 20px; padding: 0 5px; font-size: 8px; white-space: nowrap; }
+  .crossfader-section { gap: 0; }
+  .crossfader-track { gap: 6px; }
+  .cf-label { display: none; }
+  .fader-h { height: 24px; --cap-w: 18px; }
+
+  .transition-bar { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); padding: 8px 10px; gap: 10px; border-radius: 8px; }
+  .tb-controls { grid-column: 1 / -1; }
+  .tb-divider { display: none; }
+  .tech-more-list, .opt-toggles { bottom: auto; top: calc(100% + 6px); }
+  .btn-pro-mix { height: 44px; }
+  .bars-selector .pill { height: 44px; width: 44px; }
+  .status-banner { font-size: 16px; }
 }
