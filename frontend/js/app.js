@@ -559,7 +559,7 @@ document.addEventListener('DOMContentLoaded', () => {
           currentTrack.acoustic_profile = sTrack.acoustic_profile || currentTrack.acoustic_profile;
           currentTrack.file_id = sTrack.file_id || currentTrack.file_id;
           ['grid', 'phrase_32_times', 'drop_times', 'section_boundaries', 'section_map',
-           'bar_low_db', 'loudness_db'].forEach(k => {
+           'bar_low_db', 'loudness_db', 'vocal_source'].forEach(k => {
             if (sTrack[k]) currentTrack[k] = sTrack[k];
           });
           currentTrack.hot_cues = computeTrackHotCues(currentTrack);

@@ -8,6 +8,7 @@ import uuid
 import json
 import shutil
 import gc
+import hashlib
 import asyncio
 import functools
 import multiprocessing
@@ -270,6 +271,14 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
     data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
     return JSONResponse(content={"status": "success", "track": data})
 
+def _sha1_file(path: str) -> str:
+    h = hashlib.sha1()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 @app.post("/api/upload")
 async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1")):
     """Uploads an audio file, analyzes BPM, Key, Beatgrid, and Waveform."""
@@ -298,6 +307,17 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
 
         with open(save_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
+        digest = await run_in_threadpool(_sha1_file, save_path)
+
+        # The same audio uploaded again: its analysis (and Gemini's vocal labels) still hold, so
+        # don't analyze it, listen to it or store it again
+        cached = ANALYSIS_CACHE.get(file_id)
+        if not cached and storage.enabled():
+            cached = await run_in_threadpool(storage.get_json, f"analysis/{file_id}.json")
+        if (cached and cached.get("content_sha1") == digest
+                and cached.get("analysis_version") == ANALYSIS_VERSION):
+            return JSONResponse(content={"status": "success", "track": cached})
+
         # Cloud Run: keep the audio in the bucket so it survives restarts (a library, not a deck slot)
         await run_in_threadpool(storage.put_file, f"uploads/{file_id}", save_path)
 
@@ -307,6 +327,7 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         analysis["title"] = clean_name
         analysis["deck"] = deck
         analysis["audio_url"] = f"/api/audio/{urllib.parse.quote(file_id)}"
+        analysis["content_sha1"] = digest
 
         await persist_analysis(file_id, analysis)
 
