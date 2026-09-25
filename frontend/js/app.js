@@ -1825,6 +1825,13 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    // The deck on air is the one mixed out: with only one deck playing, the direction follows it (mixing
+    // from a stopped deck would restart it and re-cue the track on air)
+    if (engine.deck1.isPlaying !== engine.deck2.isPlaying) {
+      const onAir = engine.deck1.isPlaying ? '1_to_2' : '2_to_1';
+      if (transitionDirection !== onAir) setTransitionDirection(onAir);
+    }
+
     const isDir1to2 = (transitionDirection === '1_to_2');
     const t = {
       outTrack: isDir1to2 ? track1Data : track2Data,
