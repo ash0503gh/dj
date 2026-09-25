@@ -22,6 +22,7 @@ const MixBlocks = (() => {
   const ECHO_TAIL_BEATS = 8;
   const REVERB_TAIL_SEC = 3.0;   // roomImpulse() length (audio_engine.js)
   const FX_BEATS = { brake: 2, spinback: 2 };   // a vinyl brake or a spinback takes the last two beats
+  const LAST_RESORT = new Set(['brake', 'spinback']);   // showy exits a DJ keeps for when nothing mixes cleanly
 
   // ── Moves on one deck ──
 
@@ -379,6 +380,12 @@ const MixBlocks = (() => {
     return `tempo-gap switch: ${before}, incoming lands ${where}; ${after}`;
   }
 
+  /** A move a DJ only makes when no clean mix is on offer (a brake or a spinback out). */
+  function lastResort(p) {
+    const s = p.style || defaultStyle(p);
+    return s.kind === 'gap' && LAST_RESORT.has(s.after);
+  }
+
   /** Feature keys the DJ's ratings are kept under. 'handover' mixes hand the floor over gradually
    *  (blends, washes); 'switch' mixes change track at one moment. */
   function prefKeys(p) {
@@ -390,7 +397,8 @@ const MixBlocks = (() => {
     return keys;
   }
 
-  return { perform, preSec, postSec, variants, defaultStyle, label, describe, prefKeys, vocalCut, vocalRunEnds };
+  return { perform, preSec, postSec, variants, defaultStyle, label, describe, prefKeys, lastResort, vocalCut,
+           vocalRunEnds };
 })();
 
 window.MixBlocks = MixBlocks;

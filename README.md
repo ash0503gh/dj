@@ -34,6 +34,8 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     vinyl brake or spinback, after a high-pass rise, a noise riser with an impact on the landing, a loop
     roll or a reverb swell) and filter washes (spectral crossfade), landing the incoming on its drop, on
     the build before it, or on its hook (the 8-bar phrase that comes back most, found by the analyzer).
+    Brake and spinback exits are a last resort: searched after everything else (waiting for a clean
+    moment included), played only when no other mix clears the bar and they beat the best one by 10.
   - Tempo: one constant grid fitted to the whole track; the tempo is checked against double/half and
     against 3/4, 4/3, 2/3 and 3/2 of itself (dancehall, reggaeton and trap rhythms read as a tempo a
     third off), keeping the grid that lands on the most kicks and snares and repeats most strongly

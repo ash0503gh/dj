@@ -1982,6 +1982,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const start = c.startCtx - MixBlocks.preSec(c);
       if (start > pressedAt + LATE_WAIT_SEC) return;
       cands.push(Object.assign(c, { rank, keySeverity: clash, late: start > pressedAt + MAX_WAIT_SEC,
+                                    lastResort: MixBlocks.lastResort(c),
                                     vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0 }));
     }));
     if (!cands.length) {
@@ -1992,10 +1993,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     // Most promising first: the best confidence each could reach (the DJ's taste, a vocal line it would
     // cut), the planner's own order, the classic default style of each moment. Mixes past the minute
-    // come last: the search only gets to them when nothing within it clears the bar
+    // come later, and last-resort exits (brake, spinback) last of all: the search only gets to them
+    // when nothing before them clears the bar
     cands.forEach(c => {
       c.promise = TransitionLab.confidence(Object.assign({}, c, { measured: { penalty: 0 } }), tastePrefs)
-        - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0) - (c.late ? 1000 : 0);
+        - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0) - (c.late ? 1000 : 0)
+        - (c.lastResort ? 2000 : 0);
     });
     cands.sort((a, b) => b.promise - a.promise);
     cands.forEach((c, i) => { c.id = `M${i + 1}`; });
@@ -2053,7 +2056,11 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       const aiReady = !useAI || (jev && jev.settled && (jevRounds >= 8 || live.every(c => c.jev !== undefined)))
         || live.length < 2;
-      if (quickDone && aiReady && confident.length) return settleOn(t, confident, aiModel, bar, false);
+      // A clean mix that clears the bar plays; a last-resort exit only when none does and it still leads
+      // the ranking with its handicap
+      const clean = confident.filter(c => !c.lastResort);
+      const pickable = clean.length ? clean : confident.length && confident[0] === ranked[0] ? confident : null;
+      if (quickDone && aiReady && pickable) return settleOn(t, pickable, aiModel, bar, false);
       if (done && aiReady) {
         if (ranked.length) return settleOn(t, ranked, aiModel, bar, true);
         // Every moment passed while searching: look again from here
@@ -2075,9 +2082,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }), tastePrefs);
   }
 
-  /** Sooner is better once it's past 20 s: a much better mix may be worth a wait, not a long one. */
+  /** Sooner is better once it's past 20 s: a much better mix may be worth a wait, not a long one. A
+   *  last-resort exit must beat a clean mix by 10 points to be chosen over it. */
   function utility(c) {
-    return c.conf - 0.1 * Math.max(0, (c.startCtx - engine.ctx.currentTime) - 20);
+    return c.conf - 0.1 * Math.max(0, (c.startCtx - engine.ctx.currentTime) - 20) - (c.lastResort ? 10 : 0);
   }
 
   /** Commit to the best of `ranked` (confident ones, or the best left when `below` the bar). A near
@@ -2110,6 +2118,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const note = `${MixBlocks.label(pick)} · CONFIDENCE ${pick.conf}%` +
       (pick.requested && pick.vocalCutSec < 0.5 ? ' · AFTER THE VOCAL LINE' : '') +
       (pick.late ? ` · NOTHING CLEAN WITHIN A MINUTE: MIXING AT ${formatTime(pick.exitNative)}` : '') +
+      (pick.lastResort ? ' · LAST RESORT: NO CLEAN MIX FOUND' : '') +
       (below ? ` (UNDER YOUR ${bar}%: BEST OF ${checked} CHECKED)` : '') +
       (pick.geminiPick ? ' · GEMINI BROKE A TIE' : '');
     commitTransitionPlan(t, pick, note);
