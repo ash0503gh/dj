@@ -286,7 +286,9 @@ const TransitionLab = (() => {
     const mix = new Float32Array(ch[0].length);
     for (let i = 0; i < mix.length; i++) mix[i] = ch[0][i] + ch[1][i];
     const bars = blockDb(mix, 4 * nBeat);
-    const b0 = Math.round(marks.start / (4 * beat)), b1 = Math.round(marks.end / (4 * beat));
+    // (the landing bar always counts: a short switch after a build would otherwise judge only the build)
+    const b0 = Math.round(marks.start / (4 * beat));
+    const b1 = Math.max(Math.round(marks.end / (4 * beat)), Math.floor(marks.swap / (4 * beat)) + 1);
     const pre = med(bars.slice(Math.max(0, b0 - 4), b0));
     const post = med(bars.slice(b1, b1 + 4).length ? bars.slice(b1, b1 + 4) : bars.slice(-1));
     const span = bars.slice(b0, Math.max(b0 + 1, b1));
@@ -382,9 +384,10 @@ const TransitionLab = (() => {
   // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), and with
   // clashing keys (c.keySeverity, 0-1) the two tracks' midrange heard together costs up to 0.5 points a
   // second. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
-  // MixBlocks.prefKeys), starting from a prior that gradual handovers are preferred to switches; half
-  // Jev's rating when there is one.
-  const TASTE_PRIOR = { handover: 0.7, switch: 0.5 };
+  // MixBlocks.prefKeys), starting from a prior that a clean mix will please (gradual handovers a little
+  // more than switches); half Jev's rating when there is one. A flawless mix reads 94% (handover) or
+  // 92% (switch) before any rating; Jev's "very good" (3 of 4) takes it to 92% or 91%.
+  const TASTE_PRIOR = { handover: 0.85, switch: 0.8 };
 
   function taste(c, prefs = {}) {
     const [kind, ...details] = MixBlocks.prefKeys(c);

@@ -31,6 +31,7 @@ from . import storage
 from .stem_separator import separate_with_demucs, separate_fast_spectral
 from .ai_advisor import generate_ai_dj_strategy
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
+from .vocal_listen import carry_vocal_labels
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -143,6 +144,7 @@ async def get_cached_analysis(file_id: str) -> Optional[dict]:
     if not path:
         return cached
     an = await heavy(analyze_track, path)
+    carry_vocal_labels(an, cached)
     for keep in ("title", "deck", "audio_url"):
         if cached and keep in cached:
             an[keep] = cached[keep]
@@ -272,10 +274,12 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
     data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
     return JSONResponse(content={"status": "success", "track": data})
 
-async def _analysis_by_digest(digest: str) -> Optional[dict]:
-    """A current analysis of audio with this SHA-1, under whatever file id it was uploaded."""
+async def _analysis_by_digest(digest: str, current_only: bool = True) -> Optional[dict]:
+    """A current analysis of audio with this SHA-1, under whatever file id it was uploaded (or, with
+    current_only=False, one of any analyzer version: for the vocal labels it carries)."""
     def current(an):
-        return an and an.get("content_sha1") == digest and an.get("analysis_version") == ANALYSIS_VERSION
+        return an and an.get("content_sha1") == digest and (
+            not current_only or an.get("analysis_version") == ANALYSIS_VERSION)
     local = [an for an in ANALYSIS_CACHE.values() if current(an)]
     if local:  # Gemini's vocal labels, when one copy has them
         return max(local, key=lambda an: bool(an.get("vocal_source")))
@@ -346,8 +350,10 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
             await persist_analysis(file_id, analysis)
             return JSONResponse(content={"status": "success", "track": analysis})
 
-        # Analyze track
+        # Analyze track; an older analysis of the same audio lends it Gemini's vocal labels
+        old = cached if cached and cached.get("content_sha1") == digest and cached.get("vocal_source") else None
         analysis = await heavy(analyze_track, save_path)
+        carry_vocal_labels(analysis, old or await _analysis_by_digest(digest, current_only=False))
         analysis["file_id"] = file_id
         analysis["title"] = clean_name
         analysis["deck"] = deck

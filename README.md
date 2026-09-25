@@ -30,22 +30,29 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     how the outgoing leaves, how the incoming enters, how long the lead-in is). Nothing is tied to a
     song pair: the search decides.
   - Styles tried: beat-matched blends (mids overlap / snap / crossfade; outgoing out by EQ, filter, echo
-    or reverb) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb or cut,
-    after a high-pass rise, a loop roll or a reverb swell) and filter washes (spectral crossfade), landing
-    the incoming on its drop or on the build before it.
+    or reverb) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb, cut,
+    vinyl brake or spinback, after a high-pass rise, a noise riser with an impact on the landing, a loop
+    roll or a reverb swell) and filter washes (spectral crossfade), landing the incoming on its drop, on
+    the build before it, or on its hook (the 8-bar phrase that comes back most, found by the analyzer).
+  - Tempo: one constant grid fitted to the whole track; the tempo is checked against double/half and
+    against 3/4, 4/3, 2/3 and 3/2 of itself (dancehall, reggaeton and trap rhythms read as a tempo a
+    third off), keeping the grid that lands on the most kicks and snares and repeats most strongly
+    every beat and bar. A re-analysis keeps Gemini's vocal labels (mapped onto the new sections).
   - Search: the planner's best moments x every style (60-150 mixes) are rendered offline and measured a
     few at a time while the music plays (~0.15-0.35 s each; bass gaps/mud, holes against the outgoing's own
     level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
   - Confidence (0-100): 60% measured sound, 40% taste — the DJ's ratings of similar mixes (a GOOD /
     NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
-    Jev has rated the leaders. A mix plays once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by default; before any ratings a
-    flawless mix reaches about 88%, so the higher bars are met as the ratings come in); otherwise the
-    search goes on through more styles and later moments, and when it runs out the best one left plays,
-    marked as under the bar.
+    Jev has rated the leaders. A mix plays once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by
+    default; before any ratings a flawless blend reads 94% and a flawless switch 92%, Jev's rating moves
+    that a few points either way, and the DJ's ratings more); otherwise the search goes on through more
+    styles and later moments, and when it runs out the best one left plays, marked as under the bar.
   - Vocals: with Gemini's labels, a mix that fades or cuts the outgoing's lead vocal before its 16-bar
     phrase ends (checked where the fade starts and where the vocal is gone) loses confidence (0.25 points
-    a second), and the phrase lines right after a vocal run ends are offered as extra moments. Every mix
-    starts within 60 s of pressing MIX.
+    a second), and the phrase lines right after a vocal run ends are offered as extra moments.
+  - Waiting: a mix starts within 60 s of pressing MIX. When nothing there clears the bar, the search
+    looks on to moments up to 2 minutes away (e.g. the end of the singer's line) and the banner says when
+    it will mix; a clean mix a little later beats a poor one now.
   - Keys: with clashing keys (severity from the Camelot distance, 0-1), every second both tracks'
     midrange is heard together, FX tails included, costs up to 0.5 points.
   - AI: Jev rates every measured mix (free, 48 a request); Gemini only breaks a near tie

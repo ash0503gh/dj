@@ -231,6 +231,61 @@ class BufferTransport {
     g.setValueAtTime(g.value, now);
     g.linearRampToValueAtTime(1, now + 0.003);
   }
+
+  /** One pass of `buffer` from `offset` (buffer seconds), heard from ctx time t0 and faded out by t1. */
+  _oneShot(buffer, offset, t0, t1) {
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const g = this.ctx.createGain();
+    src.connect(g).connect(this.output);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(1, t0 + 0.003);
+    g.gain.setValueAtTime(1, t0 + 0.75 * (t1 - t0));
+    g.gain.linearRampToValueAtTime(0, t1);
+    src.start(t0, Math.max(0, offset));
+    src.stop(t1 + 0.01);
+    return src;
+  }
+
+  /** Vinyl brake over ctx [t0, t1]: the platter slows to a stop, its pitch falling with it. The main
+   *  playback is muted meanwhile (the caller stops the deck at t1). */
+  playBrake(t0, t1) {
+    if (!this.buffer) return null;
+    const src = this._oneShot(this.buffer, this.timeAt(t0) / this.tempoRatio, t0, t1);
+    src.playbackRate.setValueAtTime(this._rate, t0);
+    src.playbackRate.linearRampToValueAtTime(0.05, t1);
+    this.muteBetween(t0, t1);
+    return src;
+  }
+
+  /** Backspin over ctx [t0, t1]: the record is pushed backwards, fast, then slows, playing what came
+   *  before t0 in reverse (from a reversed copy: a source can't run backwards). */
+  playSpinback(t0, t1) {
+    if (!this.buffer) return null;
+    const b = this.buffer;
+    const end = Math.floor(this.timeAt(t0) / this.tempoRatio * b.sampleRate);
+    const n = Math.max(1, Math.min(end, Math.ceil(1.7 * (t1 - t0) * b.sampleRate)));  // what the push uses
+    const rev = this.ctx.createBuffer(b.numberOfChannels, n, b.sampleRate);
+    for (let c = 0; c < b.numberOfChannels; c++) {
+      rev.getChannelData(c).set(b.getChannelData(c).slice(end - n, end).reverse());
+    }
+    const src = this._oneShot(rev, 0, t0, t1);
+    src.playbackRate.setValueAtTime(0.6, t0);
+    src.playbackRate.linearRampToValueAtTime(3.0, t0 + 0.12 * (t1 - t0));
+    src.playbackRate.linearRampToValueAtTime(0.1, t1);
+    this.muteBetween(t0, t1);
+    return src;
+  }
+}
+
+/** Seeded white noise (-1..1): FX that must sound the same on every render of a mix. */
+function seededNoise(n, seed) {
+  const out = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    out[i] = seed / 2147483648 - 1;
+  }
+  return out;
 }
 
 /**
@@ -592,6 +647,51 @@ class DJDeckAudio {
     this.reverbTailSec = room.buffer.duration;
     this.faderGain.connect(this.reverbSend);
     this.reverbSend.connect(room).connect(lowCut).connect(this.reverbWet).connect(this.destination);
+  }
+
+  /** Noise riser into a drop at ctx t1: white noise under a high-pass opening from 300 Hz, swelling
+   *  from t0 and stopped dead at t1. Post-fader, like the echo and the reverb. */
+  playRiser(t0, t1) {
+    const sr = this.ctx.sampleRate;
+    const n = Math.max(1, Math.ceil((t1 - t0) * sr));
+    const buf = this.ctx.createBuffer(2, n, sr);
+    buf.getChannelData(0).set(seededNoise(n, 0x1b873593));
+    buf.getChannelData(1).set(seededNoise(n, 0x85ebca6b));
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const hp = this.ctx.createBiquadFilter();
+    hp.type = 'highpass';
+    hp.Q.value = 1.5;
+    hp.frequency.setValueAtTime(300, t0);
+    hp.frequency.exponentialRampToValueAtTime(Math.min(8000, 0.4 * sr), t1);
+    const g = this.ctx.createGain();
+    g.gain.setValueAtTime(0.001, t0);
+    g.gain.exponentialRampToValueAtTime(0.25, t1 - 0.01);
+    g.gain.linearRampToValueAtTime(0, t1);
+    src.connect(hp).connect(g).connect(this.destination);
+    src.start(t0);
+    src.stop(t1 + 0.01);
+    return src;
+  }
+
+  /** Impact on the 1 at ctx t: a sub boom falling from 70 to 35 Hz and a bright noise crash. */
+  playImpact(t) {
+    const sr = this.ctx.sampleRate;
+    const n = Math.ceil(1.5 * sr);
+    const buf = this.ctx.createBuffer(1, n, sr);
+    const d = buf.getChannelData(0);
+    const noise = seededNoise(n + 1, 0xc2b2ae35);
+    let phase = 0;
+    for (let i = 0; i < n; i++) {
+      const x = i / sr;
+      phase += 2 * Math.PI * (70 * Math.exp(-8 * x) + 35) / sr;
+      d[i] = 0.3 * Math.sin(phase) * Math.exp(-4 * x) + 0.08 * (noise[i + 1] - noise[i]) * Math.exp(-3.5 * x);
+    }
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(this.destination);
+    src.start(t);
+    return src;
   }
 
   triggerEchoFreeze(bpm = 128.0, at = this.ctx.currentTime, tailBeats = 8) {

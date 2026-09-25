@@ -393,7 +393,7 @@ def compute_section_map(mono: np.ndarray, sr: int, beat_times: List[float], bpm:
 # track, then find the bar phase and phrase phase from structural changes.
 # ─────────────────────────────────────────────────────────────────────────────
 
-ANALYSIS_VERSION = 5
+ANALYSIS_VERSION = 6
 ANALYSIS_SR = 16000
 ONSET_HOP = 128            # 8 ms onset frames
 BPM_RANGE = (85.0, 185.0)
@@ -565,6 +565,44 @@ def _fit_constant_grid(env: np.ndarray, fps: float, coarse_bpm: float) -> Dict[s
     }
 
 
+def _bar_beat_periodicity(ac: np.ndarray, fps: float, bpm: float) -> float:
+    """How strongly an onset envelope repeats every beat and every bar at `bpm`: its normalized
+    autocorrelation at both lags (the best within ±2%)."""
+    total = 0.0
+    for beats in (1, 4):
+        lag = beats * 60.0 * fps / bpm
+        lo, hi = int(np.floor(lag * 0.98)), int(np.ceil(lag * 1.02))
+        total += float(ac[lo:hi + 1].max()) if hi < len(ac) else 0.0
+    return total
+
+
+def _odd_ratio_check(env: np.ndarray, fps: float, coarse: float, fit: Dict[str, Any]) -> Dict[str, Any]:
+    """Triplet and dotted-rhythm tempo errors: dancehall, reggaeton and trap kicks, snares and hats
+    repeat every 3/4 or 3/2 of a beat, which reads as a tempo 4/3 or 2/3 of the real one (Sorry at
+    133 instead of 100, We Found Love at 85 instead of 128). A grid at 3/4, 4/3, 2/3 or 3/2 of the
+    tempo replaces `fit` only when it lands on more kick and snare hits AND the envelope repeats more
+    strongly at its beat and bar; among several, the strongest repeat wins."""
+    e = env - env.mean()
+    ac = librosa.autocorrelate(e, max_size=int(4 * 60.0 * fps / BPM_RANGE[0] * 1.03) + 2)
+    ac = ac / (len(e) - np.arange(len(ac)))
+    if not ac[0] > 0:
+        return fit
+    ac = ac / ac[0]
+    base = _bar_beat_periodicity(ac, fps, coarse)
+    best, best_rep = fit, base
+    for m in (0.75, 4.0 / 3.0, 2.0 / 3.0, 1.5):
+        bpm = coarse * m
+        if not BPM_RANGE[0] <= bpm < BPM_RANGE[1]:
+            continue
+        rep = _bar_beat_periodicity(ac, fps, bpm)
+        if rep <= best_rep:
+            continue
+        alt = _fit_constant_grid(env, fps, bpm)
+        if alt["confidence"] > fit["confidence"]:
+            best, best_rep = alt, rep
+    return best
+
+
 def _refine_beat_offset(y: np.ndarray, sr: int, beat_times: np.ndarray, period_sec: float) -> float:
     """Place the grid on the kick TRANSIENT rather than the spectral-flux frame.
     Averages the low-band (< 200 Hz) Hilbert envelope around every kick beat and returns
@@ -633,6 +671,30 @@ def _z(x: np.ndarray) -> np.ndarray:
     return (x - x.mean()) / (x.std() + 1e-9) if len(x) else x
 
 
+def _find_hooks(bar_mel: np.ndarray, bar_chroma: np.ndarray, bar_t: np.ndarray, phrase_offset: int) -> List[float]:
+    """Where the hook plays: the 8-bar phrase that comes back most often, bar for bar the same sound
+    and harmony (mean cosine of z-scored mel and chroma above 0.5), among the louder half of the
+    phrases. Every time it plays; [] when no louder phrase comes back at least twice more."""
+    n = min(bar_mel.shape[1], bar_chroma.shape[1])
+    chroma = bar_chroma[:, :n] / (bar_chroma[:, :n].sum(axis=0, keepdims=True) + 1e-9)
+    rows = lambda x: (x - x.mean(axis=1, keepdims=True)) / (x.std(axis=1, keepdims=True) + 1e-6)  # noqa: E731
+    F = np.vstack([rows(bar_mel[:, :n]), rows(chroma)])
+    F = F / (np.linalg.norm(F, axis=0, keepdims=True) + 1e-9)       # per bar: dot product = cosine
+    starts = list(range(phrase_offset % 8, n - 7, 8))
+    if len(starts) < 3:
+        return []
+    segs = np.stack([F[:, b:b + 8] for b in starts])
+    same = np.einsum('idb,jdb->ij', segs, segs) / 8.0 > 0.5
+    np.fill_diagonal(same, False)
+    count = same.sum(axis=1)
+    loud = np.array([bar_mel[:, b:b + 8].mean() for b in starts])
+    picks = [i for i in range(len(starts)) if loud[i] >= np.median(loud) and count[i] >= 2]
+    if not picks:
+        return []
+    i = max(picks, key=lambda j: (count[j], loud[j]))
+    return [round(float(bar_t[starts[j]]), 3) for j in range(len(starts)) if j == i or same[i, j]]
+
+
 def _best_offset(nov: np.ndarray, modulus: int, choices) -> int:
     scores = {o: float(np.mean(nov[o::modulus])) if len(nov[o::modulus]) else -np.inf for o in choices}
     return max(scores, key=scores.get)
@@ -686,7 +748,7 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
         if h[j] > 0 and opposite / h[j] > 0.6:
             coarse *= 2
     # Kick + snare envelope (no hats), so the grid locks to the beat, not the off-beat hat.
-    fit = _fit_constant_grid(env_lowmid, fps, coarse)
+    fit = _odd_ratio_check(env_lowmid, fps, coarse, _fit_constant_grid(env_lowmid, fps, coarse))
     period = fit["period_frames"] / fps
     # Flux frame i measures the change from frame i-1 to i: centre it half a hop earlier.
     anchor = (fit["anchor_frames"] - 0.5) / fps
@@ -713,7 +775,7 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
     # ── Phrases: sections change on 8/16/32-bar boundaries ──
     bar_t = beat_t[downbeat_offset::4]
     phrase_offset = 0
-    boundaries, drops, bar_low_db = [], [], []
+    boundaries, drops, bar_low_db, hooks = [], [], [], []
 
     # Track body loudness (mean RMS of its louder half of bars): what a DJ matches with the trim knob
     bar_rms_db = np.array([20 * np.log10(np.sqrt(np.mean(y[int(a * sr):int(b * sr)] ** 2)) + 1e-9)
@@ -730,6 +792,7 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
         o8 = _best_offset(phrase_score, 8, range(8))
         o16 = _best_offset(phrase_score, 16, (o8, o8 + 8))
         phrase_offset = _best_offset(phrase_score, 32, (o16, o16 + 16))
+        hooks = _find_hooks(bar_mel, bar_chroma, bar_t, phrase_offset)
 
         # Structural boundaries: clear local novelty peaks
         thr = nov_bar.mean() + 0.75 * nov_bar.std()
@@ -763,6 +826,7 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
         },
         "section_boundaries": boundaries,
         "drop_times": drops,
+        "hook_times": hooks,               # every time the phrase that comes back most plays
         "bar_low_db": bar_low_db,          # kick/bass level per bar from the first downbeat
         "loudness_db": round(loudness_db, 2),
     }
@@ -835,6 +899,7 @@ def analyze_track(file_path: str) -> Dict[str, Any]:
         "grid": grid,
         "section_boundaries": est["section_boundaries"],
         "drop_times": est["drop_times"],
+        "hook_times": est["hook_times"],
         "bar_low_db": est["bar_low_db"],
         "loudness_db": est["loudness_db"],
         "key": display_key,

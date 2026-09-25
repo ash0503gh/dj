@@ -1733,7 +1733,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const SEARCH_LEAD_SEC = 12;  // candidates start at least this far ahead: time to search and rate them
   const QUICK_LOOK = 12;       // mixes measured before the first decision (defaults and favourites first)
   const TIE_BUDGET_SEC = 8;    // how long the AI may take to rate or break a tie
-  const MAX_WAIT_SEC = 60;     // a mix starts within a minute of pressing MIX
+  const MAX_WAIT_SEC = 60;     // a mix starts within a minute of pressing MIX...
+  const LATE_WAIT_SEC = 120;   // ...unless none there clears the bar: then the next clean moment, within two
   const confidenceSelect = document.getElementById('confidence-select');
   if (confidenceSelect) {
     try { confidenceSelect.value = localStorage.getItem('mix_confidence') || 'strict'; } catch (e) { /* blocked */ }
@@ -1953,20 +1954,24 @@ document.addEventListener('DOMContentLoaded', () => {
    * (MixBlocks.variants) and ordered most promising first, are rendered offline and measured a few
    * at a time while the music plays. Each gets a confidence (TransitionLab.confidence: the sound, the
    * DJ's ratings, Jev's). A mix plays once one clears the DJ's bar; until then the search goes on
-   * through more styles and later moments, and when it has run out the best one left plays, marked as
-   * below the bar. Jev rates every measured candidate (no Gemini); Gemini only breaks a near tie.
+   * through more styles and later moments (within a minute of MIX first; then up to two minutes, to
+   * wait for a clean moment), and when it has run out the best one left plays, marked as below the
+   * bar. Jev rates every measured candidate (no Gemini); Gemini only breaks a near tie.
    */
   async function searchAndMix(t, planOpts, bars, aiModel, attempt = 0, pressedAt = engine.ctx.currentTime) {
     const gap = Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1) > MixPlanner.MAX_STRETCH;
     // Gemini's vocal labels (when it has listened) let the mix wait for the singer: the phrase lines
-    // right after each vocal run ends are offered too, and a mix that cuts a vocal line loses confidence
+    // right after each vocal run ends are offered too (not once the next run has started), and a mix
+    // that cuts a vocal line loses confidence
     const labelled = !!t.outTrack.vocal_source;
     const position = t.outDeck.audio.timeAt(engine.ctx.currentTime);
     const lines = t.outTrack.phrase_8_times || [];
+    const sings = x => (t.outTrack.section_map || []).some(s => s.has_vocals && s.vocal_score > 0.35 &&
+                                                                x >= s.time - 0.05 && x < s.time + s.duration);
     const extraExits = labelled ? MixBlocks.vocalRunEnds(t.outTrack, position).flatMap(end => {
       const i = lines.findIndex(x => x >= end - 0.05);
-      return i < 0 ? [] : lines.slice(i, i + 2);
-    }).slice(0, 4) : [];
+      return i < 0 ? [] : lines.slice(i, i + 2).filter(x => !sings(x));
+    }).slice(0, 6) : [];
     const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
       now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 12, extraExits,
@@ -1974,8 +1979,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const clash = keySeverity(t.outTrack.camelot, t.inTrack.camelot);
     const cands = [];
     skeletons.forEach((sk, rank) => MixBlocks.variants(sk, t.inTrack).forEach(c => {
-      if (c.startCtx - MixBlocks.preSec(c) > pressedAt + MAX_WAIT_SEC) return;   // not within the minute
-      cands.push(Object.assign(c, { rank, keySeverity: clash,
+      const start = c.startCtx - MixBlocks.preSec(c);
+      if (start > pressedAt + LATE_WAIT_SEC) return;
+      cands.push(Object.assign(c, { rank, keySeverity: clash, late: start > pressedAt + MAX_WAIT_SEC,
                                     vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0 }));
     }));
     if (!cands.length) {
@@ -1985,10 +1991,11 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
     // Most promising first: the best confidence each could reach (the DJ's taste, a vocal line it would
-    // cut), the planner's own order, the classic default style of each moment
+    // cut), the planner's own order, the classic default style of each moment. Mixes past the minute
+    // come last: the search only gets to them when nothing within it clears the bar
     cands.forEach(c => {
       c.promise = TransitionLab.confidence(Object.assign({}, c, { measured: { penalty: 0 } }), tastePrefs)
-        - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0);
+        - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0) - (c.late ? 1000 : 0);
     });
     cands.sort((a, b) => b.promise - a.promise);
     cands.forEach((c, i) => { c.id = `M${i + 1}`; });
@@ -2041,7 +2048,8 @@ document.addEventListener('DOMContentLoaded', () => {
         renderSoundCheck(cands);
         const best = ranked.length ? Math.max(...ranked.map(c => c.conf)) : null;
         transitionStatusBanner.textContent = `SEARCHING: ${checked}/${cands.length} MIXES CHECKED` +
-          (best !== null ? ` · BEST ${best}%` : '') + ` · PLAYS AT ${bar}%`;
+          (best !== null ? ` · BEST ${best}%` : '') + ` · PLAYS AT ${bar}%` +
+          (cands.slice(0, next).some(c => c.late) ? ' · LOOKING PAST THE MINUTE' : '');
       }
       const aiReady = !useAI || (jev && jev.settled && (jevRounds >= 8 || live.every(c => c.jev !== undefined)))
         || live.length < 2;
@@ -2101,6 +2109,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (aiRecConfidence) aiRecConfidence.textContent = `${pick.conf}% CONFIDENT`;
     const note = `${MixBlocks.label(pick)} · CONFIDENCE ${pick.conf}%` +
       (pick.requested && pick.vocalCutSec < 0.5 ? ' · AFTER THE VOCAL LINE' : '') +
+      (pick.late ? ` · NOTHING CLEAN WITHIN A MINUTE: MIXING AT ${formatTime(pick.exitNative)}` : '') +
       (below ? ` (UNDER YOUR ${bar}%: BEST OF ${checked} CHECKED)` : '') +
       (pick.geminiPick ? ' · GEMINI BROKE A TIE' : '');
     commitTransitionPlan(t, pick, note);
@@ -2280,7 +2289,8 @@ document.addEventListener('DOMContentLoaded', () => {
     t.marks = MixBlocks.perform(p, t.outDeck, t.inDeck);
     atCtx(t, T - lead, () => setPlayUI(t.inBtnPlay, true));
     if (!t.blend) {
-      const land = p.style && p.style.inPreBars ? 'LANDS ON ITS BUILD' : 'DROPS ON THE 1';
+      const land = p.style && p.style.inHook ? 'LANDS ON ITS HOOK'
+        : p.style && p.style.inPreBars ? 'LANDS ON ITS BUILD' : 'DROPS ON THE 1';
       atCtx(t, T, () => {
         transitionStatusBanner.textContent = `${(p.style ? MixBlocks.label(p) : 'echo out').toUpperCase()}: ${t.inName} ${land}`;
       });

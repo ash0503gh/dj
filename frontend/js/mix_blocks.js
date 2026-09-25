@@ -3,7 +3,8 @@
  *
  * A candidate mix is a timing skeleton from MixPlanner (where the outgoing leaves, where the
  * incoming enters, when the bass hands over) plus a `style`: plain data saying how each deck moves
- * (3-band EQ, isolator bass swap, filters, fader, echo, reverb, loop roll) and for how long.
+ * (3-band EQ, isolator bass swap, filters, fader, echo, reverb, loop roll, vinyl brake, spinback,
+ * noise riser and impact) and for how long.
  * `perform` schedules a style as AudioParam automation on the audio clock: the same code live and
  * in the offline sound check, so what was measured is exactly what plays. `variants` dresses a
  * skeleton in every style worth trying; the search (app.js) renders, measures and ranks them. Nothing
@@ -20,6 +21,7 @@ const MixBlocks = (() => {
   const { curve, neutral, setTrim, bassKill, swapTime, cutAt, gridOf } = MixPlanner;
   const ECHO_TAIL_BEATS = 8;
   const REVERB_TAIL_SEC = 3.0;   // roomImpulse() length (audio_engine.js)
+  const FX_BEATS = { brake: 2, spinback: 2 };   // a vinyl brake or a spinback takes the last two beats
 
   // ── Moves on one deck ──
 
@@ -55,6 +57,11 @@ const MixBlocks = (() => {
     }
     deck.audio.muteBetween(t0, t);
     deck._rollSources = (deck._rollSources || []).concat(sources);  // resetAllFX() stops them
+  }
+
+  /** A one-shot FX source (brake, spinback, riser, impact) that resetAllFX() must stop. */
+  function keep(deck, src) {
+    if (src) deck._rollSources = (deck._rollSources || []).concat([src]);
   }
 
   // ── Performing a style ──
@@ -121,18 +128,21 @@ const MixBlocks = (() => {
   }
 
   /** Tempo gap. The incoming lands at the switch; before it the outgoing either plays on dry,
-   *  rises through a high-pass, rolls, swells into the reverb ('at' entry), or shares the
-   *  spectrum with the incoming ('split': outgoing under a closing low-pass, incoming above the
-   *  same split, which glides from 3 kHz to 150 Hz). After it the outgoing's last beat echoes,
-   *  rings in the reverb, or just stops. The incoming must be started p.inLeadSec before. */
+   *  rises through a high-pass, rolls, swells into the reverb, builds under a noise riser (an
+   *  impact hits on the landing) ('at' entry), or shares the spectrum with the incoming ('split':
+   *  outgoing under a closing low-pass, incoming above the same split, which glides from 3 kHz to
+   *  150 Hz). At the switch the outgoing's last beat echoes, rings in the reverb, or just stops;
+   *  or its last two beats brake to a halt or spin back. The incoming must be started p.inLeadSec
+   *  before. */
   function performGap(p, s, outDeck, inDeck) {
     const T = p.startCtx;
     const beat = p.beatSec;
     const lead = (s.leadBars || 0) * 4 * beat;
+    const fx = (FX_BEATS[s.after] || 0) * beat;
     const inLead = p.inLeadSec || 0;
     const inFrom = T - inLead;
     const outVol = outDeck.faderGain.gain.value;
-    neutral(outDeck, T - Math.max(lead, beat) - 0.05, outVol);
+    neutral(outDeck, T - Math.max(lead, beat, fx) - 0.05, outVol);
     neutral(inDeck, inFrom - 0.05, s.entry === 'split' ? 0.5 : 0.7);
     setTrim(inDeck, p.inTrimDb || 0, inFrom - 0.05);
 
@@ -149,6 +159,10 @@ const MixBlocks = (() => {
       inDeck.faderGain.gain.linearRampToValueAtTime(1, T + p.inBarSec);
       if (s.before === 'hpf') {
         sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
+      } else if (s.before === 'riser') {
+        sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
+        keep(outDeck, outDeck.playRiser(T - lead, T));
+        keep(inDeck, inDeck.playImpact(T));
       } else if (s.before === 'roll') {
         roll(outDeck, T - lead, T, beat);
         sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
@@ -163,11 +177,15 @@ const MixBlocks = (() => {
       tail = Math.max(tail, ECHO_TAIL_BEATS * beat);
     } else if (s.after === 'cut') {
       cutAt(outDeck, T);
+    } else if (fx) {
+      keep(outDeck, s.after === 'brake' ? outDeck.audio.playBrake(T - fx, T) : outDeck.audio.playSpinback(T - fx, T));
+      cutAt(outDeck, T);
     }
-    // A rising high-pass, a roll or a reverb swell empties the floor on purpose: the sound check
-    // doesn't count that stretch as a hole (clashes and everything after the switch still count)
-    const build = ['hpf', 'roll', 'verb'].includes(s.before) ? [T - lead, T] : null;
-    return { start: T - Math.max(lead, inLead, beat), swap: T, end: T + tail, build };
+    // A rising high-pass, a riser, a roll, a reverb swell, a brake or a spinback empties the floor on
+    // purpose: the sound check doesn't count that stretch as a hole (clashes and everything after the
+    // switch still count)
+    const build = ['hpf', 'riser', 'roll', 'verb'].includes(s.before) ? [T - lead, T] : fx ? [T - fx, T] : null;
+    return { start: T - Math.max(lead, inLead, beat, fx), swap: T, end: T + tail, build };
   }
 
   /** The default style of a planner skeleton (what the console did before styles existed). */
@@ -189,7 +207,8 @@ const MixBlocks = (() => {
   function preSec(p) {
     const s = p.style || defaultStyle(p);
     if (s.kind !== 'gap') return 0;
-    return Math.max((s.leadBars || 0) * 4 * p.beatSec, p.inLeadSec || 0, p.beatSec);
+    return Math.max((s.leadBars || 0) * 4 * p.beatSec, p.inLeadSec || 0, p.beatSec,
+                    (FX_BEATS[s.after] || 0) * p.beatSec);
   }
 
   /** Seconds the mix lasts after p.startCtx, echo and reverb tails included. */
@@ -203,7 +222,7 @@ const MixBlocks = (() => {
   // ── The styles worth trying ──
 
   /** One candidate per style for a skeleton: plan clones with `style`, and for a gap the
-   *  incoming's entry (its drop, or 8 bars before it) and early start (split). */
+   *  incoming's entry (its drop, 8 bars before it, or its hook) and early start (split). */
   function variants(p, inTrack) {
     const out = [];
     const add = (style, extra = {}) => out.push(Object.assign({}, p, extra, { style }));
@@ -222,8 +241,9 @@ const MixBlocks = (() => {
       const at = (before, leadBars, after) =>
         add({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars },
             { inStartNative: land, inLeadSec: 0 });
-      for (const after of ['echo', 'reverb', 'cut']) at('none', 0, after);
+      for (const after of ['echo', 'reverb', 'cut', 'brake', 'spinback']) at('none', 0, after);
       for (const leadBars of [2, 4]) for (const after of ['echo', 'reverb']) at('hpf', leadBars, after);
+      for (const leadBars of [2, 4]) for (const after of ['echo', 'cut']) at('riser', leadBars, after);
       for (const leadBars of [1, 2]) for (const after of ['echo', 'reverb', 'cut']) at('roll', leadBars, after);
       for (const leadBars of [2, 4]) at('verb', leadBars, 'reverb');
       // Spectral crossfade: the incoming starts under the split for half its length (in its own
@@ -235,6 +255,17 @@ const MixBlocks = (() => {
               { inStartNative: land, inLeadSec });
         }
       }
+    }
+    // Its hook (the phrase that comes back most, from the analysis), when that isn't its drop: the
+    // straight switches and the short builds
+    const hook = (inTrack.hook_times || [])[0];
+    if (hook !== undefined && Math.abs(hook - p.inStartNative) > inBar / 2) {
+      const at = (before, leadBars, after) =>
+        add({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars: 0, inHook: true },
+            { inStartNative: hook, inLeadSec: 0 });
+      for (const after of ['echo', 'reverb', 'cut', 'brake', 'spinback']) at('none', 0, after);
+      at('hpf', 2, 'echo');
+      for (const after of ['echo', 'cut']) at('riser', 2, after);
     }
     return out;
   }
@@ -311,11 +342,12 @@ const MixBlocks = (() => {
       return `${p.bars}-bar blend` + ({ snap: ', mids snap', crossfade: ', mids crossfade' }[s.mids] || '') +
              ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '');
     }
-    const after = { echo: 'echo out', reverb: 'reverb out', cut: 'cut' }[s.after];
-    const land = s.inPreBars ? ' into its build' : '';
+    const after = { echo: 'echo out', reverb: 'reverb out', cut: 'cut', brake: 'vinyl brake',
+                    spinback: 'spinback' }[s.after];
+    const land = s.inHook ? ' into its hook' : s.inPreBars ? ' into its build' : '';
     if (s.entry === 'split') return `${s.leadBars}-bar filter wash, ${after}${land}`;
     const before = { none: '', hpf: `${s.leadBars}-bar high-pass, `, roll: `${s.leadBars}-bar loop roll, `,
-                     verb: `${s.leadBars}-bar reverb swell, ` }[s.before];
+                     verb: `${s.leadBars}-bar reverb swell, `, riser: `${s.leadBars}-bar riser, ` }[s.before];
     return `${before}${after}${land}`;
   }
 
@@ -329,8 +361,11 @@ const MixBlocks = (() => {
                      echo: 'outgoing last beat echoes out', reverb: 'outgoing thrown into the reverb' }[s.tail];
       return `${p.bars}-bar EQ blend, bass swapped on a downbeat, ${mids}, ${tail}`;
     }
-    const where = s.inPreBars ? `${s.inPreBars} bars before its drop (its build)` : 'on its drop';
-    const after = { echo: 'its last beat echoes out', reverb: 'it rings out in the reverb', cut: 'it stops dead' }[s.after];
+    const where = s.inHook ? 'on its hook (the phrase that comes back most)'
+      : s.inPreBars ? `${s.inPreBars} bars before its drop (its build)` : 'on its drop';
+    const after = { echo: 'its last beat echoes out', reverb: 'it rings out in the reverb', cut: 'it stops dead',
+                    brake: 'its last two beats slow to a halt like a turntable switched off',
+                    spinback: 'its last two beats are spun back like a record' }[s.after];
     if (s.entry === 'split') {
       return `${s.leadBars}-bar filter wash across the tempo gap (spectral crossfade: outgoing under a closing ` +
              `low-pass, incoming above the same split) landing the incoming ${where}; then ${after}`;
@@ -339,6 +374,7 @@ const MixBlocks = (() => {
       none: 'outgoing plays to the switch', hpf: `outgoing rises through a high-pass for ${s.leadBars} bars`,
       roll: `outgoing loop-rolls for ${s.leadBars} bar${s.leadBars > 1 ? 's' : ''}, faster and faster, under a rising high-pass`,
       verb: `outgoing swells into the reverb for ${s.leadBars} bars`,
+      riser: `a noise riser builds for ${s.leadBars} bars over the outgoing's rising high-pass, an impact hits on the landing`,
     }[s.before];
     return `tempo-gap switch: ${before}, incoming lands ${where}; ${after}`;
   }
@@ -349,7 +385,7 @@ const MixBlocks = (() => {
     const s = p.style || defaultStyle(p);
     if (s.kind === 'blend') return ['handover', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`];
     const keys = [s.entry === 'split' ? 'handover' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
-                  `gap.land.${s.inPreBars ? 'build' : 'drop'}`];
+                  `gap.land.${s.inHook ? 'hook' : s.inPreBars ? 'build' : 'drop'}`];
     if (s.entry !== 'split') keys.push(`gap.before.${s.before}`);
     return keys;
   }

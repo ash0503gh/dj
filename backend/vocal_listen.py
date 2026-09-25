@@ -53,3 +53,17 @@ def apply_vocal_labels(an: Dict[str, Any], labels: List[bool], model: str) -> No
         s["has_vocals"] = v
         s["vocal_score"] = 1.0 if v else 0.0
     an["vocal_source"] = f"gemini:{model}"
+
+
+def carry_vocal_labels(an: Dict[str, Any], old: Optional[Dict[str, Any]]) -> None:
+    """Gemini's labels from an older analysis of the same audio, onto a new analysis's sections: a
+    section sings when the old singing sections cover at least half of it (the sections move when
+    the grid does). A re-analysis never pays for another listen."""
+    if not old or not old.get("vocal_source") or not an.get("section_map"):
+        return
+    sung = [(s["time"], s["time"] + s["duration"]) for s in old.get("section_map", []) if s.get("has_vocals")]
+    labels = []
+    for s in an["section_map"]:
+        a, b = s["time"], s["time"] + s["duration"]
+        labels.append(sum(max(0.0, min(b, y) - max(a, x)) for x, y in sung) >= 0.5 * (b - a))
+    apply_vocal_labels(an, labels, old["vocal_source"].split(":", 1)[-1])
