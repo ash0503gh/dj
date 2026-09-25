@@ -560,7 +560,7 @@ document.addEventListener('DOMContentLoaded', () => {
           currentTrack.suggested_cue_outro = sTrack.suggested_cue_outro || currentTrack.suggested_cue_outro;
           currentTrack.acoustic_profile = sTrack.acoustic_profile || currentTrack.acoustic_profile;
           currentTrack.file_id = sTrack.file_id || currentTrack.file_id;
-          ['grid', 'phrase_32_times', 'drop_times', 'section_boundaries', 'section_map',
+          ['grid', 'phrase_32_times', 'drop_times', 'hook_times', 'section_boundaries', 'section_map',
            'bar_low_db', 'loudness_db', 'vocal_source'].forEach(k => {
             if (sTrack[k]) currentTrack[k] = sTrack[k];
           });
@@ -818,6 +818,9 @@ document.addEventListener('DOMContentLoaded', () => {
     updateHarmonicCompatibility();
     updateAIRecCard();
     updateTransitionOverlay();
+    // The last mix's export buffers and the old track's keylocked copies would outlive it
+    lastPerformed = null;
+    pruneStretchCache();
     prefetchIncoming();
     listenForVocals(track);
   }
@@ -1766,11 +1769,25 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Keylocked (server time-stretched) copies of tracks, keyed by file and tempo ratio
   const stretchCache = new Map();
+  // Phones and tablets: memory for the decks' tracks, not for spare keylocked copies or export buffers
+  // (a decoded 4-minute track is ~90 MB; iOS closes a tab that holds too many)
+  const LOW_MEMORY = window.matchMedia('(pointer: coarse)').matches;
+
+  /** Forget keylocked copies of tracks no longer on a deck, and of `fileId` (a deck done with it). */
+  function pruneStretchCache(fileId = null) {
+    const onDecks = [track1Data, track2Data].filter(Boolean).map(x => x.file_id);
+    for (const key of [...stretchCache.keys()]) {
+      const id = key.slice(0, key.lastIndexOf('@'));
+      if (id === fileId || !onDecks.includes(id)) stretchCache.delete(key);
+    }
+  }
+
   function stretchedBuffer(track, ratio) {
     ratio = Math.round(ratio * 1e6) / 1e6;
     const key = `${track.file_id}@${ratio}`;
     if (!stretchCache.has(key)) {
-      if (stretchCache.size >= 3) stretchCache.delete(stretchCache.keys().next().value);
+      pruneStretchCache();
+      while (stretchCache.size >= (LOW_MEMORY ? 1 : 2)) stretchCache.delete(stretchCache.keys().next().value);
       stretchCache.set(key, fetch(`/api/stretched/${encodeURIComponent(track.file_id)}?ratio=${ratio}`)
         .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
         .then(ab => engine.ctx.decodeAudioData(ab))
@@ -2284,8 +2301,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const side = deck => ({ buffer: deck.audio.buffer, tempoRatio: deck.audio.tempoRatio,
                             rate: deck.audio.playbackRate, trimDb: deck.trimDb || 0 });
     const recipe = t.blend || t.tech === 'echo_freeze';   // MixBlocks performs these, in any style
-    lastPerformed = recipe ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
-                               technique: t.tech } : null;
+    lastPerformed = recipe && !LOW_MEMORY ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
+                                              technique: t.tech } : null;
     if (recipe) runRecipe(t); else runCut(t);
   }
 
@@ -2384,6 +2401,13 @@ document.addEventListener('DOMContentLoaded', () => {
     setTimeout(() => {
       t.outDeck.pause();
       setPlayUI(t.outBtnPlay, false);
+      // The deck that mixed out lets its keylocked copy go and waits at its own tempo
+      const a = t.outDeck.audio;
+      if (a.nativeBuffer && a.buffer !== a.nativeBuffer) {
+        a.useBuffer(a.nativeBuffer, 1.0);
+        setPitchReadout(t.outDeckNum);
+      }
+      pruneStretchCache(t.outTrack.file_id);
       MixPlanner.neutral(t.inDeck, engine.ctx.currentTime, 1);
       ['btn-abort-transition', 'btn-manual-override'].forEach(id => {
         const b = document.getElementById(id);

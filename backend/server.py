@@ -144,12 +144,18 @@ async def get_cached_analysis(file_id: str) -> Optional[dict]:
     if not path:
         return cached
     an = await heavy(analyze_track, path)
-    carry_vocal_labels(an, cached)
-    for keep in ("title", "deck", "audio_url"):
+    donor = cached if cached and cached.get("vocal_source") else None
+    if not donor and cached and cached.get("content_sha1"):
+        donor = await _analysis_by_digest(cached["content_sha1"], current_only=False)
+    carry_vocal_labels(an, donor)
+    for keep in ("title", "deck", "audio_url", "content_sha1"):
         if cached and keep in cached:
             an[keep] = cached[keep]
     an["file_id"] = file_id
+    if not an.get("content_sha1"):
+        an["content_sha1"] = await run_in_threadpool(_sha1_file, path)
     await persist_analysis(file_id, an)
+    await _keep_pointer(an["content_sha1"], file_id, bool(an.get("vocal_source")))
     return an
 
 
@@ -275,21 +281,37 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
     return JSONResponse(content={"status": "success", "track": data})
 
 async def _analysis_by_digest(digest: str, current_only: bool = True) -> Optional[dict]:
-    """A current analysis of audio with this SHA-1, under whatever file id it was uploaded (or, with
-    current_only=False, one of any analyzer version: for the vocal labels it carries)."""
-    def current(an):
+    """An analysis of audio with this SHA-1, under whatever file id it was uploaded: one with Gemini's
+    vocal labels when any copy has them (in memory, or the bucket's pointer, which is kept on a
+    labelled copy). current_only=False accepts any analyzer version: for the labels it carries."""
+    def usable(an):
         return an and an.get("content_sha1") == digest and (
             not current_only or an.get("analysis_version") == ANALYSIS_VERSION)
-    local = [an for an in ANALYSIS_CACHE.values() if current(an)]
-    if local:  # Gemini's vocal labels, when one copy has them
-        return max(local, key=lambda an: bool(an.get("vocal_source")))
-    if storage.enabled():
+    local = [an for an in ANALYSIS_CACHE.values() if usable(an)]
+    best = max(local, key=lambda an: bool(an.get("vocal_source")), default=None)
+    if (best is None or not best.get("vocal_source")) and storage.enabled():
         ref = await run_in_threadpool(storage.get_json, f"analysis/by-sha1/{digest}.json")
         if ref and ref.get("file_id"):
             an = await run_in_threadpool(storage.get_json, f"analysis/{ref['file_id']}.json")
-            if current(an):
-                return an
-    return None
+            if an is not None and not an.get("content_sha1"):
+                an["content_sha1"] = digest   # re-analyzed before fingerprints were kept: the pointer vouches
+            if usable(an) and (best is None or an.get("vocal_source")):
+                best = an
+    return best
+
+
+async def _keep_pointer(digest: str, file_id: str, labelled: bool) -> None:
+    """Point analysis/by-sha1/<digest> (how other decks and names find this audio's analysis and
+    Gemini's labels) at file_id, unless it leads to a labelled copy and this one isn't labelled."""
+    if not storage.enabled() or not digest:
+        return
+    if not labelled:
+        ref = await run_in_threadpool(storage.get_json, f"analysis/by-sha1/{digest}.json")
+        if ref and ref.get("file_id") and ref["file_id"] != file_id:
+            target = await run_in_threadpool(storage.get_json, f"analysis/{ref['file_id']}.json")
+            if target and target.get("vocal_source"):
+                return
+    await run_in_threadpool(storage.put_json, f"analysis/by-sha1/{digest}.json", {"file_id": file_id})
 
 
 def _sha1_file(path: str) -> str:
@@ -350,10 +372,12 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
             await persist_analysis(file_id, analysis)
             return JSONResponse(content={"status": "success", "track": analysis})
 
-        # Analyze track; an older analysis of the same audio lends it Gemini's vocal labels
-        old = cached if cached and cached.get("content_sha1") == digest and cached.get("vocal_source") else None
+        # Analyze track; an older analysis of the same audio lends it Gemini's vocal labels (this file's
+        # own, also from before analyses were fingerprinted, or any copy's)
+        prior = await _analysis_by_digest(digest, current_only=False)
+        own = cached if cached and cached.get("vocal_source") and cached.get("content_sha1") in (digest, None) else None
         analysis = await heavy(analyze_track, save_path)
-        carry_vocal_labels(analysis, old or await _analysis_by_digest(digest, current_only=False))
+        carry_vocal_labels(analysis, own or prior)
         analysis["file_id"] = file_id
         analysis["title"] = clean_name
         analysis["deck"] = deck
@@ -361,7 +385,7 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         analysis["content_sha1"] = digest
 
         await persist_analysis(file_id, analysis)
-        await run_in_threadpool(storage.put_json, f"analysis/by-sha1/{digest}.json", {"file_id": file_id})
+        await _keep_pointer(digest, file_id, bool(analysis.get("vocal_source")))
 
         # Keep the in-memory cache lean (max 10 recent items) when the bucket holds every analysis;
         # without one this cache is the only record of the library
@@ -432,6 +456,13 @@ async def listen_vocals(request: Request):
     an = await get_cached_analysis(file_id)
     if not an or not an.get("section_map"):
         raise HTTPException(status_code=404, detail="Track not analyzed")
+    if not an.get("vocal_source") and an.get("content_sha1"):
+        # Another copy of the same audio (other deck, name or analyzer version) was already labelled
+        other = await _analysis_by_digest(an["content_sha1"], current_only=False)
+        if other is not an:
+            carry_vocal_labels(an, other)
+            if an.get("vocal_source"):
+                await persist_analysis(file_id, an)
     if not an.get("vocal_source"):
         key = get_gemini_api_key()
         path = await local_track(file_id)
@@ -449,9 +480,7 @@ async def listen_vocals(request: Request):
         if not an.get("vocal_source"):
             apply_vocal_labels(an, labels, DEFAULT_GEMINI_MODEL)
             await persist_analysis(file_id, an)
-            if an.get("content_sha1"):  # the same audio uploaded again finds the labelled copy
-                await run_in_threadpool(storage.put_json, f"analysis/by-sha1/{an['content_sha1']}.json",
-                                        {"file_id": file_id})
+            await _keep_pointer(an.get("content_sha1"), file_id, True)  # uploads of the same audio find it
     return JSONResponse(content={"status": "success", "vocal_source": an["vocal_source"],
                                  "section_map": an["section_map"]})
 

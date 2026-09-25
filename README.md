@@ -40,6 +40,12 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     against 3/4, 4/3, 2/3 and 3/2 of itself (dancehall, reggaeton and trap rhythms read as a tempo a
     third off), keeping the grid that lands on the most kicks and snares and repeats most strongly
     every beat and bar. A re-analysis keeps Gemini's vocal labels (mapped onto the new sections).
+  - Gemini listens to each audio file once: its labels are found again by the audio's fingerprint
+    (other deck, other name, newer analyzer) before any new listen, and the fingerprint pointer in the
+    bucket always stays on a labelled copy.
+  - Memory (phones close tabs that hold too much): a deck that mixed out drops its keylocked copy,
+    keylocked copies are kept only for tracks on the decks, and touch devices don't keep the last
+    mix's buffers for export.
   - Search: the planner's best moments x every style (60-150 mixes) are rendered offline and measured a
     few at a time while the music plays (~0.15-0.35 s each; bass gaps/mud, holes against the outgoing's own
     level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
