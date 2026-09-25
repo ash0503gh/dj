@@ -269,11 +269,14 @@ const TransitionLab = (() => {
     // Hats and percussion of two tempos heard together (beat-matched blends share a groove)
     const highs = [ch[6], ch[7]].map(x => blockDb(x, nBeat));
     const highOn = highs.map(db => { const ref = pct(db, 0.95); return db.map(v => v > ref - 10 && v > -100); });
+    // Both decks' tonal midrange audible together (tails included): what clashing keys make dissonant
+    const midHeard = mids.map(db => { const ref = pct(db, 0.95); return db.map(v => v > ref - 18 && v > -100); });
     const beatMatched = plan.technique === 'blend';
     // A deliberate build (MixBlocks marks it) empties the floor on purpose: not a hole or a gap
     const inBuild = b => marks.build && b >= Math.floor(marks.build[0] / beat) && b < Math.floor(marks.build[1] / beat);
-    let highClash = 0;
+    let highClash = 0, tonal = 0;
     for (let b = a0; b < Math.min(a1, lows[0].length); b++) {
+      if (midHeard[0][b] && midHeard[1][b]) tonal++;
       if (active[0][b] && active[1][b]) both++;
       if (!active[0][b] && !active[1][b] && !inBuild(b)) neither++;
       if (midOn[0][b] && midOn[1][b] && Math.abs(mids[0][b] - mids[1][b]) < 6) clash++;
@@ -302,6 +305,7 @@ const TransitionLab = (() => {
       bass_gap_s: +(neither * beat).toFixed(2),
       mid_clash_s: +(clash * beat).toFixed(2),
       high_clash_s: +(highClash * beat).toFixed(2),
+      tonal_overlap_s: +(tonal * beat).toFixed(2),
       loudness_dip_db: +(Math.min(...during) - Math.min(pre, post)).toFixed(2),
       loudness_bump_db: +(Math.max(...during) - Math.max(pre, post)).toFixed(2),
     };
@@ -374,10 +378,12 @@ const TransitionLab = (() => {
   }
 
   // ── Confidence (0-100): how sure we are a candidate will sound good to this DJ ──
-  // Sound: a clean render scores 100; every penalty point past 1.5 costs 5, and cutting the outgoing's
-  // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s). Taste: the DJ's ratings
-  // of this kind of mix (prefs = { key: [likes, ratings] }, keys from MixBlocks.prefKeys), starting
-  // from a prior that gradual handovers are preferred to switches; half Jev's rating when there is one.
+  // Sound: a clean render scores 100; every penalty point past 1.5 costs 5. Cutting the outgoing's
+  // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), and with
+  // clashing keys (c.keySeverity, 0-1) the two tracks' midrange heard together costs up to 0.5 points a
+  // second. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
+  // MixBlocks.prefKeys), starting from a prior that gradual handovers are preferred to switches; half
+  // Jev's rating when there is one.
   const TASTE_PRIOR = { handover: 0.7, switch: 0.5 };
 
   function taste(c, prefs = {}) {
@@ -393,7 +399,8 @@ const TransitionLab = (() => {
 
   function soundScore(c) {
     if (!c.measured) return null;
-    const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0);
+    const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0)
+      + 0.5 * (c.keySeverity || 0) * (c.measured.tonal_overlap_s || 0);
     return Math.max(0, Math.min(100, 100 - 5 * Math.max(0, penalty - 1.5)));
   }
 

@@ -257,22 +257,40 @@ const MixBlocks = (() => {
     return p.exitNative + at * speed;
   }
 
-  /** Seconds of the outgoing's vocal phrase this mix cuts off: from where the vocal stops being heard
-   *  in full to the end of the 16-bar phrase it is in (or of the vocal run, if that ends first), by
-   *  the track's section labels (Gemini's when it listened). 0 when the outgoing is not singing there,
-   *  or when the vocal goes on a phrase line (the next line is left unsung, as a DJ does). */
-  function vocalCut(p, outTrack) {
+  /** Outgoing native time by which its vocal is gone: the switch (gaps), or where its mids are out
+   *  (blends). */
+  function vocalGone(p, outTrack) {
+    const s = p.style || defaultStyle(p);
+    if (s.kind !== 'blend') return p.exitNative;
+    const bar = 4 * p.beatSec;
+    const speed = gridOf(outTrack).period / p.beatSec;
+    const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
+    const at = s.mids === 'snap' ? swapBar * bar : s.mids === 'crossfade' ? (swapBar + 1) * bar
+      : (p.bars + (p.tailBars || 0) - 1) * bar;
+    return p.exitNative + at * speed;
+  }
+
+  /** Seconds of a vocal phrase left unsung if the outgoing's vocal goes at native time t: to the end
+   *  of the 16-bar phrase (or of the vocal run, if that ends first). 0 when it isn't singing there or t
+   *  is on a phrase line (the next line is left unsung, as a DJ does). */
+  function unsungAt(outTrack, t) {
     const secs = outTrack.section_map || [];
     const sings = x => x.has_vocals && x.vocal_score > 0.35;
-    const f = vocalFade(p, outTrack);
     const lines = outTrack.phrase_16_times || [];
-    if (lines.some(x => Math.abs(x - f) < 0.1)) return 0;
-    let i = secs.findIndex(x => f >= x.time - 0.05 && f < x.time + x.duration);
+    if (lines.some(x => Math.abs(x - t) < 0.1)) return 0;
+    let i = secs.findIndex(x => t >= x.time - 0.05 && t < x.time + x.duration);
     if (i < 0 || !sings(secs[i])) return 0;
     while (i + 1 < secs.length && sings(secs[i + 1])) i++;
     const runEnd = secs[i].time + secs[i].duration;
-    const phraseEnd = lines.find(x => x > f + 0.1);
-    return Math.max(0, Math.min(runEnd, phraseEnd === undefined ? runEnd : phraseEnd) - f);
+    const phraseEnd = lines.find(x => x > t + 0.1);
+    return Math.max(0, Math.min(runEnd, phraseEnd === undefined ? runEnd : phraseEnd) - t);
+  }
+
+  /** Seconds of the outgoing's vocal phrase this mix cuts off, by the track's section labels (Gemini's
+   *  when it listened): where the vocal starts fading, or where it is gone, whichever cuts more (a
+   *  vocal can start during a lead-in and be cut at the switch). */
+  function vocalCut(p, outTrack) {
+    return Math.max(unsungAt(outTrack, vocalFade(p, outTrack)), unsungAt(outTrack, vocalGone(p, outTrack)));
   }
 
   /** Outgoing native times where a vocal run ends (the next section has no lead vocal), after `from`. */

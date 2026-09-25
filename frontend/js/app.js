@@ -1748,6 +1748,14 @@ document.addEventListener('DOMContentLoaded', () => {
   fetch('/api/feedback/summary').then(r => (r.ok ? r.json() : null))
     .then(d => { if (d && d.keys) tastePrefs = d.keys; }).catch(() => {});
 
+  /** How badly two keys clash, 0 (compatible) to 1 (opposite sides of the Camelot wheel). */
+  function keySeverity(a, b) {
+    if (!a || !b || camelotCompatible(a, b)) return 0;
+    const na = parseInt(a, 10), nb = parseInt(b, 10);
+    const steps = Math.min((na - nb + 12) % 12, (nb - na + 12) % 12) + (a.slice(-1) !== b.slice(-1) ? 1 : 0);
+    return Math.min(1, Math.max(0, (steps - 1) / 5));
+  }
+
   function camelotCompatible(a, b) {
     if (!a || !b) return true;
     const na = parseInt(a, 10), nb = parseInt(b, 10);
@@ -1963,10 +1971,12 @@ document.addEventListener('DOMContentLoaded', () => {
       now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 12, extraExits,
     }));
+    const clash = keySeverity(t.outTrack.camelot, t.inTrack.camelot);
     const cands = [];
     skeletons.forEach((sk, rank) => MixBlocks.variants(sk, t.inTrack).forEach(c => {
       if (c.startCtx - MixBlocks.preSec(c) > pressedAt + MAX_WAIT_SEC) return;   // not within the minute
-      cands.push(Object.assign(c, { rank, vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0 }));
+      cands.push(Object.assign(c, { rank, keySeverity: clash,
+                                    vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0 }));
     }));
     if (!cands.length) {
       commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars,
