@@ -374,7 +374,8 @@ const TransitionLab = (() => {
   }
 
   // ── Confidence (0-100): how sure we are a candidate will sound good to this DJ ──
-  // Sound: a clean render scores 100; every penalty point past 1.5 costs 5. Taste: the DJ's ratings
+  // Sound: a clean render scores 100; every penalty point past 1.5 costs 5, and cutting the outgoing's
+  // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s). Taste: the DJ's ratings
   // of this kind of mix (prefs = { key: [likes, ratings] }, keys from MixBlocks.prefKeys), starting
   // from a prior that gradual handovers are preferred to switches; half Jev's rating when there is one.
   const TASTE_PRIOR = { handover: 0.7, switch: 0.5 };
@@ -391,7 +392,9 @@ const TransitionLab = (() => {
   }
 
   function soundScore(c) {
-    return c.measured ? Math.max(0, Math.min(100, 100 - 5 * Math.max(0, c.measured.penalty - 1.5))) : null;
+    if (!c.measured) return null;
+    const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0);
+    return Math.max(0, Math.min(100, 100 - 5 * Math.max(0, penalty - 1.5)));
   }
 
   function confidence(c, prefs = {}) {

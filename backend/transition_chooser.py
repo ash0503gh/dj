@@ -60,6 +60,8 @@ def describe(c: Dict[str, Any]) -> str:
         risks.append("keys clash (mids swapped at the bass swap)")
     if c.get("bass_holes"):
         risks.append(f"the floor loses its bass for {c['bass_holes']} bar(s)")
+    if c.get("out_vocal_cut_s", 0) >= 1:
+        risks.append(f"cuts the outgoing's lead vocal {c['out_vocal_cut_s']:.0f}s before its line ends")
     if c.get("out_bass_dropouts"):
         risks.append(f"outgoing bass drops out for {c['out_bass_dropouts']} bar(s) before the swap")
     if c.get("out_energy_falling"):

@@ -1,6 +1,7 @@
 """
-test_upload_cache.py - Uploading the same audio again reuses its analysis, so Gemini's vocal labels
-survive and nobody pays for another listen; different audio under the same name is analyzed anew.
+test_upload_cache.py - Uploading the same audio again (same name, another name or the other deck)
+reuses its analysis, so Gemini's vocal labels survive and nobody pays for another listen; different
+audio under the same name is analyzed anew.
 
     python -m pytest tests/test_upload_cache.py -q
 """
@@ -29,14 +30,20 @@ def test_same_audio_reuses_analysis_and_vocal_labels(monkeypatch):
         monkeypatch.setattr(server, "ANALYSIS_CACHE", {})
         monkeypatch.setattr(server, "heavy", fake_heavy)
         client = TestClient(server.app)
-        up = lambda data: client.post("/api/upload", files={"file": ("Track A.mp3", data, "audio/mpeg")},  # noqa: E731
-                                      data={"deck": "deck_1"}).json()["track"]
+        up = lambda data, name="Track A.mp3", deck="deck_1": client.post(  # noqa: E731
+            "/api/upload", files={"file": (name, data, "audio/mpeg")}, data={"deck": deck}).json()["track"]
 
         first = up(b"same audio")
         server.ANALYSIS_CACHE[first["file_id"]]["vocal_source"] = "gemini"  # listened in between
         again = up(b"same audio")
         assert len(calls) == 1
         assert again["vocal_source"] == "gemini"
+
+        other_deck = up(b"same audio", name="Same Song Renamed.mp3", deck="deck_2")
+        assert len(calls) == 1
+        assert other_deck["vocal_source"] == "gemini"
+        assert (other_deck["file_id"], other_deck["deck"]) == ("deck_2_Same_Song_Renamed.mp3", "deck_2")
+        assert os.path.exists(os.path.join(d, "deck_2_Same_Song_Renamed.mp3"))
 
         changed = up(b"other audio, same name")
         assert len(calls) == 2

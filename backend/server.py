@@ -272,6 +272,22 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
     data["audio_url"] = f"/api/audio/{urllib.parse.quote(target_id)}"
     return JSONResponse(content={"status": "success", "track": data})
 
+async def _analysis_by_digest(digest: str) -> Optional[dict]:
+    """A current analysis of audio with this SHA-1, under whatever file id it was uploaded."""
+    def current(an):
+        return an and an.get("content_sha1") == digest and an.get("analysis_version") == ANALYSIS_VERSION
+    local = [an for an in ANALYSIS_CACHE.values() if current(an)]
+    if local:  # Gemini's vocal labels, when one copy has them
+        return max(local, key=lambda an: bool(an.get("vocal_source")))
+    if storage.enabled():
+        ref = await run_in_threadpool(storage.get_json, f"analysis/by-sha1/{digest}.json")
+        if ref and ref.get("file_id"):
+            an = await run_in_threadpool(storage.get_json, f"analysis/{ref['file_id']}.json")
+            if current(an):
+                return an
+    return None
+
+
 def _sha1_file(path: str) -> str:
     h = hashlib.sha1()
     with open(path, "rb") as f:
@@ -322,6 +338,14 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         # Cloud Run: keep the audio in the bucket so it survives restarts (a library, not a deck slot)
         await run_in_threadpool(storage.put_file, f"uploads/{file_id}", save_path)
 
+        # The same audio under another name or on the other deck: reuse its analysis too
+        same = await _analysis_by_digest(digest)
+        if same:
+            analysis = dict(same, file_id=file_id, title=clean_name, deck=deck,
+                            audio_url=f"/api/audio/{urllib.parse.quote(file_id)}")
+            await persist_analysis(file_id, analysis)
+            return JSONResponse(content={"status": "success", "track": analysis})
+
         # Analyze track
         analysis = await heavy(analyze_track, save_path)
         analysis["file_id"] = file_id
@@ -331,6 +355,7 @@ async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1"))
         analysis["content_sha1"] = digest
 
         await persist_analysis(file_id, analysis)
+        await run_in_threadpool(storage.put_json, f"analysis/by-sha1/{digest}.json", {"file_id": file_id})
 
         # Keep the in-memory cache lean (max 10 recent items) when the bucket holds every analysis;
         # without one this cache is the only record of the library
@@ -418,6 +443,9 @@ async def listen_vocals(request: Request):
         if not an.get("vocal_source"):
             apply_vocal_labels(an, labels, DEFAULT_GEMINI_MODEL)
             await persist_analysis(file_id, an)
+            if an.get("content_sha1"):  # the same audio uploaded again finds the labelled copy
+                await run_in_threadpool(storage.put_json, f"analysis/by-sha1/{an['content_sha1']}.json",
+                                        {"file_id": file_id})
     return JSONResponse(content={"status": "success", "vocal_source": an["vocal_source"],
                                  "section_map": an["section_map"]})
 

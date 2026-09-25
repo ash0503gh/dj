@@ -220,7 +220,8 @@ const MixPlanner = (() => {
    * A few transitions that are all safe to perform (same planner, same automation), for the AI
    * to choose from. The planner's own choice is always first. opts = plan() opts plus
    *   barsOptions: blend lengths to offer (default [16, 8]), perBars: exits per length (default 3),
-   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5).
+   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5),
+   *   extraExits: outgoing native times to offer as exits too (e.g. where a vocal line ends).
    * Each candidate is a plan with `technique` ('blend' or a cut technique) and `id` ('A', 'B', ...).
    * These are timing skeletons: MixBlocks.variants() dresses each in the styles worth trying.
    */
@@ -243,6 +244,19 @@ const MixPlanner = (() => {
         add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t })), tech);
       }
     }
+    // Moments asked for by the caller (planned there only if they are phrase lines still ahead), as
+    // blends and as switches. They skip the hole rule below: the sound check hears any real hole.
+    const requested = [];
+    for (const e of opts.extraExits || []) {
+      const kinds = opts.blend ? barsOptions.map(bars => [bars, true]).concat([[barsOptions[0], false]])
+                               : [[barsOptions[0], false]];
+      for (const [bars, blend] of kinds) {
+        const p = plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e, blend }));
+        if (p.exit && Math.abs(p.exitNative - e) < 0.05) {
+          requested.push([Object.assign(p, { requested: true }), blend ? 'blend' : (opts.cutTechnique || 'echo_freeze')]);
+        }
+      }
+    }
     // A clean, overlap-free exit when every blend would lay two lead vocals on top of each other
     // (key clashes are handled inside the blend: the mids swap together with the bass)
     if (opts.blend && list.length && list.every(c => c.vocalClash)) {
@@ -251,8 +265,10 @@ const MixPlanner = (() => {
     // Never offer a transition with a hole in it while a hole-free one exists (the planner's own
     // first choice included): keep the fewest holes, planner order otherwise
     const fewest = Math.min(...list.map(c => c.holes || 0));
-    const safe = list.filter(c => (c.holes || 0) === fewest);
-    return safe.slice(0, opts.max || 5).map((c, i) => Object.assign(c, { id: String.fromCharCode(65 + i) }));
+    const safe = list.filter(c => (c.holes || 0) === fewest).slice(0, opts.max || 5);
+    requested.forEach(([p, technique]) => add(p, technique));
+    return safe.concat(list.filter(c => c.requested))
+      .map((c, i) => Object.assign(c, { id: String.fromCharCode(65 + i) }));
   }
 
   /** What the AI needs to judge a candidate: plain facts, in native track seconds. */
@@ -276,6 +292,7 @@ const MixPlanner = (() => {
       out_vocals: c.technique === 'blend' && !!e.outVocal,
       key_clash: !!c.keyClash,
       out_bass_dropouts: e.bassDropouts || 0,
+      out_vocal_cut_s: r(c.vocalCutSec || 0),
       bass_holes: c.holes || 0,
       out_energy_falling: !!e.energyFalling,
       planner_score: e.score !== undefined ? r(e.score) : null,

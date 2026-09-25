@@ -42,7 +42,10 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     flawless mix reaches about 88%, so the higher bars are met as the ratings come in); otherwise the
     search goes on through more styles and later moments, and when it runs out the best one left plays,
     marked as under the bar.
-  - AI: Jev rates the leading mixes (free, as many rounds as needed); Gemini only breaks a near tie
+  - Vocals: with Gemini's labels, a mix that fades the outgoing's lead vocal before its 16-bar phrase ends
+    loses confidence (0.25 points a second), and the phrase lines right after a vocal run ends are offered
+    as extra moments. Every mix starts within 60 s of pressing MIX.
+  - AI: Jev rates every measured mix (free, 48 a request); Gemini only breaks a near tie
     between confident mixes when there is time (at most one call per mix, often none). Gemini also
     listens to each track once and marks which sections really carry a lead vocal.
   - `TransitionLab.benchmark({ outId, inId })` renders the planner's candidates, scores them, and shows what
