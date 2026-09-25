@@ -2,7 +2,7 @@
  * transition_lab.js - Render a planned transition offline and score it.
  *
  * Uses the SAME planner (MixPlanner.plan), deck graph (DJDeckAudio) and automation
- * (scheduleBlend / scheduleBlueprint) as the live console, rendered in an OfflineAudioContext
+ * (MixBlocks.perform / scheduleBlueprint) as the live console, rendered in an OfflineAudioContext
  * with the outgoing deck on channel 0 and the incoming deck on channel 1, then posts the stems
  * to /api/score-transition. Nothing runs unless called, e.g. from the devtools console:
  *
@@ -67,20 +67,21 @@ const TransitionLab = (() => {
   const near = (list, t, tol = 0.05) => (list || []).some(x => Math.abs(x - t) < tol);
 
   /**
-   * Render a planned blend offline with the live deck graph and automation.
+   * Render a planned mix (any MixBlocks style) offline with the live deck graph and automation.
    * side: { buffer, tempoRatio, rate, trimDb } for each deck (buffer = what the deck plays).
    * The outgoing deck is `preroll` seconds before the plan's start at ctx time 0.
    * stems: channel 0 = outgoing, channel 1 = incoming; otherwise a normal stereo mix.
-   * bands: 6 channels, outgoing/incoming as [0,1] full band, [2,3] bass (<150 Hz), [4,5] mids (300 Hz-3 kHz).
+   * bands: 8 channels, outgoing/incoming as [0,1] full band, [2,3] bass (<150 Hz), [4,5] mids
+   * (300 Hz-3 kHz), [6,7] highs (>3 kHz).
    */
   async function renderBlend({ out, inc, plan, blueprint = null, sr = SR, preroll = 16, tail = 16, stems = false,
                                bands = false }) {
     const p = Object.assign({}, plan, { startCtx: preroll });
     const outSpeed = out.tempoRatio * out.rate;
-    const ctx = new OfflineAudioContext(bands ? 6 : 2, Math.ceil((preroll + p.blendSec + tail) * sr), sr);
+    const ctx = new OfflineAudioContext(bands ? 8 : 2, Math.ceil((preroll + MixBlocks.postSec(p) + tail) * sr), sr);
     let busOut, busIn;
     if (bands) {
-      const merger = ctx.createChannelMerger(6);
+      const merger = ctx.createChannelMerger(8);
       merger.connect(ctx.destination);
       const chain = (src, specs) => specs.reduce((node, [type, hz]) => {
         const f = ctx.createBiquadFilter();
@@ -96,6 +97,7 @@ const TransitionLab = (() => {
         bus.connect(merger, 0, i);
         chain(bus, [['lowpass', 150], ['lowpass', 150]]).connect(merger, 0, 2 + i);
         chain(bus, [['highpass', 300], ['highpass', 300], ['lowpass', 3000], ['lowpass', 3000]]).connect(merger, 0, 4 + i);
+        chain(bus, [['highpass', 3000], ['highpass', 3000]]).connect(merger, 0, 6 + i);
       });
     } else if (stems) {
       const merger = ctx.createChannelMerger(2);
@@ -120,11 +122,31 @@ const TransitionLab = (() => {
     outDeck.audio.play(0, p.exitNative - preroll * outSpeed);
     const lead = p.inLeadSec || 0;  // a filter wash starts the incoming under it
     inDeck.audio.play(p.startCtx - lead, p.inStartNative - lead);
-    const schedule = { echo_freeze: MixPlanner.scheduleEchoOut, filter_wash: MixPlanner.scheduleWash }[p.technique]
-                     || MixPlanner.scheduleBlend;
     const marks = blueprint ? MixPlanner.scheduleBlueprint(blueprint, p, outDeck, inDeck)
-                            : schedule(p, outDeck, inDeck);
+                            : MixBlocks.perform(p, outDeck, inDeck);
     return { rendered: await ctx.startRendering(), marks };
+  }
+
+  /** Level (dB) of each of the `beats` beats of a deck's buffer before native time `nativeEnd`,
+   *  as it plays at its tempo ratio and rate (mono, no mixer): what the floor hears undisturbed. */
+  function dryBeatsDb(side, nativeEnd, beats, beatSec) {
+    const b = side.buffer;
+    const chans = [...Array(b.numberOfChannels).keys()].map(c => b.getChannelData(c));
+    const perBeat = beatSec * side.tempoRatio * side.rate;          // native seconds per beat
+    const out = [];
+    for (let k = beats; k > 0; k--) {
+      const i0 = Math.max(0, Math.floor((nativeEnd - k * perBeat) / side.tempoRatio * b.sampleRate));
+      const i1 = Math.min(b.length, Math.floor((nativeEnd - (k - 1) * perBeat) / side.tempoRatio * b.sampleRate));
+      let e = 0;
+      for (let i = i0; i < i1; i++) {
+        let v = 0;
+        for (const c of chans) v += c[i];
+        v /= chans.length;
+        e += v * v;
+      }
+      out.push(10 * Math.log10(e / Math.max(1, i1 - i0) + 1e-12));
+    }
+    return out;
   }
 
   /**
@@ -163,36 +185,15 @@ const TransitionLab = (() => {
     return stretchedCache.get(url);
   }
 
-  /** Render one plan (blend, or an overlap-free cut when plan.technique says so) and score it. */
+  /** Render one plan (blend, or a tempo-gap mix when plan.technique says so) and score it. */
   async function renderAndScore({ outTrack, inTrack, outBuf, inBuf, stretched, plan: p, outStart, blueprint }) {
     const blend = p.technique ? p.technique === 'blend' : Math.abs(outTrack.bpm / inTrack.bpm - 1) <= MixPlanner.MAX_STRETCH;
-    let rendered, marks;
-    if (blend) {
-      ({ rendered, marks } = await renderBlend({
-        out: { buffer: outBuf, tempoRatio: 1, rate: 1 },
-        inc: { buffer: stretched || inBuf, tempoRatio: stretched ? p.tempoRatio : 1, rate: 1 },
-        plan: p, blueprint, preroll: p.startCtx, stems: true,
-      }));
-    } else {
-      const ctx = new OfflineAudioContext(2, Math.ceil((p.startCtx + p.blendSec + 16) * SR), SR);
-      const merger = ctx.createChannelMerger(2);
-      merger.connect(ctx.destination);
-      const busOut = ctx.createGain();
-      const busIn = ctx.createGain();
-      busOut.connect(merger, 0, 0);
-      busIn.connect(merger, 0, 1);
-      const outDeck = new DJDeckAudio(ctx, 1, busOut);
-      const inDeck = new DJDeckAudio(ctx, 2, busIn);
-      outDeck.audio.nativeBuffer = outDeck.audio.buffer = outBuf;
-      inDeck.audio.nativeBuffer = inDeck.audio.buffer = inBuf;
-      outDeck.audio.play(0, outStart);
-      MixPlanner.neutral(inDeck, p.startCtx - 0.05, 1);
-      MixPlanner.setTrim(inDeck, p.inTrimDb || 0, p.startCtx - 0.05);
-      inDeck.audio.play(p.startCtx, inTrack.suggested_cue_intro || 0);
-      MixPlanner.cutAt(outDeck, p.startCtx);
-      marks = { start: p.startCtx, swap: p.startCtx, end: p.startCtx + 4 * p.beatSec };
-      rendered = await ctx.startRendering();
-    }
+    if (!p.technique) p.technique = blend ? 'blend' : 'echo_freeze';
+    const { rendered, marks } = await renderBlend({
+      out: { buffer: outBuf, tempoRatio: 1, rate: 1 },
+      inc: { buffer: blend && stretched || inBuf, tempoRatio: blend && stretched ? p.tempoRatio : 1, rate: 1 },
+      plan: p, blueprint, preroll: p.startCtx, stems: true,
+    });
 
     const form = new FormData();
     form.append('stems', wav16(rendered), 'stems.wav');
@@ -252,11 +253,11 @@ const TransitionLab = (() => {
    */
   async function quickScore({ out, inc, plan }) {
     const beat = plan.beatSec;
-    // 4 bars before (the "pre" level), plus the lead-in of an echo out or a filter wash
-    const preroll = 4 * 4 * beat + ({ echo_freeze: beat, filter_wash: plan.bars * 4 * beat }[plan.technique] || 0);
+    // 4 bars before (the "pre" level), plus whatever the mix does before its start (gap lead-ins)
+    const preroll = 4 * 4 * beat + MixBlocks.preSec(plan);
     const { rendered, marks } = await renderBlend({ out, inc, plan, sr: QUICK_SR, preroll,
                                                      tail: 4 * 4 * beat + 0.5, bands: true });
-    const ch = [0, 1, 2, 3, 4, 5].map(i => rendered.getChannelData(i));
+    const ch = [0, 1, 2, 3, 4, 5, 6, 7].map(i => rendered.getChannelData(i));
     const nBeat = Math.floor(beat * QUICK_SR);
     const a0 = Math.floor(marks.start / beat), a1 = Math.floor(marks.end / beat);
     // Bass: a deck carries the floor on a beat when its lows are within 12 dB of its loud beats
@@ -265,10 +266,18 @@ const TransitionLab = (() => {
     let both = 0, neither = 0, clash = 0;
     const mids = [ch[4], ch[5]].map(x => blockDb(x, nBeat));
     const midOn = mids.map(db => { const ref = pct(db, 0.95); return db.map(v => v > ref - 10 && v > -100); });
+    // Hats and percussion of two tempos heard together (beat-matched blends share a groove)
+    const highs = [ch[6], ch[7]].map(x => blockDb(x, nBeat));
+    const highOn = highs.map(db => { const ref = pct(db, 0.95); return db.map(v => v > ref - 10 && v > -100); });
+    const beatMatched = plan.technique === 'blend';
+    // A deliberate build (MixBlocks marks it) empties the floor on purpose: not a hole or a gap
+    const inBuild = b => marks.build && b >= Math.floor(marks.build[0] / beat) && b < Math.floor(marks.build[1] / beat);
+    let highClash = 0;
     for (let b = a0; b < Math.min(a1, lows[0].length); b++) {
       if (active[0][b] && active[1][b]) both++;
-      if (!active[0][b] && !active[1][b]) neither++;
+      if (!active[0][b] && !active[1][b] && !inBuild(b)) neither++;
       if (midOn[0][b] && midOn[1][b] && Math.abs(mids[0][b] - mids[1][b]) < 6) clash++;
+      if (!beatMatched && highOn[0][b] && highOn[1][b] && Math.abs(highs[0][b] - highs[1][b]) < 6) highClash++;
     }
     // Loudness per bar of the mix: the dip/bump against the level before and after
     const mix = new Float32Array(ch[0].length);
@@ -277,27 +286,32 @@ const TransitionLab = (() => {
     const b0 = Math.round(marks.start / (4 * beat)), b1 = Math.round(marks.end / (4 * beat));
     const pre = med(bars.slice(Math.max(0, b0 - 4), b0));
     const post = med(bars.slice(b1, b1 + 4).length ? bars.slice(b1, b1 + 4) : bars.slice(-1));
-    const during = bars.slice(b0, Math.max(b0 + 1, b1));
-    // A hole at beat resolution: the quietest beat of the transition (and the beat after it)
-    // against the level before it
+    const span = bars.slice(b0, Math.max(b0 + 1, b1));
+    const outsideBuild = span.filter((v, k) => !inBuild((b0 + k) * 4 + 3));
+    const during = outsideBuild.length ? outsideBuild : span;
+    // A hole at beat resolution: the quietest beat of the transition (and the beat after it) against
+    // the outgoing's own level in the 16 beats before the switch, dry: the same yardstick for every
+    // style at this moment, whatever it does before the switch
     const beatsDb = blockDb(mix, nBeat);
-    const preBeats = beatsDb.slice(Math.max(0, a0 - 16), a0);
-    const hole = preBeats.length ? med(preBeats) - Math.min(...beatsDb.slice(a0, Math.max(a0 + 1, a1 + 1))) : 0;
+    const floorDb = med(dryBeatsDb(out, plan.exitNative, 16, beat)) + (out.trimDb || 0);
+    const heard = beatsDb.slice(a0, Math.max(a0 + 1, a1 + 1)).filter((v, k) => !inBuild(a0 + k));
+    const hole = heard.length ? floorDb - Math.min(...heard) : 0;
     const m = {
       hole_db: +Math.max(0, hole).toFixed(2),
       bass_overlap_s: +(both * beat).toFixed(2),
       bass_gap_s: +(neither * beat).toFixed(2),
       mid_clash_s: +(clash * beat).toFixed(2),
+      high_clash_s: +(highClash * beat).toFixed(2),
       loudness_dip_db: +(Math.min(...during) - Math.min(pre, post)).toFixed(2),
       loudness_bump_db: +(Math.max(...during) - Math.max(pre, post)).toFixed(2),
     };
     return Object.assign(m, { penalty: penalty(m) });
   }
 
-  const MEASURED = new Set(['blend', 'echo_freeze', 'filter_wash']);
+  const MEASURED = new Set(['blend', 'echo_freeze']);   // skeletons MixBlocks can perform in any style
 
-  /** Measure every blend, echo out and filter wash candidate in place (c.measured). The incoming
-   *  is `inc` for blends (at the master tempo) and `incNative` (its own tempo) otherwise. */
+  /** Measure every blend and tempo-gap candidate in place (c.measured). The incoming is `inc` for
+   *  blends (at the master tempo) and `incNative` (its own tempo) otherwise. */
   async function measureAll(cands, out, inc, incNative = inc) {
     for (const c of cands) {
       if (!MEASURED.has(c.technique) || c.measured) continue;
@@ -327,9 +341,6 @@ const TransitionLab = (() => {
 
   // How the final choice weighs its signals, among candidates that passed the sound check
   const WEIGHTS = { jev: 0.45, gemini: 0.35, clean: 0.2, handover: 0.15 };
-  // Tracks handed over gradually (blends, filter washes) rather than switched (cuts, echo outs):
-  // the smoother of two equally clean transitions
-  const HANDOVER = new Set(['blend', 'filter_wash']);
 
   /**
    * Final choice. Only candidates that passed the sound check can win; among them each gets
@@ -352,7 +363,7 @@ const TransitionLab = (() => {
       const jev = scores && scores[c.id] ? scores[c.id].mean / 4 : 0.5;
       const clean = c.measured && best !== null ? 1 - Math.min(1, (c.measured.penalty - best) / ACCEPT_MARGIN) : 1;
       totals[c.id] = +(WEIGHTS.jev * jev + WEIGHTS.gemini * (c.id === gemini ? 1 : 0) + WEIGHTS.clean * clean +
-                       WEIGHTS.handover * (HANDOVER.has(c.technique) ? 1 : 0)).toFixed(3);
+                       WEIGHTS.handover * (MixBlocks.prefKeys(c)[0] === 'handover' ? 1 : 0)).toFixed(3);
     }
     // Without AI signals only what was actually sound-checked can win
     const pool = !scores && !gemini ? ok.filter(c => c.measured) : ok;
@@ -362,6 +373,34 @@ const TransitionLab = (() => {
     return { plan, verdict, totals };
   }
 
+  // ── Confidence (0-100): how sure we are a candidate will sound good to this DJ ──
+  // Sound: a clean render scores 100; every penalty point past 1.5 costs 5. Taste: the DJ's ratings
+  // of this kind of mix (prefs = { key: [likes, ratings] }, keys from MixBlocks.prefKeys), starting
+  // from a prior that gradual handovers are preferred to switches; half Jev's rating when there is one.
+  const TASTE_PRIOR = { handover: 0.7, switch: 0.5 };
+
+  function taste(c, prefs = {}) {
+    const [kind, ...details] = MixBlocks.prefKeys(c);
+    const mean = (key, prior, weight) => {
+      const [likes, n] = prefs[key] || [0, 0];
+      return (likes + prior * weight) / (n + weight);
+    };
+    let v = mean(kind, TASTE_PRIOR[kind], 4);
+    for (const key of details) v += (mean(key, 0.5, 4) - 0.5) / details.length;
+    return Math.max(0, Math.min(1, v));
+  }
+
+  function soundScore(c) {
+    return c.measured ? Math.max(0, Math.min(100, 100 - 5 * Math.max(0, c.measured.penalty - 1.5))) : null;
+  }
+
+  function confidence(c, prefs = {}) {
+    const sound = soundScore(c);
+    if (sound === null) return null;
+    const t = typeof c.jev === 'number' ? 0.5 * taste(c, prefs) + 0.5 * c.jev / 4 : taste(c, prefs);
+    return Math.round(0.6 * sound + 0.4 * 100 * t + (c.geminiPick ? 4 : 0));
+  }
+
   /** One number for "how clean did it sound" (lower is better): flams, bass holes/mud, level
    *  dips/spikes and two leads fighting. Musical taste (phrasing, energy) isn't in here. */
   function penalty(m, cut = false) {
@@ -369,7 +408,7 @@ const TransitionLab = (() => {
     // A cut never overlaps: its "flam" compares two tempos that are never heard together
     return +((cut ? 0 : (m.kick_flam_ms || 0) / 2) + 2 * (m.bass_gap_s || 0) + 2 * (m.bass_overlap_s || 0) +
              3 * Math.max(0, -(m.loudness_dip_db || 0) - 1.5) + 3 * Math.max(0, (m.loudness_bump_db || 0) - 1.5) +
-             3 * Math.max(0, (m.hole_db || 0) - 4) + (m.mid_clash_s || 0)).toFixed(2);
+             3 * Math.max(0, (m.hole_db || 0) - 4) + (m.mid_clash_s || 0) + (m.high_clash_s || 0)).toFixed(2);
   }
 
   /**
@@ -498,12 +537,14 @@ const TransitionLab = (() => {
   /** Export the blend that was just performed live: same buffers, plan and automation, 44.1 kHz. */
   async function exportPerformed(L) {
     const { rendered, marks } = await renderBlend({
-      out: L.out, inc: L.inc, plan: L.plan, blueprint: L.blueprint, sr: 44100, preroll: 16, tail: 16,
+      out: L.out, inc: L.inc, plan: L.plan, blueprint: L.blueprint, sr: 44100,
+      preroll: 16 + MixBlocks.preSec(L.plan), tail: 16,
     });
     return { blob: wav16(rendered), duration: rendered.duration, marks };
   }
 
-  return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed };
+  return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed,
+           taste, soundScore, confidence };
 })();
 
 window.TransitionLab = TransitionLab;

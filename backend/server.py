@@ -8,6 +8,7 @@ import uuid
 import json
 import shutil
 import gc
+import time
 import hashlib
 import asyncio
 import functools
@@ -419,6 +420,56 @@ async def listen_vocals(request: Request):
             await persist_analysis(file_id, an)
     return JSONResponse(content={"status": "success", "vocal_source": an["vocal_source"],
                                  "section_map": an["section_map"]})
+
+
+# The DJ's ratings of Auto mixes (last 2000): the console leans toward the kinds of mix they like.
+# Local file without a bucket, the bucket on Cloud Run (instances come and go).
+FEEDBACK: dict = {"ratings": None}
+
+
+async def _ratings() -> list:
+    if FEEDBACK["ratings"] is None:
+        data = await run_in_threadpool(storage.get_json, "feedback/ratings.json") if storage.enabled() else None
+        path = os.path.join(UPLOAD_DIR, "feedback.json")
+        if data is None and os.path.exists(path):
+            try:
+                with open(path) as f:
+                    data = json.load(f)
+            except (OSError, ValueError):
+                data = None
+        FEEDBACK["ratings"] = list((data or {}).get("ratings") or [])
+    return FEEDBACK["ratings"]
+
+
+@app.post("/api/feedback")
+async def post_feedback(request: Request):
+    """A rating of one Auto mix. Body: {rating: 1 | 0, keys: [...] (MixBlocks.prefKeys), style, label,
+    confidence, measured, jev, gemini_pick, pair}."""
+    body = await request.json()
+    keys = [str(k)[:64] for k in (body.get("keys") or [])][:12]
+    if not keys:
+        raise HTTPException(status_code=400, detail="no keys")
+    ratings = await _ratings()
+    record = {k: body.get(k) for k in ("style", "label", "confidence", "measured", "jev", "gemini_pick", "pair")}
+    record.update(rating=1 if body.get("rating") in (1, True, "1") else 0, keys=keys, at=int(time.time()))
+    ratings.append(record)
+    del ratings[:-2000]
+    with open(os.path.join(UPLOAD_DIR, "feedback.json"), "w") as f:
+        json.dump({"ratings": ratings}, f)
+    await run_in_threadpool(storage.put_json, "feedback/ratings.json", {"ratings": ratings}, {"count": len(ratings)})
+    return JSONResponse(content={"status": "success", "count": len(ratings)})
+
+
+@app.get("/api/feedback/summary")
+async def feedback_summary():
+    """Likes and ratings per feature key: {count, keys: {key: [likes, ratings]}}."""
+    ratings = await _ratings()
+    keys: dict = {}
+    for r in ratings:
+        for k in r.get("keys", []):
+            likes, n = keys.get(k, [0, 0])
+            keys[k] = [likes + int(r.get("rating", 0)), n + 1]
+    return JSONResponse(content={"count": len(ratings), "keys": keys})
 
 
 @app.post("/api/ai-choose-transition")

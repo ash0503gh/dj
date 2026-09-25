@@ -6,7 +6,7 @@
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=14.8">
+  <link rel="stylesheet" href="/css/style.css?v=15.0">
 </head>
 <body>
   <div class="dj-console">
@@ -424,9 +424,24 @@
       </div>
 
       <div class="sound-check">
-        <span class="section-label">SOUND CHECK</span>
+        <div class="sound-check-head">
+          <span class="section-label">SOUND CHECK</span>
+          <label class="conf-pick" title="Auto only plays a mix at least this confident; until then it keeps searching">MIX AT
+            <select id="confidence-select">
+              <option value="strict">85%+ strict</option>
+              <option value="balanced" selected>75%+</option>
+              <option value="relaxed">60%+ relaxed</option>
+            </select>
+          </label>
+        </div>
         <div id="sound-check-list" class="sound-check-list">
-          <span class="sc-empty">Every Auto transition is rendered and measured before it plays. Violet: Jev’s rating out of 4.</span>
+          <span class="sc-empty">Auto tries the mixing styles worth trying for each pair, measures every one before it plays and only mixes when confident. Violet: Jev’s rating out of 4.</span>
+        </div>
+        <div id="mix-rating" class="mix-rating" hidden>
+          <span class="mix-rating-q">RATE THAT MIX</span>
+          <button type="button" class="btn-tiny" data-rate="1">GOOD</button>
+          <button type="button" class="btn-tiny" data-rate="0">NOT FOR ME</button>
+          <span class="mix-rating-note"></span>
         </div>
       </div>
     </section>
@@ -560,13 +575,14 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=14.8"></script>
-  <script src="/js/mix_planner.js?v=14.8"></script>
-  <script src="/js/transition_lab.js?v=14.8"></script>
-  <script src="/js/mobile.js?v=14.8"></script>
-  <script src="/js/jog_wheel.js?v=14.8"></script>
-  <script src="/js/waveform.js?v=14.8"></script>
-  <script src="/js/knobs.js?v=14.8"></script>
-  <script src="/js/app.js?v=14.8"></script>
+  <script src="/js/audio_engine.js?v=15.0"></script>
+  <script src="/js/mix_planner.js?v=15.0"></script>
+  <script src="/js/mix_blocks.js?v=15.0"></script>
+  <script src="/js/transition_lab.js?v=15.0"></script>
+  <script src="/js/mobile.js?v=15.0"></script>
+  <script src="/js/jog_wheel.js?v=15.0"></script>
+  <script src="/js/waveform.js?v=15.0"></script>
+  <script src="/js/knobs.js?v=15.0"></script>
+  <script src="/js/app.js?v=15.0"></script>
 </body>
 </html>

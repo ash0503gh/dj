@@ -233,6 +233,25 @@ class BufferTransport {
   }
 }
 
+/**
+ * A room's reverb tail for a ConvolverNode: decaying stereo noise, from a fixed seed so every
+ * render of the same mix (the sound check) sounds the same.
+ */
+function roomImpulse(ctx, seconds = 3.0, rt60 = 2.4) {
+  const n = Math.round(seconds * ctx.sampleRate);
+  const ir = ctx.createBuffer(2, n, ctx.sampleRate);
+  let seed = 0x2545f491;
+  const rand = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 2147483648 - 1; };
+  for (let c = 0; c < 2; c++) {
+    const d = ir.getChannelData(c);
+    for (let i = 0; i < n; i++) {
+      const t = i / ctx.sampleRate;
+      d[i] = rand() * Math.exp(-6.9 * t / rt60) * Math.min(1, t / 0.01);
+    }
+  }
+  return ir;
+}
+
 class DJDeckAudio {
   constructor(ctx, deckNum, destination) {
     this.ctx = ctx;
@@ -555,6 +574,26 @@ class DJDeckAudio {
   /** Echo out at ctx time `at`, as a DJ does it: the track plays on until `at` (its last beat
    *  feeding the echo), then only the echo is left: one repeat per beat, each about 4 dB down,
    *  held for half of `tailBeats` and faded out over the rest. The deck stops at `at`. */
+  /**
+   * Reverb send, post-fader like the echo and past the crossfader, built on first use (a
+   * convolver costs CPU even when silent). Bass is kept out of the room (high-pass 250 Hz).
+   */
+  ensureReverb() {
+    if (this.reverbSend) return;
+    this.reverbSend = this.ctx.createGain();
+    this.reverbSend.gain.value = 0;
+    const room = this.ctx.createConvolver();
+    room.buffer = roomImpulse(this.ctx);
+    const lowCut = this.ctx.createBiquadFilter();
+    lowCut.type = 'highpass';
+    lowCut.frequency.value = 250;
+    this.reverbWet = this.ctx.createGain();
+    this.reverbWet.gain.value = 0.8;
+    this.reverbTailSec = room.buffer.duration;
+    this.faderGain.connect(this.reverbSend);
+    this.reverbSend.connect(room).connect(lowCut).connect(this.reverbWet).connect(this.destination);
+  }
+
   triggerEchoFreeze(bpm = 128.0, at = this.ctx.currentTime, tailBeats = 8) {
     const now = this.ctx.currentTime;
     const spb = 60.0 / bpm;
@@ -1001,7 +1040,12 @@ class DJDeckAudio {
     this.delayFeedback.gain.cancelScheduledValues(now);
     this.delayFeedback.gain.setValueAtTime(0.0, now);
     this.delayInputGate.gain.setValueAtTime(1.0, now);
+    this.echoSend.gain.cancelScheduledValues(now);
     this.echoSend.gain.setValueAtTime(1.0, now);
+    if (this.reverbSend) {
+      this.reverbSend.gain.cancelScheduledValues(now);
+      this.reverbSend.gain.setValueAtTime(0.0, now);
+    }
     this.flangerWetGain.gain.cancelScheduledValues(now);
     this.flangerWetGain.gain.setValueAtTime(0.0, now);
     this.flangerFeedback.gain.cancelScheduledValues(now);

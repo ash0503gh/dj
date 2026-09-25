@@ -498,6 +498,18 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .sound-check { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sound-check-list { display: flex; flex-direction: column; gap: 8px; }
 .sc-empty { font-size: 12px; color: var(--muted); line-height: 1.45; }
+.sound-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.conf-pick { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
+.conf-pick select { background: var(--raised); color: var(--text); border: 1px solid var(--line-3); border-radius: 4px;
+  font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }
+.check-summary { font-size: 10px; letter-spacing: 0.08em; color: var(--muted); text-transform: uppercase; }
+.check-row .check-bar { flex: 0 1 64px; }
+.check-label { flex: 1 1 0; min-width: 0; font-size: 10px; letter-spacing: 0.06em; color: var(--sc); text-transform: uppercase;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mix-rating { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 10px; letter-spacing: 0.1em; color: var(--text-2); }
+.mix-rating[hidden] { display: none; }
+.mix-rating .btn-tiny { height: 26px; font-size: 11px; }
+.mix-rating-note { color: var(--muted); letter-spacing: 0.02em; }
 .check-row { display: flex; align-items: center; gap: 10px; }
 .check-id { width: 20px; font-family: var(--font-mono); font-weight: 700; }
 .check-bar { flex-grow: 1; height: 8px; background: #1d1d21; border-radius: 4px; overflow: hidden; }

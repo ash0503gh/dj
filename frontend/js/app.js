@@ -1050,6 +1050,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const now = engine.ctx.currentTime;
     MixPlanner.holdAutomation(t.outDeck, now);
     MixPlanner.holdAutomation(t.inDeck, now);
+    [t.outDeck, t.inDeck].forEach(d => d._cancelRepeats());   // a loop roll in progress stops
     // The isolator bass kill has no knob: hand it over to the visible LOW EQ (killed) so the DJ
     // can bring the bass back
     [[t.outDeckNum, t.outDeck], [t.inDeckNum, t.inDeck]].forEach(([n, deck]) => {
@@ -1723,10 +1724,26 @@ document.addEventListener('DOMContentLoaded', () => {
   // automation relative to T. Timers only drive the UI and one-shot FX.
   const CUT_TECHNIQUES = new Set(['echo_freeze', 'vinyl_brake', 'spinback', 'noise_riser',
                                   'loop_roll', 'festival_drop', 'hard_cut']);
-  const AI_CHOICE_BUDGET_SEC = 8;    // how long the AI may think before the planner's choice stands
-  const SOUND_CHECK_BUDGET_SEC = 3;  // without AI: time to render and measure the candidates
-  const CHECK_BEFORE_AI_SEC = 1.5;   // with AI: sound check first (~0.6 s), then ask only if it matters
   let activeTransition = null;
+
+  // Auto: mixes are searched, measured and played only when confident (searchAndMix)
+  const CONFIDENCE_BARS = { strict: 85, balanced: 75, relaxed: 60 };
+  const SEARCH_LEAD_SEC = 12;  // candidates start at least this far ahead: time to search and rate them
+  const QUICK_LOOK = 12;       // mixes measured before the first decision (defaults and favourites first)
+  const TIE_BUDGET_SEC = 8;    // how long the AI may take to rate or break a tie
+  const confidenceSelect = document.getElementById('confidence-select');
+  if (confidenceSelect) {
+    try { confidenceSelect.value = localStorage.getItem('mix_confidence') || 'balanced'; } catch (e) { /* blocked */ }
+    confidenceSelect.addEventListener('change', () => {
+      try { localStorage.setItem('mix_confidence', confidenceSelect.value); } catch (e) { /* storage blocked */ }
+    });
+  }
+  const confidenceBar = () => CONFIDENCE_BARS[confidenceSelect && confidenceSelect.value] || CONFIDENCE_BARS.balanced;
+
+  // The DJ's ratings of past mixes, { key: [likes, ratings] } (keys: MixBlocks.prefKeys)
+  let tastePrefs = {};
+  fetch('/api/feedback/summary').then(r => (r.ok ? r.json() : null))
+    .then(d => { if (d && d.keys) tastePrefs = d.keys; }).catch(() => {});
 
   function camelotCompatible(a, b) {
     if (!a || !b) return true;
@@ -1861,62 +1878,11 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     if (!t.inTrack.grid || !t.outTrack.grid) console.warn('Beat grid not analyzed yet: using an estimated grid');
 
-    // Auto: the planner offers a few safe transitions, each is sound-checked (rendered offline and
-    // measured) and, with an AI model, the AI picks one in parallel. The AI's pick plays if it
-    // passed the sound check, otherwise the cleanest one. Candidates start after the budget, so
-    // the fallback is always still on time.
+    // Auto: every style worth trying at the planner's best moments is measured, and one plays only
+    // when confident
     if (selectedTechnique === 'auto') {
-      const useAI = aiModel !== 'local';
-      const budget = useAI ? AI_CHOICE_BUDGET_SEC + CHECK_BEFORE_AI_SEC : SOUND_CHECK_BUDGET_SEC;
-      const cands = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
-        leadSec: (t.blend ? 3.0 : cutLeadInBeats(tech, bars) * beatSecNow + 1.0) + budget,
-        barsOptions: bars >= 16 ? [bars, 8] : [bars, 16],
-        cutTechnique: tech,
-      }, tempoGap > MixPlanner.MAX_STRETCH ? { washOptions: [4, 8], perBars: 1, max: 6 } : {}));
-      if (cands.length > 1) {
-        const who = aiModel.startsWith('jev') ? 'JEV' : 'GEMINI';
-        transitionStatusBanner.textContent = `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
-        renderSoundCheck(cands, null, {}, {});
-        const measured = measureCandidates(t, cands);
-        const checkCap = (useAI ? CHECK_BEFORE_AI_SEC : budget) * 1000;
-        Promise.race([measured, new Promise(r => setTimeout(r, checkCap))]).then(() => {
-          if (activeTransition !== t) return null;
-          // With fewer than two candidates passing, the AI's answer can't change what plays: don't
-          // pay for it (unmeasured candidates count as passing)
-          const passing = TransitionLab.acceptable(cands).length;
-          const ask = useAI && passing >= 2;
-          if (ask) {
-            transitionStatusBanner.textContent = `🤖 ${who} IS CHOOSING BETWEEN ${passing} SOUND-CHECKED TRANSITIONS...`;
-          }
-          const ai = ask ? chooseWithAI(t, cands, aiModel) : Promise.resolve({});
-          const settled = Promise.race([measured, new Promise(r => setTimeout(r, useAI ? (AI_CHOICE_BUDGET_SEC + 1) * 1000 : 0))]);
-          return Promise.all([ai, settled]).then(([pick]) => ({ pick, ask }));
-        }).then((r) => {
-          if (!r || activeTransition !== t) return;  // aborted while choosing
-          const { pick, ask } = r;
-          const { plan, verdict, totals } = TransitionLab.settle(cands, { gemini: pick.gemini, scores: pick.scores });
-          renderSoundCheck(cands, plan.id, pick, totals);
-          const jev = id => (pick.scores && pick.scores[id] ? ` · JEV ${pick.scores[id].mean.toFixed(1)}/4` : '');
-          const note = {
-            ai: `GEMINI PICK ${plan.id}${jev(plan.id)}${pick.reason ? ': ' + pick.reason : ''}`,
-            combined: pick.gemini
-              ? `PLAYING ${plan.id}${jev(plan.id)}: RATED ABOVE GEMINI'S ${pick.gemini} ONCE SOUND-CHECKED`
-              : `JEV'S TOP-RATED ${plan.id}${jev(plan.id)}, SOUND-CHECKED`,
-            rejected: `GEMINI PICKED ${pick.gemini} BUT IT FAILED THE SOUND CHECK: PLAYING ${plan.id}${jev(plan.id)}`,
-            cleanest: useAI && !ask
-              ? `ONLY ${plan.id} PASSED THE SOUND CHECK`
-              : `CLEANEST OF ${cands.length} (SOUND-CHECKED)${useAI ? ', AI UNAVAILABLE' : ''}`,
-            smoothest: `${plan.id}: THE SMOOTHEST HANDOVER THAT PASSED THE SOUND CHECK${useAI ? ', AI UNAVAILABLE' : ''}`,
-            planner: useAI ? 'PLANNER PICK (AI UNAVAILABLE)' : null,
-          }[verdict];
-          commitTransitionPlan(t, plan, note);
-        });
-        return;
-      }
-      if (cands.length) {
-        commitTransitionPlan(t, cands[0], null);
-        return;
-      }
+      searchAndMix(t, planOpts, bars, aiModel);
+      return;
     }
 
     const leadIn = cutLeadInBeats(tech, bars);
@@ -1928,89 +1894,207 @@ document.addEventListener('DOMContentLoaded', () => {
   /** Beats of outgoing FX before an overlap-free technique's drop. */
   function cutLeadInBeats(tech, bars) {
     return {
-      echo_freeze: 1, filter_wash: 4 * bars, vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
+      echo_freeze: 1, vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
       festival_drop: 4 * Math.min(bars, 8),
     }[tech] || 0;
   }
 
-  /** Ask the AI to pick one candidate. Resolves to {plan, note}; the planner's first candidate
-   *  when the AI is unavailable, slow or answers with something that isn't on the list. */
-  async function chooseWithAI(t, cands, model) {
+  /** Jev's ratings (engines ['jev']) or Gemini's pick (['gemini']) of a few candidates, or {}. */
+  async function askAI(t, cands, engines, model) {
     const now = engine.ctx.currentTime;
     const outBpm = MixPlanner.deckBpm(t.outTrack, t.outDeck);
     const position = t.outDeck.audio.timeAt(now);
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), (AI_CHOICE_BUDGET_SEC + 1.0) * 1000);
+    const timer = setTimeout(() => ctrl.abort(), (TIE_BUDGET_SEC + 1.0) * 1000);
     try {
       const res = await fetch('/api/ai-choose-transition', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: ctrl.signal,
         body: JSON.stringify({
-          model,
-          budget_sec: AI_CHOICE_BUDGET_SEC,
+          model, engines, budget_sec: TIE_BUDGET_SEC,
           out: MixPlanner.trackSummary(t.outTrack, outBpm, Math.round(position * 10) / 10, position),
           in: MixPlanner.trackSummary(t.inTrack, t.inTrack.bpm || outBpm),
-          candidates: cands.map(c => MixPlanner.candidateFeatures(c, t.outTrack, t.inTrack, now)),
+          candidates: cands.map(c => Object.assign(MixPlanner.candidateFeatures(c, t.outTrack, t.inTrack, now),
+                                                   { recipe: MixBlocks.describe(c) })),
         }),
       });
-      const data = await res.json();
-      console.info('AI transition choice', data);
-      return {
-        gemini: cands.some(c => c.id === data.gemini_choice) ? data.gemini_choice : null,
-        reason: data.gemini_reason || '',
-        scores: data.scores || null,
-      };
+      return await res.json();
     } catch (err) {
-      console.warn('AI transition choice unavailable:', err);
+      console.warn(`AI (${engines.join(', ')}) unavailable:`, err);
+      return {};
     } finally {
       clearTimeout(timer);
     }
-    return {};
   }
 
-  /** The sound-check panel: each candidate's measured score, which one plays, and the AI's pick. */
+  const sameStyle = (a, b) => Object.keys(Object.assign({}, a, b)).every(k => (a[k] || 0) === (b[k] || 0));
+
+  /**
+   * Auto mix. The planner's best moments (skeletons), dressed in every style worth trying
+   * (MixBlocks.variants) and ordered most promising first, are rendered offline and measured a few
+   * at a time while the music plays. Each gets a confidence (TransitionLab.confidence: the sound, the
+   * DJ's ratings, Jev's). A mix plays once one clears the DJ's bar; until then the search goes on
+   * through more styles and later moments, and when it has run out the best one left plays, marked as
+   * below the bar. Jev rates the leaders once (no Gemini); Gemini only breaks a near tie.
+   */
+  async function searchAndMix(t, planOpts, bars, aiModel, attempt = 0) {
+    const gap = Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1) > MixPlanner.MAX_STRETCH;
+    const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
+      now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
+      barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 8,
+    }));
+    const cands = [];
+    skeletons.forEach((sk, rank) => MixBlocks.variants(sk, t.inTrack).forEach(c => cands.push(Object.assign(c, { rank }))));
+    if (!cands.length) {
+      commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars,
+        Object.assign({}, planOpts, { now: engine.ctx.currentTime, blend: !gap, leadSec: 3.0 })),
+        { technique: gap ? 'echo_freeze' : 'blend' }), 'NO ROOM TO SEARCH: THE PLANNER\'S OWN MIX');
+      return;
+    }
+    cands.forEach(c => {
+      c.promise = 100 * TransitionLab.taste(c, tastePrefs) - 6 * c.rank
+        + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 15 : 0);
+    });
+    cands.sort((a, b) => b.promise - a.promise);
+    cands.forEach((c, i) => { c.id = `M${i + 1}`; });
+    t.search = cands;
+
+    const bar = confidenceBar();
+    const useAI = aiModel !== 'local';
+    const deadline = c => c.startCtx - MixBlocks.preSec(c) - 1.5;   // last moment to commit to c
+    const rescore = () => cands.forEach(c => { if (c.measured) c.conf = TransitionLab.confidence(c, tastePrefs); });
+    let next = 0;
+    let jev = null;         // the Jev round in flight
+    let jevRounds = 0;
+    let shown = 0;
+    while (activeTransition === t) {
+      const batch = [];
+      while (next < cands.length && batch.length < 3) {
+        const c = cands[next++];
+        if (deadline(c) > engine.ctx.currentTime + 1) batch.push(c);
+      }
+      if (batch.length) await measureCandidates(t, batch);
+      if (activeTransition !== t) return;
+      rescore();
+      const now = engine.ctx.currentTime;
+      const live = cands.filter(c => c.measured && deadline(c) > now);
+      const checked = cands.filter(c => c.measured).length;
+      const done = next >= cands.length;
+      const quickDone = checked >= QUICK_LOOK || done;
+      // Jev rates the leaders once the quick look is in (free), and leaders found later in another
+      // round, so the ones in contention are compared on the same terms
+      const leaders = live.slice().sort((a, b) => utility(b) - utility(a)).slice(0, 12);
+      const unrated = leaders.filter(c => c.jev === undefined);
+      if (useAI && quickDone && (!jev || jev.settled) && jevRounds < 3 && unrated.length && leaders.length > 1) {
+        jevRounds++;
+        const ask = unrated.length > 1 ? unrated : leaders.slice(0, 2);
+        jev = { settled: false };
+        askAI(t, ask, ['jev'], 'jev-latest').then(d => {
+          ask.forEach(c => { c.jev = d.scores && d.scores[c.id] ? d.scores[c.id].mean : null; });
+          jev.settled = true;
+        });
+      }
+      const ranked = live.slice().sort((a, b) => utility(b) - utility(a));
+      const confident = ranked.filter(c => c.conf >= bar);
+      if (performance.now() - shown > 300 || done) {
+        shown = performance.now();
+        renderSoundCheck(cands);
+        const best = ranked.length ? Math.max(...ranked.map(c => c.conf)) : null;
+        transitionStatusBanner.textContent = `SEARCHING: ${checked}/${cands.length} MIXES CHECKED` +
+          (best !== null ? ` · BEST ${best}%` : '') + ` · PLAYS AT ${bar}%`;
+      }
+      const aiReady = !useAI || (jev && jev.settled && (jevRounds >= 3 || leaders.every(c => c.jev !== undefined)))
+        || leaders.length < 2;
+      if (quickDone && aiReady && confident.length) return settleOn(t, confident, aiModel, bar, false);
+      if (done && aiReady) {
+        if (ranked.length) return settleOn(t, ranked, aiModel, bar, true);
+        // Every moment passed while searching: look again from here
+        if (attempt < 1) return searchAndMix(t, planOpts, bars, aiModel, attempt + 1);
+        commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars,
+          Object.assign({}, planOpts, { now: engine.ctx.currentTime, blend: !gap, leadSec: 3.0 })),
+          { technique: gap ? 'echo_freeze' : 'blend' }), 'SEARCH RAN OUT OF TIME: THE PLANNER\'S OWN MIX');
+        return;
+      }
+      await new Promise(r => setTimeout(r, done ? 100 : 0));   // waiting for Jev, or letting the page breathe
+    }
+  }
+
+  /** Sooner is better once it's past 20 s: a much better mix may be worth a wait, not a long one. */
+  function utility(c) {
+    return c.conf - 0.1 * Math.max(0, (c.startCtx - engine.ctx.currentTime) - 20);
+  }
+
+  /** Commit to the best of `ranked` (confident ones, or the best left when `below` the bar). A near
+   *  tie between confident mixes is Gemini's to break, if there is time: its only call of the mix. */
+  async function settleOn(t, ranked, aiModel, bar, below) {
+    let pick = ranked[0];
+    const close = ranked.filter(c => c.conf >= pick.conf - 4).slice(0, 3);
+    const time = pick.startCtx - MixBlocks.preSec(pick) - 1.5 - engine.ctx.currentTime;
+    if (!below && aiModel.startsWith('gemini') && close.length > 1 && time > TIE_BUDGET_SEC + 1) {
+      transitionStatusBanner.textContent = `GEMINI IS BREAKING A TIE BETWEEN ${close.length} CONFIDENT MIXES...`;
+      const d = await askAI(t, close, ['gemini'], aiModel);
+      if (activeTransition !== t) return;
+      const g = close.find(c => c.id === d.gemini_choice);
+      if (g) {
+        g.geminiPick = true;
+        g.geminiReason = d.gemini_reason || '';
+        g.conf = TransitionLab.confidence(g, tastePrefs);
+        pick = close.slice().sort((a, b) => utility(b) - utility(a))[0];
+      }
+    }
+    const checked = t.search.filter(c => c.measured).length;
+    console.info(`Auto mix: ${pick.id} (${MixBlocks.label(pick)}) at ${pick.conf}% of ${checked} checked`, pick.measured);
+    pick.pair = { out: t.outTrack.file_id, in: t.inTrack.file_id,
+                  tempo_gap: +Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1).toFixed(3) };
+    renderSoundCheck(t.search, pick.id);
+    // The decision card shows the mix that will play, not the recommendation made before the search
+    if (aiRecTechnique) aiRecTechnique.textContent = MixBlocks.label(pick);
+    if (aiRecReason) aiRecReason.textContent = `${MixBlocks.describe(pick)}.`;
+    if (aiRecConfidence) aiRecConfidence.textContent = `${pick.conf}% CONFIDENT`;
+    const note = `${MixBlocks.label(pick)} · CONFIDENCE ${pick.conf}%` +
+      (below ? ` (UNDER YOUR ${bar}%: BEST OF ${checked} CHECKED)` : '') +
+      (pick.geminiPick ? ' · GEMINI BROKE A TIE' : '');
+    commitTransitionPlan(t, pick, note);
+  }
+
+  /** The sound-check panel: the most confident mixes found so far and which one plays. */
   const soundCheckList = document.getElementById('sound-check-list');
-  const SOUND_CHECKED = new Set(['blend', 'echo_freeze', 'filter_wash']);
-  function renderSoundCheck(cands, playedId, ai, totals) {
+  function renderSoundCheck(cands, playedId = null) {
     if (!soundCheckList) return;
-    const scores = cands.map(c => (c.measured ? c.measured.penalty : null));
-    const worst = Math.max(10, ...scores.filter(v => v !== null));
-    soundCheckList.replaceChildren(...cands.map((c, i) => {
-      const score = scores[i];
+    const bar = confidenceBar();
+    const measured = cands.filter(c => c.measured && typeof c.conf === 'number').sort((a, b) => b.conf - a.conf);
+    const rows = measured.slice(0, 6);
+    const played = playedId && cands.find(c => c.id === playedId);
+    if (played && !rows.includes(played)) rows.push(played);
+    const head = document.createElement('div');
+    head.className = 'check-summary';
+    head.textContent = `${measured.length} of ${cands.length} mixes checked · plays at ${bar}%+`;
+    soundCheckList.replaceChildren(head, ...rows.map(c => {
       const plays = c.id === playedId;
-      const failed = totals[c.id] === null;
-      const verdict = playedId === null ? (score === null ? (SOUND_CHECKED.has(c.technique) ? 'CHECKING' : 'NO OVERLAP') : 'MEASURED')
-        : plays ? 'PLAYS' : c.id === ai.gemini ? (failed ? 'AI PICK · FAIL' : 'GEMINI PICK') : failed ? 'FAILED' : 'SKIPPED';
-      const color = plays ? 'var(--ok)' : c.id === ai.gemini && failed ? 'var(--bad)'
-        : score !== null && score > 6 ? 'var(--warn)' : 'var(--muted)';
+      const color = plays ? 'var(--ok)' : c.conf >= bar ? 'var(--accent)' : 'var(--muted)';
       const row = document.createElement('div');
       row.className = 'check-row';
       row.style.setProperty('--sc', color);
-      row.title = c.technique === 'blend' || c.technique === 'filter_wash'
-        ? `${c.bars}-bar ${c.technique.replace(/_/g, ' ')} leaving at ${formatTime(c.exitNative)}`
-        : `${c.technique.replace(/_/g, ' ')} leaving at ${formatTime(c.exitNative)}`;
+      row.title = `${MixBlocks.describe(c)}. Leaves at ${formatTime(c.exitNative)}; measured penalty ` +
+        `${c.measured.penalty} (lower is cleaner)${c.geminiPick ? '; Gemini broke a tie in its favour' : ''}`;
       const id = document.createElement('span'); id.className = 'check-id'; id.textContent = c.id;
-      const bar = document.createElement('span'); bar.className = 'check-bar';
-      const fill = document.createElement('span'); fill.style.width = `${score === null ? 0 : Math.max(4, Math.min(100, 100 * score / worst))}%`;
-      bar.append(fill);
-      const val = document.createElement('span'); val.className = 'check-score'; val.textContent = score === null ? '–' : score.toFixed(1);
-      val.title = 'Measured sound: lower is cleaner';
-      const jevScore = ai.scores && ai.scores[c.id];
+      const meter = document.createElement('span'); meter.className = 'check-bar';
+      const fill = document.createElement('span'); fill.style.width = `${Math.max(4, c.conf)}%`;
+      meter.append(fill);
+      const val = document.createElement('span'); val.className = 'check-score'; val.textContent = `${c.conf}%`;
+      val.title = 'Confidence: measured sound, your ratings and Jev';
       const jev = document.createElement('span'); jev.className = 'check-jev';
-      jev.textContent = jevScore ? jevScore.mean.toFixed(1) : '';
-      if (jevScore) {
-        jev.title = `Jev rating out of 4: phrasing ${jevScore.phrasing}, energy ${jevScore.energy}, `
-          + `vocals ${jevScore.vocals}, crowd ${jevScore.crowd}, overall ${jevScore.overall}`;
-      }
-      const tag = document.createElement('span'); tag.className = 'check-verdict'; tag.textContent = verdict;
-      row.append(id, bar, val, jev, tag);
+      jev.textContent = typeof c.jev === 'number' ? c.jev.toFixed(1) : '';
+      if (typeof c.jev === 'number') jev.title = `Jev rating: ${c.jev.toFixed(1)} of 4`;
+      const what = document.createElement('span'); what.className = 'check-label';
+      what.textContent = (plays ? 'PLAYS: ' : '') + MixBlocks.label(c);
+      row.append(id, meter, val, jev, what);
       return row;
     }));
   }
 
-  /** Render every blend, echo out and filter wash candidate offline from the decks' own buffers
-   *  and measure it (c.measured). */
+  /** Render candidates offline from the decks' own buffers and measure them (c.measured). */
   async function measureCandidates(t, cands) {
     const blends = cands.filter(c => c.technique === 'blend');
     const ratio = blends.length ? blends[0].tempoRatio : 1;  // the master tempo: the same for every blend
@@ -2023,11 +2107,8 @@ document.addEventListener('DOMContentLoaded', () => {
                           : { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: stretch ? ratio : 1 };
     const out = { buffer: t.outDeck.audio.buffer, tempoRatio: t.outDeck.audio.tempoRatio,
                   rate: t.outDeck.audio.playbackRate, trimDb: t.outDeck.trimDb || 0 };
-    const t0 = performance.now();
     const native = { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: 1 };
     await TransitionLab.measureAll(cands, out, inc, native);
-    console.info(`Sound-checked ${cands.filter(c => c.measured).length} transitions in ${Math.round(performance.now() - t0)} ms`,
-                 cands.map(c => `${c.id}: ${c.measured ? c.measured.penalty : '-'}`).join(', '));
   }
 
   /** Lock in a plan and schedule everything from it. */
@@ -2040,7 +2121,8 @@ document.addEventListener('DOMContentLoaded', () => {
     t.plan = plan;
     t.aiNote = aiNote;
     const tech = t.tech;
-    t.leadInSec = cutLeadInBeats(tech, plan.bars) * plan.beatSec;
+    // How long before its start the mix already moves something (gap styles lead in)
+    t.leadInSec = plan.style ? MixBlocks.preSec(plan) : cutLeadInBeats(tech, plan.bars) * plan.beatSec;
 
     // Incoming at the master tempo, keylocked (usually prefetched already)
     t.bufferPromise = (t.blend && Math.abs(t.plan.tempoRatio - 1) >= 0.0005)
@@ -2071,7 +2153,8 @@ document.addEventListener('DOMContentLoaded', () => {
   function startTransitionHud(t) {
     const p = t.plan;
     const total0 = Math.max(0.001, p.startCtx - engine.ctx.currentTime);
-    const label = t.blend ? `${p.bars}-BAR BLEND` : t.tech.toUpperCase().replace(/_/g, ' ');
+    const label = p.style ? MixBlocks.label(p).toUpperCase()
+      : t.blend ? `${p.bars}-BAR BLEND` : t.tech.toUpperCase().replace(/_/g, ' ');
     phraseHud.classList.remove('hidden');
     t.intervals.push(setInterval(() => {
       const remain = p.startCtx - engine.ctx.currentTime;
@@ -2132,17 +2215,26 @@ document.addEventListener('DOMContentLoaded', () => {
     // Everything needed to re-render exactly this blend for export (in the browser)
     const side = deck => ({ buffer: deck.audio.buffer, tempoRatio: deck.audio.tempoRatio,
                             rate: deck.audio.playbackRate, trimDb: deck.trimDb || 0 });
-    lastPerformed = t.blend ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
-                                technique: t.tech } : null;
-    if (t.blend) runBlend(t); else runCut(t);
+    const recipe = t.blend || t.tech === 'echo_freeze';   // MixBlocks performs these, in any style
+    lastPerformed = recipe ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
+                               technique: t.tech } : null;
+    if (recipe) runRecipe(t); else runCut(t);
   }
 
-  function runBlend(t) {
+  /** A blend or a tempo-gap mix, in its style: the same automation the sound check measured. */
+  function runRecipe(t) {
     const p = t.plan;
     const T = p.startCtx;
-    t.inDeck.play(T, p.inStartNative);
-    t.marks = MixPlanner.scheduleBlend(p, t.outDeck, t.inDeck);
-    atCtx(t, T, () => setPlayUI(t.inBtnPlay, true));
+    const lead = p.inLeadSec || 0;                        // a filter wash starts the incoming early
+    t.inDeck.play(T - lead, p.inStartNative - lead);
+    t.marks = MixBlocks.perform(p, t.outDeck, t.inDeck);
+    atCtx(t, T - lead, () => setPlayUI(t.inBtnPlay, true));
+    if (!t.blend) {
+      const land = p.style && p.style.inPreBars ? 'LANDS ON ITS BUILD' : 'DROPS ON THE 1';
+      atCtx(t, T, () => {
+        transitionStatusBanner.textContent = `${(p.style ? MixBlocks.label(p) : 'echo out').toUpperCase()}: ${t.inName} ${land}`;
+      });
+    }
     atCtx(t, t.marks.end + 0.05, () => completeTransition(t));
   }
 
@@ -2155,21 +2247,13 @@ document.addEventListener('DOMContentLoaded', () => {
     const bpm = p.masterBpm;
     const { outDeck, inDeck, outDeckNum } = t;
 
-    // A filter wash starts the incoming under it (at its own tempo); the others on the switch
-    const lead = t.tech === 'filter_wash' ? p.inLeadSec : 0;
-    MixPlanner.neutral(inDeck, T - lead - 0.05, 1);
-    MixPlanner.setTrim(inDeck, p.inTrimDb || 0, T - lead - 0.05);
-    inDeck.play(T - lead, p.inStartNative - lead);
+    MixPlanner.neutral(inDeck, T - 0.05, 1);
+    MixPlanner.setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
+    inDeck.play(T, p.inStartNative);
     let cutTime = T;
-    let tail = 0.1;
+    const tail = 0.1;
 
-    if (t.tech === 'echo_freeze' || t.tech === 'filter_wash') {
-      // The same automation the sound check rendered and measured
-      const schedule = t.tech === 'filter_wash' ? MixPlanner.scheduleWash : MixPlanner.scheduleEchoOut;
-      const marks = schedule(p, outDeck, inDeck);
-      cutTime = null;  // the echo gates the dry signal itself
-      tail = marks.end - T + 0.3;  // until the echo has died out
-    } else if (t.tech === 'vinyl_brake') {
+    if (t.tech === 'vinyl_brake') {
       atCtx(t, T - 2 * beat, () => {
         applyDeckEQ(outDeckNum, 'low', -24);
         const t0 = engine.ctx.currentTime;
@@ -2237,7 +2321,42 @@ document.addEventListener('DOMContentLoaded', () => {
         if (b) b.style.display = 'none';
       });
       finishTransition(t.renderPromise);
+      if (t.plan.style) askForRating(t.plan);
     }, 40);
+  }
+
+  // ── The DJ rates each Auto mix: the ratings steer the confidence of mixes like it ──
+  const ratingBox = document.getElementById('mix-rating');
+  let ratedMix = null;
+  function askForRating(plan) {
+    if (!ratingBox) return;
+    ratedMix = plan;
+    ratingBox.querySelector('.mix-rating-note').textContent = `${MixBlocks.label(plan)} (${plan.conf}%)`;
+    ratingBox.hidden = false;
+  }
+  if (ratingBox) {
+    ratingBox.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-rate]');
+      if (!btn || !ratedMix) return;
+      const like = btn.dataset.rate === '1';
+      const keys = MixBlocks.prefKeys(ratedMix);
+      keys.forEach(k => {
+        const [likes, n] = tastePrefs[k] || [0, 0];
+        tastePrefs[k] = [likes + (like ? 1 : 0), n + 1];
+      });
+      fetch('/api/feedback', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          rating: like ? 1 : 0, keys, style: ratedMix.style, label: MixBlocks.label(ratedMix),
+          confidence: ratedMix.conf, measured: ratedMix.measured, jev: ratedMix.jev ?? null,
+          gemini_pick: !!ratedMix.geminiPick, pair: ratedMix.pair || null,
+        }),
+      }).catch(err => console.warn('Rating not saved:', err));
+      ratingBox.querySelector('.mix-rating-note').textContent = like ? 'Noted: more mixes like this one.'
+                                                                     : 'Noted: fewer mixes like this one.';
+      ratedMix = null;
+      setTimeout(() => { if (!ratedMix) ratingBox.hidden = true; }, 2500);
+    });
   }
 
   function finishTransition(renderPromise) {

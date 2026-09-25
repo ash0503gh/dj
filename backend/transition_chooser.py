@@ -34,13 +34,13 @@ def _mmss(t: Any) -> str:
 
 def describe(c: Dict[str, Any]) -> str:
     """One line a DJ would read: what this candidate does and what it risks."""
-    if c.get("technique") == "blend":
+    if c.get("recipe"):  # a MixBlocks style, described by the console
+        what = c["recipe"]
+        swap = ("the drop lands at the blend's end" if c.get("drop_aligned") else f"bass swap at bar {c.get('swap_bar')}") \
+            if c.get("technique") == "blend" else "the switch is on a phrase line"
+    elif c.get("technique") == "blend":
         what = f"{c.get('bars')}-bar blend"
         swap = "bass swaps on the incoming drop" if c.get("drop_aligned") else f"bass swaps at bar {c.get('swap_bar')}"
-    elif c.get("technique") == "filter_wash":
-        what = (f"{c.get('bars')}-bar filter wash (tempos too far apart to beat-match: a spectral crossfade, "
-                "the outgoing under a closing low-pass, the incoming above it until its bass lands on its drop)")
-        swap = "incoming arrives in full on its drop"
     else:
         what = str(c.get("technique", "cut")).replace("_", " ") + " (no overlap)"
         swap = "incoming drops in on the 1"

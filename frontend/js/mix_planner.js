@@ -8,7 +8,8 @@
  *  3. Every fader/EQ move is scheduled as AudioParam automation relative to one ctx start
  *     time, so the blend is sample-accurate and identical in an OfflineAudioContext (tests).
  *  4. Default blend: hats first, mids next, bass swapped in 30 ms on a downbeat with an
- *     isolator (never two basslines at once), outgoing mids/highs/fader out last.
+ *     isolator (never two basslines at once), outgoing mids/highs/fader out last. The moves
+ *     themselves (and the other styles a mix can take) are in mix_blocks.js.
  */
 const MixPlanner = (() => {
   const MAX_STRETCH = 0.08;    // beyond ±8% a blend sounds wrong: use an overlap-free technique
@@ -219,9 +220,9 @@ const MixPlanner = (() => {
    * A few transitions that are all safe to perform (same planner, same automation), for the AI
    * to choose from. The planner's own choice is always first. opts = plan() opts plus
    *   barsOptions: blend lengths to offer (default [16, 8]), perBars: exits per length (default 3),
-   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5),
-   *   washOptions: filter-wash lengths in bars to offer too (tempos too far apart to beat-match).
+   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5).
    * Each candidate is a plan with `technique` ('blend' or a cut technique) and `id` ('A', 'B', ...).
+   * These are timing skeletons: MixBlocks.variants() dresses each in the styles worth trying.
    */
   function candidates(outTrack, outDeck, inTrack, opts) {
     const list = [];
@@ -241,18 +242,6 @@ const MixPlanner = (() => {
       for (const e of base.exits.slice(1, opts.blend ? perBars : perBars + 1)) {
         add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t })), tech);
       }
-    }
-    // Filter washes at the same exit as the best overlap-free candidate, so they are measured
-    // against it on equal terms (their own best exit if it is too close). They end where an echo
-    // out would switch, so they need their length as extra lead. The incoming starts under the
-    // wash (half its length, in its own bars, never before the wash) and lands on its drop.
-    for (const w of (opts.blend ? [] : opts.washOptions || [])) {
-      const washSec = w * 4 * (60 / deckBpm(outTrack, outDeck));
-      const washOpts = Object.assign({}, opts, { leadSec: opts.leadSec + washSec,
-                                                 exit: list.length ? list[0].exitNative : undefined });
-      const p = plan(outTrack, outDeck, inTrack, w, washOpts);
-      p.inLeadSec = Math.min((w / 2) * p.inBarSec, p.inStartNative, washSec);
-      add(p, 'filter_wash');
     }
     // A clean, overlap-free exit when every blend would lay two lead vocals on top of each other
     // (key clashes are handled inside the blend: the mids swap together with the bass)
@@ -320,52 +309,6 @@ const MixPlanner = (() => {
     }
   }
 
-  const ECHO_TAIL_BEATS = 8;
-
-  /**
-   * Echo out, for tempos too far apart to beat-match. p.startCtx is the switch, where the incoming
-   * (started there by the caller) lands on its drop: the outgoing plays on to it, its last beat
-   * echoing out over the incoming, which eases in over its first bar.
-   */
-  function scheduleEchoOut(p, outDeck, inDeck) {
-    const T = p.startCtx;
-    const outVol = outDeck.faderGain.gain.value;
-    neutral(outDeck, T - p.beatSec - 0.05, outVol);
-    outDeck.triggerEchoFreeze(p.masterBpm, T, ECHO_TAIL_BEATS);
-    neutral(inDeck, T - 0.05, 0.7);
-    setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
-    inDeck.faderGain.gain.linearRampToValueAtTime(1, T + p.inBarSec);
-    return { start: T - p.beatSec, swap: T, end: T + ECHO_TAIL_BEATS * p.beatSec };
-  }
-
-  /**
-   * Filter wash, for tempos too far apart to beat-match: a spectral crossfade. While both play,
-   * one split frequency divides the spectrum between them, so the two tempos never share a band:
-   * the outgoing below it, the incoming above it. The split glides from 3 kHz down to 150 Hz, so
-   * the incoming takes over from the top and its bass arrives on its drop, at the switch
-   * (p.startCtx), as the outgoing's goes. Over the first part of the wash (before the incoming
-   * starts, p.inLeadSec before the switch) the outgoing is muffled toward 3 kHz alone.
-   */
-  function scheduleWash(p, outDeck, inDeck) {
-    const T = p.startCtx;
-    const W = p.bars * 4 * p.beatSec;
-    const inFrom = T - p.inLeadSec;
-    const outF = outDeck.filterLPF.frequency, inF = inDeck.filterHPF.frequency;
-    const outVol = outDeck.faderGain.gain.value;
-    neutral(outDeck, T - W - 0.05, outVol);
-    neutral(inDeck, inFrom - 0.05, 0.5);
-    setTrim(inDeck, p.inTrimDb || 0, inFrom - 0.05);
-    outF.setValueAtTime(Math.min(20000, outDeck.ctx.sampleRate / 2), T - W);
-    outF.exponentialRampToValueAtTime(3000, Math.max(T - W + 0.05, inFrom));
-    outF.exponentialRampToValueAtTime(150, T);
-    inF.setValueAtTime(3000, inFrom);
-    inF.exponentialRampToValueAtTime(150, T - 0.03);
-    inF.exponentialRampToValueAtTime(20, T);
-    curve(inDeck.faderGain.gain, inFrom, T, 0.5, 1);
-    outDeck.triggerEchoFreeze(p.masterBpm, T, ECHO_TAIL_BEATS);
-    return { start: T - W, swap: T, end: T + ECHO_TAIL_BEATS * p.beatSec };
-  }
-
   /** Isolator bass kill on/off, finishing exactly at ctx time `t` (30 ms move). */
   function bassKill(deck, t, kill) {
     [deck.lowCut1, deck.lowCut2].forEach(f => {
@@ -377,7 +320,8 @@ const MixPlanner = (() => {
 
   function deckParams(deck) {
     return [deck.faderGain.gain, deck.eqLow.gain, deck.eqMid.gain, deck.eqHigh.gain,
-            deck.lowCut1.frequency, deck.lowCut2.frequency, deck.filterHPF.frequency, deck.filterLPF.frequency];
+            deck.lowCut1.frequency, deck.lowCut2.frequency, deck.filterHPF.frequency, deck.filterLPF.frequency,
+            deck.echoSend.gain].concat(deck.reverbSend ? [deck.reverbSend.gain] : []);
   }
 
   function clearAutomation(deck, t) {
@@ -409,12 +353,10 @@ const MixPlanner = (() => {
     [deck.lowCut1.frequency, deck.lowCut2.frequency].forEach(p => p.setValueAtTime(OPEN_HZ, t));
     deck.filterHPF.frequency.setValueAtTime(20, t);
     deck.filterLPF.frequency.setValueAtTime(Math.min(20000, deck.ctx.sampleRate / 2), t);
+    deck.echoSend.gain.setValueAtTime(1, t);
+    if (deck.reverbSend) deck.reverbSend.gain.setValueAtTime(0, t);
   }
 
-  /**
-   * Schedule the default DJ blend. Incoming must be started at p.startCtx by the caller.
-   * Returns ctx times of the landmarks.
-   */
   /** Bass swap downbeat: on the incoming drop when it's planned to land at the blend's end,
    *  otherwise half-way (the incoming track already carries bass from its start). */
   function swapTime(p) {
@@ -427,49 +369,6 @@ const MixPlanner = (() => {
   function setTrim(deck, db, t) {
     deck.trimDb = db;
     deck.source.gain.setValueAtTime(Math.pow(10, db / 20), t);
-  }
-
-  function scheduleBlend(p, outDeck, inDeck) {
-    const T = p.startCtx;
-    const bar = 4 * p.beatSec;
-    const end = T + (p.bars + (p.tailBars || 0)) * bar;
-    const q = Math.max(1, p.bars / 4);                         // a quarter of the blend, in bars
-    const swap = swapTime(p);
-
-    // Incoming: silent, bass killed, mids down, hats slightly down
-    neutral(inDeck, T - 0.05, 0);
-    setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
-    bassKill(inDeck, T - 0.01, true);
-    inDeck.eqMid.gain.setValueAtTime(-24, T - 0.01);
-    inDeck.eqHigh.gain.setValueAtTime(-12, T - 0.01);
-    const outVol = outDeck.faderGain.gain.value;
-    neutral(outDeck, T - 0.05, outVol);
-
-    // 1. Hats and groove in over the first quarter
-    curve(inDeck.faderGain.gain, T, T + Math.min(4, q) * bar, 0, 1);
-    curve(inDeck.eqHigh.gain, T, T + q * bar, -12, 0);
-    // 2. Incoming mids up to the swap (kept low until the swap on a vocal/key clash)
-    if (p.vocalClash || p.keyClash) {
-      curve(inDeck.eqMid.gain, T, swap - bar, -24, -14);
-      curve(inDeck.eqMid.gain, swap - p.beatSec, swap, -14, 0, 8);
-    } else {
-      curve(inDeck.eqMid.gain, T, swap, -24, 0);
-    }
-    // 3. Bass swap on the 1
-    bassKill(outDeck, swap, true);
-    bassKill(inDeck, swap, false);
-    // 4. Outgoing mids out (at the swap on a clash, so the two vocals/harmonies never overlap)
-    if (p.vocalClash || p.keyClash) {
-      curve(outDeck.eqMid.gain, swap - p.beatSec, swap, 0, -24, 8);
-    } else {
-      curve(outDeck.eqMid.gain, swap, end - (p.tailBars ? 0.5 : 1) * bar, 0, -24);
-    }
-    // 5. Outgoing hats and fader out: over the tail after a drop swap, else the last quarter
-    const fadeFrom = p.tailBars ? swap : end - q * bar;
-    curve(outDeck.eqHigh.gain, fadeFrom, end - 0.5 * bar, 0, -24);
-    curve(outDeck.faderGain.gain, fadeFrom, end, outVol, 0);
-
-    return { start: T, swap, end };
   }
 
   /**
@@ -509,7 +408,8 @@ const MixPlanner = (() => {
   }
 
   return { MAX_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, candidates, candidateFeatures,
-           trackSummary, scheduleBlend, scheduleBlueprint, scheduleEchoOut, scheduleWash, neutral, clearAutomation, holdAutomation, cutAt, hasVocals };
+           trackSummary, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals,
+           curve, bassKill, swapTime };
 })();
 
 window.MixPlanner = MixPlanner;

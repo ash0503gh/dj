@@ -154,7 +154,7 @@
     document.addEventListener('DOMContentLoaded', () => setTimeout(refreshLabel, 0));
     rebuild();
   }
-  document.querySelectorAll('.deck-source select, #ai-model-select').forEach(enhanceSelect);
+  document.querySelectorAll('.deck-source select, #ai-model-select, #confidence-select').forEach(enhanceSelect);
 
   const hint = document.getElementById('rotate-hint');
   if (!hint) return;

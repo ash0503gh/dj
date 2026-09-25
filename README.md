@@ -22,25 +22,30 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - **Loop Roll Stutter (`loop_roll`)**: Accelerating $1/2 \to 1/4 \to 1/8 \to 1/16$ beat division repeats with anti-click envelopes.
   - **Festival Build & Drop (`festival_drop`)**: Multi-technique composite (HPF sweep + loop roll + white noise riser $\to$ 1-beat silence gap $\to$ $70\text{ Hz}\to 35\text{ Hz}$ sub-drop impact boom).
 
-- **AI Picks, the Planner Performs** (Auto technique):
-  - The mix planner builds a few transitions (master tempo, bass swapped on a downbeat, loudness matched,
-    no bars where the floor loses its bass) and Gemini picks one on musicality: which phrase to leave on,
-    8 or 16 bars, or an echo-out when two lead vocals would collide.
-  - Tempos too far apart to beat-match (over 8%): echo-outs (the outgoing plays to the switch, its last
-    beat echoing out over the incoming's drop) and filter washes (a 4 or 8-bar spectral crossfade: the
-    outgoing under a closing low-pass, the incoming above the same split until its bass lands on its drop).
-  - Sound check: meanwhile every blend, echo-out and wash is rendered offline in the browser from the decks'
-    own buffers and measured (bass gaps/mud, level dips/spikes and holes at beat resolution, clashing
-    mids, ~0.2 s each). Only candidates within 3 points of the cleanest can play; among those the AI's
-    pick counts most, and a gradual handover (blend, wash) is preferred to a switch (echo-out, cut). With
-    the Local model: the cleanest, or a wash within ~2 points of it.
-  - Gemini and Jev are asked in parallel within an 8 s budget; the preferred engine's answer wins if it is
-    on time, otherwise the other one's, otherwise the planner's own choice. Model menu: Gemini (default),
-    Jev, or Local (planner only).
-  - Gemini listens to each track once and marks which sections really carry a lead vocal (stored with the
-    analysis); the spectral vocal detector flagged nearly every section.
-  - `TransitionLab.benchmark({ outId, inId })` renders every candidate, scores it, and shows what each
-    engine picked.
+- **Auto: searched, measured, played only when confident** (Auto technique):
+  - Building blocks (`mix_blocks.js`): every move a DJ makes on the mixer — 3-band EQ, isolator bass swap,
+    filters, fader, echo, reverb, accelerating loop roll — scheduled on the audio clock, identical live
+    and in the offline sound check. A mix = a timing skeleton from the planner (where the outgoing leaves,
+    where the incoming enters, when the bass hands over) + a style (plain data: how the mids hand over,
+    how the outgoing leaves, how the incoming enters, how long the lead-in is). Nothing is tied to a
+    song pair: the search decides.
+  - Styles tried: beat-matched blends (mids overlap / snap / crossfade; outgoing out by EQ, filter, echo
+    or reverb) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb or cut,
+    after a high-pass rise, a loop roll or a reverb swell) and filter washes (spectral crossfade), landing
+    the incoming on its drop or on the build before it.
+  - Search: the planner's best moments x every style (60-150 mixes) are rendered offline and measured a
+    few at a time while the music plays (~0.15-0.35 s each; bass gaps/mud, holes against the outgoing's own
+    level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
+  - Confidence (0-100): 60% measured sound, 40% taste — the DJ's ratings of similar mixes (a GOOD /
+    NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
+    Jev has rated the leaders. A mix plays once one clears the bar (MIX AT 85 / 75 / 60%); otherwise the
+    search goes on through more styles and later moments, and when it runs out the best one left plays,
+    marked as under the bar.
+  - AI: Jev rates the leading mixes (free, as many rounds as needed); Gemini only breaks a near tie
+    between confident mixes when there is time (at most one call per mix, often none). Gemini also
+    listens to each track once and marks which sections really carry a lead vocal.
+  - `TransitionLab.benchmark({ outId, inId })` renders the planner's candidates, scores them, and shows what
+    each engine picked.
 
 - **Physical Acoustic Decision Engine**:
   - Pre-computed Librosa spectral profiles for 40 club tracks (BPM, Downbeats, Camelot Keys, Vocal Formants, Percussion Density).
