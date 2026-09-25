@@ -118,9 +118,12 @@ const TransitionLab = (() => {
     }
     const [outDeck, inDeck] = [decks[0][0], decks[1][0]];
     outDeck.audio.play(0, p.exitNative - preroll * outSpeed);
-    inDeck.audio.play(p.startCtx, p.inStartNative);
+    const lead = p.inLeadSec || 0;  // a filter wash starts the incoming under it
+    inDeck.audio.play(p.startCtx - lead, p.inStartNative - lead);
+    const schedule = { echo_freeze: MixPlanner.scheduleEchoOut, filter_wash: MixPlanner.scheduleWash }[p.technique]
+                     || MixPlanner.scheduleBlend;
     const marks = blueprint ? MixPlanner.scheduleBlueprint(blueprint, p, outDeck, inDeck)
-                            : MixPlanner.scheduleBlend(p, outDeck, inDeck);
+                            : schedule(p, outDeck, inDeck);
     return { rendered: await ctx.startRendering(), marks };
   }
 
@@ -249,7 +252,8 @@ const TransitionLab = (() => {
    */
   async function quickScore({ out, inc, plan }) {
     const beat = plan.beatSec;
-    const preroll = 4 * 4 * beat;                      // 4 bars before (the "pre" level)
+    // 4 bars before (the "pre" level), plus the lead-in of an echo out or a filter wash
+    const preroll = 4 * 4 * beat + ({ echo_freeze: beat, filter_wash: plan.bars * 4 * beat }[plan.technique] || 0);
     const { rendered, marks } = await renderBlend({ out, inc, plan, sr: QUICK_SR, preroll,
                                                      tail: 4 * 4 * beat + 0.5, bands: true });
     const ch = [0, 1, 2, 3, 4, 5].map(i => rendered.getChannelData(i));
@@ -274,7 +278,13 @@ const TransitionLab = (() => {
     const pre = med(bars.slice(Math.max(0, b0 - 4), b0));
     const post = med(bars.slice(b1, b1 + 4).length ? bars.slice(b1, b1 + 4) : bars.slice(-1));
     const during = bars.slice(b0, Math.max(b0 + 1, b1));
+    // A hole at beat resolution: the quietest beat of the transition (and the beat after it)
+    // against the level before it
+    const beatsDb = blockDb(mix, nBeat);
+    const preBeats = beatsDb.slice(Math.max(0, a0 - 16), a0);
+    const hole = preBeats.length ? med(preBeats) - Math.min(...beatsDb.slice(a0, Math.max(a0 + 1, a1 + 1))) : 0;
     const m = {
+      hole_db: +Math.max(0, hole).toFixed(2),
       bass_overlap_s: +(both * beat).toFixed(2),
       bass_gap_s: +(neither * beat).toFixed(2),
       mid_clash_s: +(clash * beat).toFixed(2),
@@ -284,12 +294,15 @@ const TransitionLab = (() => {
     return Object.assign(m, { penalty: penalty(m) });
   }
 
-  /** Measure every blend candidate in place (c.measured); overlap-free candidates need none. */
-  async function measureAll(cands, out, inc) {
+  const MEASURED = new Set(['blend', 'echo_freeze', 'filter_wash']);
+
+  /** Measure every blend, echo out and filter wash candidate in place (c.measured). The incoming
+   *  is `inc` for blends (at the master tempo) and `incNative` (its own tempo) otherwise. */
+  async function measureAll(cands, out, inc, incNative = inc) {
     for (const c of cands) {
-      if (c.technique !== 'blend' || c.measured) continue;
+      if (!MEASURED.has(c.technique) || c.measured) continue;
       try {
-        c.measured = await quickScore({ out, inc, plan: c });
+        c.measured = await quickScore({ out, inc: c.technique === 'blend' ? inc : incNative, plan: c });
       } catch (err) {
         console.warn(`Could not measure candidate ${c.id}:`, err);
       }
@@ -313,22 +326,24 @@ const TransitionLab = (() => {
   }
 
   // How the final choice weighs its signals, among candidates that passed the sound check
-  const WEIGHTS = { jev: 0.45, gemini: 0.35, clean: 0.2 };
+  const WEIGHTS = { jev: 0.45, gemini: 0.35, clean: 0.2, handover: 0.15 };
+  // Tracks handed over gradually (blends, filter washes) rather than switched (cuts, echo outs):
+  // the smoother of two equally clean transitions
+  const HANDOVER = new Set(['blend', 'filter_wash']);
 
   /**
    * Final choice. Only candidates that passed the sound check can win; among them each gets
    * 45% Jev's mean rating (0-4 over phrasing, energy, vocals, crowd, overall), 35% if it is
-   * Gemini's pick, 20% how close it sounds to the cleanest. ai = { gemini: id, scores: {id: {mean}} }.
-   * Returns { plan, verdict: 'ai' | 'combined' | 'rejected' | 'cleanest' | 'planner', totals }.
+   * Gemini's pick, 20% how close it sounds to the cleanest, 15% if it hands over gradually.
+   * Without AI signals Jev counts as neutral. ai = { gemini: id, scores: {id: {mean}} }.
+   * Returns { plan, verdict: 'ai' | 'combined' | 'rejected' | 'cleanest' | 'smoothest' | 'planner', totals }.
    */
   function settle(cands, ai = {}) {
     const ok = acceptable(cands);
     const measured = cands.some(c => c.measured);
     const scores = ai.scores || null;
     const gemini = cands.find(c => c.id === ai.gemini) ? ai.gemini : null;
-    if (!scores && !gemini) {
-      return { plan: measured ? cleanest(ok) : cands[0], verdict: measured ? 'cleanest' : 'planner', totals: {} };
-    }
+    if (!measured && !scores && !gemini) return { plan: cands[0], verdict: 'planner', totals: {} };
     const penalties = ok.filter(c => c.measured).map(c => c.measured.penalty);
     const best = penalties.length ? Math.min(...penalties) : null;
     const totals = {};
@@ -336,10 +351,14 @@ const TransitionLab = (() => {
       if (!ok.includes(c)) { totals[c.id] = null; continue; }
       const jev = scores && scores[c.id] ? scores[c.id].mean / 4 : 0.5;
       const clean = c.measured && best !== null ? 1 - Math.min(1, (c.measured.penalty - best) / ACCEPT_MARGIN) : 1;
-      totals[c.id] = +(WEIGHTS.jev * jev + WEIGHTS.gemini * (c.id === gemini ? 1 : 0) + WEIGHTS.clean * clean).toFixed(3);
+      totals[c.id] = +(WEIGHTS.jev * jev + WEIGHTS.gemini * (c.id === gemini ? 1 : 0) + WEIGHTS.clean * clean +
+                       WEIGHTS.handover * (HANDOVER.has(c.technique) ? 1 : 0)).toFixed(3);
     }
-    const plan = ok.reduce((a, b) => (totals[b.id] > totals[a.id] ? b : a));
-    const verdict = gemini && totals[gemini] === null ? 'rejected' : plan.id === gemini ? 'ai' : 'combined';
+    // Without AI signals only what was actually sound-checked can win
+    const pool = !scores && !gemini ? ok.filter(c => c.measured) : ok;
+    const plan = pool.reduce((a, b) => (totals[b.id] > totals[a.id] ? b : a));
+    const verdict = !scores && !gemini ? (plan === cleanest(ok) ? 'cleanest' : 'smoothest')
+      : gemini && totals[gemini] === null ? 'rejected' : plan.id === gemini ? 'ai' : 'combined';
     return { plan, verdict, totals };
   }
 
@@ -350,7 +369,7 @@ const TransitionLab = (() => {
     // A cut never overlaps: its "flam" compares two tempos that are never heard together
     return +((cut ? 0 : (m.kick_flam_ms || 0) / 2) + 2 * (m.bass_gap_s || 0) + 2 * (m.bass_overlap_s || 0) +
              3 * Math.max(0, -(m.loudness_dip_db || 0) - 1.5) + 3 * Math.max(0, (m.loudness_bump_db || 0) - 1.5) +
-             (m.mid_clash_s || 0)).toFixed(2);
+             3 * Math.max(0, (m.hole_db || 0) - 4) + (m.mid_clash_s || 0)).toFixed(2);
   }
 
   /**

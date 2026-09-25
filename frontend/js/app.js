@@ -1872,7 +1872,7 @@ document.addEventListener('DOMContentLoaded', () => {
         leadSec: (t.blend ? 3.0 : cutLeadInBeats(tech, bars) * beatSecNow + 1.0) + budget,
         barsOptions: bars >= 16 ? [bars, 8] : [bars, 16],
         cutTechnique: tech,
-      }));
+      }, tempoGap > MixPlanner.MAX_STRETCH ? { washOptions: [4, 8], perBars: 1, max: 6 } : {}));
       if (cands.length > 1) {
         const who = aiModel.startsWith('jev') ? 'JEV' : 'GEMINI';
         transitionStatusBanner.textContent = `🎧 SOUND-CHECKING ${cands.length} TRANSITIONS...`;
@@ -1906,6 +1906,7 @@ document.addEventListener('DOMContentLoaded', () => {
             cleanest: useAI && !ask
               ? `ONLY ${plan.id} PASSED THE SOUND CHECK`
               : `CLEANEST OF ${cands.length} (SOUND-CHECKED)${useAI ? ', AI UNAVAILABLE' : ''}`,
+            smoothest: `${plan.id}: THE SMOOTHEST HANDOVER THAT PASSED THE SOUND CHECK${useAI ? ', AI UNAVAILABLE' : ''}`,
             planner: useAI ? 'PLANNER PICK (AI UNAVAILABLE)' : null,
           }[verdict];
           commitTransitionPlan(t, plan, note);
@@ -1927,7 +1928,7 @@ document.addEventListener('DOMContentLoaded', () => {
   /** Beats of outgoing FX before an overlap-free technique's drop. */
   function cutLeadInBeats(tech, bars) {
     return {
-      echo_freeze: 1, vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
+      echo_freeze: 1, filter_wash: 4 * bars, vinyl_brake: 2, spinback: 3, noise_riser: 16, loop_roll: 4 * Math.min(bars, 4),
       festival_drop: 4 * Math.min(bars, 8),
     }[tech] || 0;
   }
@@ -1970,6 +1971,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   /** The sound-check panel: each candidate's measured score, which one plays, and the AI's pick. */
   const soundCheckList = document.getElementById('sound-check-list');
+  const SOUND_CHECKED = new Set(['blend', 'echo_freeze', 'filter_wash']);
   function renderSoundCheck(cands, playedId, ai, totals) {
     if (!soundCheckList) return;
     const scores = cands.map(c => (c.measured ? c.measured.penalty : null));
@@ -1978,15 +1980,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const score = scores[i];
       const plays = c.id === playedId;
       const failed = totals[c.id] === null;
-      const verdict = playedId === null ? (score === null ? (c.technique === 'blend' ? 'CHECKING' : 'NO OVERLAP') : 'MEASURED')
+      const verdict = playedId === null ? (score === null ? (SOUND_CHECKED.has(c.technique) ? 'CHECKING' : 'NO OVERLAP') : 'MEASURED')
         : plays ? 'PLAYS' : c.id === ai.gemini ? (failed ? 'AI PICK · FAIL' : 'GEMINI PICK') : failed ? 'FAILED' : 'SKIPPED';
       const color = plays ? 'var(--ok)' : c.id === ai.gemini && failed ? 'var(--bad)'
         : score !== null && score > 6 ? 'var(--warn)' : 'var(--muted)';
       const row = document.createElement('div');
       row.className = 'check-row';
       row.style.setProperty('--sc', color);
-      row.title = c.technique === 'blend'
-        ? `${c.bars}-bar blend leaving at ${formatTime(c.exitNative)}`
+      row.title = c.technique === 'blend' || c.technique === 'filter_wash'
+        ? `${c.bars}-bar ${c.technique.replace(/_/g, ' ')} leaving at ${formatTime(c.exitNative)}`
         : `${c.technique.replace(/_/g, ' ')} leaving at ${formatTime(c.exitNative)}`;
       const id = document.createElement('span'); id.className = 'check-id'; id.textContent = c.id;
       const bar = document.createElement('span'); bar.className = 'check-bar';
@@ -2007,11 +2009,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }));
   }
 
-  /** Render every blend candidate offline from the decks' own buffers and measure it (c.measured). */
+  /** Render every blend, echo out and filter wash candidate offline from the decks' own buffers
+   *  and measure it (c.measured). */
   async function measureCandidates(t, cands) {
     const blends = cands.filter(c => c.technique === 'blend');
-    if (!blends.length) return;
-    const ratio = blends[0].tempoRatio;  // the master tempo: the same for every blend
+    const ratio = blends.length ? blends[0].tempoRatio : 1;  // the master tempo: the same for every blend
     const stretch = Math.abs(ratio - 1) >= 0.0005;
     const stretched = stretch
       ? await Promise.race([stretchedBuffer(t.inTrack, ratio), new Promise(r => setTimeout(() => r(null), 2000))])
@@ -2022,8 +2024,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const out = { buffer: t.outDeck.audio.buffer, tempoRatio: t.outDeck.audio.tempoRatio,
                   rate: t.outDeck.audio.playbackRate, trimDb: t.outDeck.trimDb || 0 };
     const t0 = performance.now();
-    await TransitionLab.measureAll(cands, out, inc);
-    console.info(`Sound-checked ${blends.length} transitions in ${Math.round(performance.now() - t0)} ms`,
+    const native = { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: 1 };
+    await TransitionLab.measureAll(cands, out, inc, native);
+    console.info(`Sound-checked ${cands.filter(c => c.measured).length} transitions in ${Math.round(performance.now() - t0)} ms`,
                  cands.map(c => `${c.id}: ${c.measured ? c.measured.penalty : '-'}`).join(', '));
   }
 
@@ -2152,25 +2155,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const bpm = p.masterBpm;
     const { outDeck, inDeck, outDeckNum } = t;
 
-    MixPlanner.neutral(inDeck, T - 0.05, 1);
-    MixPlanner.setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
-    inDeck.play(T, p.inStartNative);
+    // A filter wash starts the incoming under it (at its own tempo); the others on the switch
+    const lead = t.tech === 'filter_wash' ? p.inLeadSec : 0;
+    MixPlanner.neutral(inDeck, T - lead - 0.05, 1);
+    MixPlanner.setTrim(inDeck, p.inTrimDb || 0, T - lead - 0.05);
+    inDeck.play(T - lead, p.inStartNative - lead);
     let cutTime = T;
     let tail = 0.1;
 
-    if (t.tech === 'echo_freeze') {
-      // Echo the outgoing's last beat out (bass off as the echo opens); the incoming eases in
-      // over its first bar instead of landing at full level on top of the echo
-      atCtx(t, T - beat, () => {
-        applyDeckEQ(outDeckNum, 'low', -24);
-        applyDeckEQ(outDeckNum, 'mid', -6);
-      });
-      outDeck.triggerEchoFreeze(bpm, T, 4);
-      const inBar = 4 * 60 / (t.inTrack.bpm || bpm);
-      inDeck.faderGain.gain.setValueAtTime(0.5, T - 0.05);
-      inDeck.faderGain.gain.linearRampToValueAtTime(1, T + inBar);
+    if (t.tech === 'echo_freeze' || t.tech === 'filter_wash') {
+      // The same automation the sound check rendered and measured
+      const schedule = t.tech === 'filter_wash' ? MixPlanner.scheduleWash : MixPlanner.scheduleEchoOut;
+      const marks = schedule(p, outDeck, inDeck);
       cutTime = null;  // the echo gates the dry signal itself
-      tail = 4 * beat + 0.3;
+      tail = marks.end - T + 0.3;  // until the echo has died out
     } else if (t.tech === 'vinyl_brake') {
       atCtx(t, T - 2 * beat, () => {
         applyDeckEQ(outDeckNum, 'low', -24);

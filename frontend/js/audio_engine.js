@@ -552,14 +552,13 @@ class DJDeckAudio {
     this.cuePosition = 0;
   }
 
-  /** Echo out at ctx time `at`, as a DJ does it: the echo (one repeat per beat) opens a beat
-   *  early while the track still plays, the dry signal fades over the last half beat, and after
-   *  `at` only the echo is left, dying out within `tailBeats`. Kept short so it barely overlaps a
-   *  next track at another tempo. The deck stops at `at`. */
-  triggerEchoFreeze(bpm = 128.0, at = this.ctx.currentTime, tailBeats = 4) {
+  /** Echo out at ctx time `at`, as a DJ does it: the track plays on until `at` (its last beat
+   *  feeding the echo), then only the echo is left: one repeat per beat, each about 4 dB down,
+   *  held for half of `tailBeats` and faded out over the rest. The deck stops at `at`. */
+  triggerEchoFreeze(bpm = 128.0, at = this.ctx.currentTime, tailBeats = 8) {
     const now = this.ctx.currentTime;
     const spb = 60.0 / bpm;
-    const t0 = Math.max(now, at - spb), end = at + tailBeats * spb;
+    const t0 = Math.max(now, at - spb), end = at + tailBeats * spb, hold = at + (tailBeats / 2) * spb;
     [this.delayNode.delayTime, this.delayWetGain.gain, this.delayFeedback.gain,
      this.delayInputGate.gain, this.echoSend.gain].forEach(p => p.cancelScheduledValues(t0));
     this.delayNode.delayTime.setValueAtTime(spb, t0);
@@ -567,15 +566,17 @@ class DJDeckAudio {
     this.delayInputGate.gain.setValueAtTime(1.0, t0);
     this.delayInputGate.gain.setValueAtTime(1.0, at - 0.03);
     this.delayInputGate.gain.linearRampToValueAtTime(0.0, at);
-    this.delayWetGain.gain.setValueAtTime(0.0001, t0);
-    this.delayWetGain.gain.exponentialRampToValueAtTime(0.7, at);
+    this.delayWetGain.gain.setValueAtTime(0.6, t0);
+    this.delayWetGain.gain.setValueAtTime(0.6, hold);
     this.delayWetGain.gain.exponentialRampToValueAtTime(0.001, end);
-    this.delayFeedback.gain.setValueAtTime(0.55, t0);
-    this.delayFeedback.gain.setValueAtTime(0.55, at);
+    this.delayFeedback.gain.setValueAtTime(0.6, t0);
+    this.delayFeedback.gain.setValueAtTime(0.6, hold);
     this.delayFeedback.gain.exponentialRampToValueAtTime(0.001, end);
-    this.echoSend.gain.setValueAtTime(1.0, Math.max(t0, at - spb / 2));
+    // The first repeat arrives at `at`: the dry track holds until then (no hole before the switch)
+    this.echoSend.gain.setValueAtTime(1.0, at - 0.03);
     this.echoSend.gain.linearRampToValueAtTime(0.0, at);
 
+    if (this.ctx instanceof OfflineAudioContext) return;  // sound check: the render simply ends
     setTimeout(() => this.pause(), Math.max(0, (at + 0.05 - now) * 1000));
     setTimeout(() => {
       const resetNow = this.ctx.currentTime;

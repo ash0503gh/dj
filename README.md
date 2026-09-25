@@ -26,10 +26,14 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - The mix planner builds a few transitions (master tempo, bass swapped on a downbeat, loudness matched,
     no bars where the floor loses its bass) and Gemini picks one on musicality: which phrase to leave on,
     8 or 16 bars, or an echo-out when two lead vocals would collide.
-  - Sound check: meanwhile every candidate is rendered offline in the browser from the decks' own buffers
-    and measured (bass gaps/mud, level dips/spikes, clashing mids, ~0.2 s each). The AI's pick plays only
-    if it's within 3 points of the cleanest; otherwise the cleanest plays. With the Local model the
-    cleanest always plays.
+  - Tempos too far apart to beat-match (over 8%): echo-outs (the outgoing plays to the switch, its last
+    beat echoing out over the incoming's drop) and filter washes (a 4 or 8-bar spectral crossfade: the
+    outgoing under a closing low-pass, the incoming above the same split until its bass lands on its drop).
+  - Sound check: meanwhile every blend, echo-out and wash is rendered offline in the browser from the decks'
+    own buffers and measured (bass gaps/mud, level dips/spikes and holes at beat resolution, clashing
+    mids, ~0.2 s each). Only candidates within 3 points of the cleanest can play; among those the AI's
+    pick counts most, and a gradual handover (blend, wash) is preferred to a switch (echo-out, cut). With
+    the Local model: the cleanest, or a wash within ~2 points of it.
   - Gemini and Jev are asked in parallel within an 8 s budget; the preferred engine's answer wins if it is
     on time, otherwise the other one's, otherwise the planner's own choice. Model menu: Gemini (default),
     Jev, or Local (planner only).

@@ -37,6 +37,10 @@ def describe(c: Dict[str, Any]) -> str:
     if c.get("technique") == "blend":
         what = f"{c.get('bars')}-bar blend"
         swap = "bass swaps on the incoming drop" if c.get("drop_aligned") else f"bass swaps at bar {c.get('swap_bar')}"
+    elif c.get("technique") == "filter_wash":
+        what = (f"{c.get('bars')}-bar filter wash (tempos too far apart to beat-match: a spectral crossfade, "
+                "the outgoing under a closing low-pass, the incoming above it until its bass lands on its drop)")
+        swap = "incoming arrives in full on its drop"
     else:
         what = str(c.get("technique", "cut")).replace("_", " ") + " (no overlap)"
         swap = "incoming drops in on the 1"

@@ -195,6 +195,7 @@ const MixPlanner = (() => {
       inTrimDb,
       tempoRatio,
       masterBpm: outBpm,
+      inBarSec: inBar,            // the incoming's bar at its native tempo
       beatSec,
       blendSec: (bars + tailBars) * 4 * beatSec,
       exitNative: best,
@@ -218,7 +219,8 @@ const MixPlanner = (() => {
    * A few transitions that are all safe to perform (same planner, same automation), for the AI
    * to choose from. The planner's own choice is always first. opts = plan() opts plus
    *   barsOptions: blend lengths to offer (default [16, 8]), perBars: exits per length (default 3),
-   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5).
+   *   cutTechnique: technique for overlap-free candidates, max: list size (default 5),
+   *   washOptions: filter-wash lengths in bars to offer too (tempos too far apart to beat-match).
    * Each candidate is a plan with `technique` ('blend' or a cut technique) and `id` ('A', 'B', ...).
    */
   function candidates(outTrack, outDeck, inTrack, opts) {
@@ -239,6 +241,18 @@ const MixPlanner = (() => {
       for (const e of base.exits.slice(1, opts.blend ? perBars : perBars + 1)) {
         add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t })), tech);
       }
+    }
+    // Filter washes at the same exit as the best overlap-free candidate, so they are measured
+    // against it on equal terms (their own best exit if it is too close). They end where an echo
+    // out would switch, so they need their length as extra lead. The incoming starts under the
+    // wash (half its length, in its own bars, never before the wash) and lands on its drop.
+    for (const w of (opts.blend ? [] : opts.washOptions || [])) {
+      const washSec = w * 4 * (60 / deckBpm(outTrack, outDeck));
+      const washOpts = Object.assign({}, opts, { leadSec: opts.leadSec + washSec,
+                                                 exit: list.length ? list[0].exitNative : undefined });
+      const p = plan(outTrack, outDeck, inTrack, w, washOpts);
+      p.inLeadSec = Math.min((w / 2) * p.inBarSec, p.inStartNative, washSec);
+      add(p, 'filter_wash');
     }
     // A clean, overlap-free exit when every blend would lay two lead vocals on top of each other
     // (key clashes are handled inside the blend: the mids swap together with the bass)
@@ -304,6 +318,52 @@ const MixPlanner = (() => {
     for (let i = 1; i <= steps; i++) {
       param.linearRampToValueAtTime(v0 + (v1 - v0) * smoother(i / steps), t0 + (t1 - t0) * (i / steps));
     }
+  }
+
+  const ECHO_TAIL_BEATS = 8;
+
+  /**
+   * Echo out, for tempos too far apart to beat-match. p.startCtx is the switch, where the incoming
+   * (started there by the caller) lands on its drop: the outgoing plays on to it, its last beat
+   * echoing out over the incoming, which eases in over its first bar.
+   */
+  function scheduleEchoOut(p, outDeck, inDeck) {
+    const T = p.startCtx;
+    const outVol = outDeck.faderGain.gain.value;
+    neutral(outDeck, T - p.beatSec - 0.05, outVol);
+    outDeck.triggerEchoFreeze(p.masterBpm, T, ECHO_TAIL_BEATS);
+    neutral(inDeck, T - 0.05, 0.7);
+    setTrim(inDeck, p.inTrimDb || 0, T - 0.05);
+    inDeck.faderGain.gain.linearRampToValueAtTime(1, T + p.inBarSec);
+    return { start: T - p.beatSec, swap: T, end: T + ECHO_TAIL_BEATS * p.beatSec };
+  }
+
+  /**
+   * Filter wash, for tempos too far apart to beat-match: a spectral crossfade. While both play,
+   * one split frequency divides the spectrum between them, so the two tempos never share a band:
+   * the outgoing below it, the incoming above it. The split glides from 3 kHz down to 150 Hz, so
+   * the incoming takes over from the top and its bass arrives on its drop, at the switch
+   * (p.startCtx), as the outgoing's goes. Over the first part of the wash (before the incoming
+   * starts, p.inLeadSec before the switch) the outgoing is muffled toward 3 kHz alone.
+   */
+  function scheduleWash(p, outDeck, inDeck) {
+    const T = p.startCtx;
+    const W = p.bars * 4 * p.beatSec;
+    const inFrom = T - p.inLeadSec;
+    const outF = outDeck.filterLPF.frequency, inF = inDeck.filterHPF.frequency;
+    const outVol = outDeck.faderGain.gain.value;
+    neutral(outDeck, T - W - 0.05, outVol);
+    neutral(inDeck, inFrom - 0.05, 0.5);
+    setTrim(inDeck, p.inTrimDb || 0, inFrom - 0.05);
+    outF.setValueAtTime(Math.min(20000, outDeck.ctx.sampleRate / 2), T - W);
+    outF.exponentialRampToValueAtTime(3000, Math.max(T - W + 0.05, inFrom));
+    outF.exponentialRampToValueAtTime(150, T);
+    inF.setValueAtTime(3000, inFrom);
+    inF.exponentialRampToValueAtTime(150, T - 0.03);
+    inF.exponentialRampToValueAtTime(20, T);
+    curve(inDeck.faderGain.gain, inFrom, T, 0.5, 1);
+    outDeck.triggerEchoFreeze(p.masterBpm, T, ECHO_TAIL_BEATS);
+    return { start: T - W, swap: T, end: T + ECHO_TAIL_BEATS * p.beatSec };
   }
 
   /** Isolator bass kill on/off, finishing exactly at ctx time `t` (30 ms move). */
@@ -449,7 +509,7 @@ const MixPlanner = (() => {
   }
 
   return { MAX_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, candidates, candidateFeatures,
-           trackSummary, scheduleBlend, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals };
+           trackSummary, scheduleBlend, scheduleBlueprint, scheduleEchoOut, scheduleWash, neutral, clearAutomation, holdAutomation, cutAt, hasVocals };
 })();
 
 window.MixPlanner = MixPlanner;
