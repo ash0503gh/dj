@@ -106,12 +106,10 @@ def _gemini_choice(out_t, in_t, cands, key, model, timeout, compact=False, usage
 
 {_track_lines('INCOMING (cued)', in_t, in_w)}
 
-Every option below is already technically perfect: beatmatched at one master tempo, keylocked,
-bass swapped on a downbeat with an isolator, loudness matched. Choose on musicality only:
+Every option below was rendered and passed a sound check (no holes in the floor, never two
+basslines, levels matched) and they sound about equally clean. Choose on musicality only:
 phrasing, energy flow on the dancefloor, avoiding vocal or melody clashes, not cutting the
-outgoing track's best moment short, and not waiting needlessly long. A blend keeps the floor
-moving and is the default; an overlap-free echo-out is a reset a good DJ uses sparingly, when
-blending would lay two lead vocals on top of each other.
+outgoing track's best moment short, and not waiting needlessly long.
 
 OPTIONS:
 {options}

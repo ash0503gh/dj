@@ -38,7 +38,8 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
   - Confidence (0-100): 60% measured sound, 40% taste — the DJ's ratings of similar mixes (a GOOD /
     NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
-    Jev has rated the leaders. A mix plays once one clears the bar (MIX AT 85 / 75 / 60%); otherwise the
+    Jev has rated the leaders. A mix plays once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by default; before any ratings a
+    flawless mix reaches about 88%, so the higher bars are met as the ratings come in); otherwise the
     search goes on through more styles and later moments, and when it runs out the best one left plays,
     marked as under the bar.
   - AI: Jev rates the leading mixes (free, as many rounds as needed); Gemini only breaks a near tie

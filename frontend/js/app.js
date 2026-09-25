@@ -1727,18 +1727,18 @@ document.addEventListener('DOMContentLoaded', () => {
   let activeTransition = null;
 
   // Auto: mixes are searched, measured and played only when confident (searchAndMix)
-  const CONFIDENCE_BARS = { strict: 85, balanced: 75, relaxed: 60 };
+  const CONFIDENCE_BARS = { proven: 95, strict: 90, balanced: 80, relaxed: 70 };
   const SEARCH_LEAD_SEC = 12;  // candidates start at least this far ahead: time to search and rate them
   const QUICK_LOOK = 12;       // mixes measured before the first decision (defaults and favourites first)
   const TIE_BUDGET_SEC = 8;    // how long the AI may take to rate or break a tie
   const confidenceSelect = document.getElementById('confidence-select');
   if (confidenceSelect) {
-    try { confidenceSelect.value = localStorage.getItem('mix_confidence') || 'balanced'; } catch (e) { /* blocked */ }
+    try { confidenceSelect.value = localStorage.getItem('mix_confidence') || 'strict'; } catch (e) { /* blocked */ }
     confidenceSelect.addEventListener('change', () => {
       try { localStorage.setItem('mix_confidence', confidenceSelect.value); } catch (e) { /* storage blocked */ }
     });
   }
-  const confidenceBar = () => CONFIDENCE_BARS[confidenceSelect && confidenceSelect.value] || CONFIDENCE_BARS.balanced;
+  const confidenceBar = () => CONFIDENCE_BARS[confidenceSelect && confidenceSelect.value] || CONFIDENCE_BARS.strict;
 
   // The DJ's ratings of past mixes, { key: [likes, ratings] } (keys: MixBlocks.prefKeys)
   let tastePrefs = {};
@@ -1980,7 +1980,11 @@ document.addEventListener('DOMContentLoaded', () => {
       const now = engine.ctx.currentTime;
       const live = cands.filter(c => c.measured && deadline(c) > now);
       const checked = cands.filter(c => c.measured).length;
-      const done = next >= cands.length;
+      // Done when every candidate has been tried, or when none left could beat the best found even
+      // with a flawless sound check and Jev's top rating (a high bar shouldn't mean a long wait)
+      const bestConf = live.length ? Math.max(...live.map(c => c.conf)) : -1;
+      const done = next >= cands.length ||
+        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, useAI, aiModel) > bestConf);
       const quickDone = checked >= QUICK_LOOK || done;
       // Jev rates the leaders once the quick look is in (free), and leaders found later in another
       // round, so the ones in contention are compared on the same terms
@@ -2018,6 +2022,14 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       await new Promise(r => setTimeout(r, done ? 100 : 0));   // waiting for Jev, or letting the page breathe
     }
+  }
+
+  /** The most confidence a candidate could get before it is measured: a flawless sound check, Jev's
+   *  top rating (when Jev rates) and Gemini's tie-break. */
+  function ceiling(c, useAI, aiModel) {
+    return TransitionLab.confidence(Object.assign({}, c, {
+      measured: { penalty: 0 }, jev: useAI ? 4 : undefined, geminiPick: aiModel.startsWith('gemini'),
+    }), tastePrefs);
   }
 
   /** Sooner is better once it's past 20 s: a much better mix may be worth a wait, not a long one. */
