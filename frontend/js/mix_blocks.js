@@ -86,6 +86,16 @@ const MixBlocks = (() => {
     const outVol = outDeck.faderGain.gain.value;
     neutral(outDeck, T - 0.05, outVol);
 
+    // An automatic intro edit (p.loop): the incoming's beat-only bars loop under the outgoing until the
+    // swap, where the track itself drops in (its main playback, muted until then, gets there on time;
+    // the mute starts after its 3 ms start ramp, while its fader is still at 0)
+    if (p.loop) {
+      const len = p.loop.bars * bar;
+      for (let x = T; x < swap - 1e-3; x += len) {
+        keep(inDeck, inDeck.audio.playSlice(x, p.loop.native, Math.min(len, swap - x)));
+      }
+      inDeck.audio.muteBetween(T + 0.004, swap);
+    }
     // Hats and groove in over the first quarter
     curve(inDeck.faderGain.gain, T, T + Math.min(4, q) * bar, 0, 1);
     curve(inDeck.eqHigh.gain, T, T + q * bar, -12, 0);
@@ -264,13 +274,20 @@ const MixBlocks = (() => {
         }
       }
     }
-    // Its hook (the phrase that comes back most, from the analysis), when that isn't its drop: the
-    // straight switches and the short builds
-    const hook = (inTrack.hook_times || [])[0];
-    if (hook !== undefined && Math.abs(hook - p.inStartNative) > inBar / 2) {
+    // Other beginnings to land on, as a DJ drops in on the 1 of an intro, a verse or a chorus: its
+    // hook (the phrase that comes back most), its intro, and where its first vocal line starts, when
+    // those aren't where it lands already: the straight switches and the short builds
+    const firstLine = (inTrack.section_map || []).find(x => x.has_vocals && x.vocal_score > 0.35 &&
+                                                        x.time >= (inTrack.suggested_cue_intro || 0) - 0.05);
+    const lands = [['hook', (inTrack.hook_times || [])[0]], ['intro', inTrack.suggested_cue_intro],
+                   ['verse', inTrack.vocal_source && firstLine ? firstLine.time : undefined]];
+    const used = [p.inStartNative];
+    for (const [inLand, land] of lands) {
+      if (land === undefined || land === null || used.some(u => Math.abs(u - land) < inBar / 2)) continue;
+      used.push(land);
       const at = (before, leadBars, after) =>
-        add({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars: 0, inHook: true },
-            { inStartNative: hook, inLeadSec: 0 });
+        add({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars: 0, inLand },
+            { inStartNative: land, inLeadSec: 0 });
       for (const after of ['echo', 'reverb', 'cut', 'brake', 'spinback']) at('none', 0, after);
       at('hpf', 2, 'echo');
       for (const after of ['echo', 'cut']) at('riser', 2, after);
@@ -310,12 +327,14 @@ const MixBlocks = (() => {
   }
 
   /** Seconds of a vocal phrase left unsung if the outgoing's vocal goes at native time t: to the end
-   *  of the 16-bar phrase (or of the vocal run, if that ends first). 0 when it isn't singing there or t
-   *  is on a phrase line (the next line is left unsung, as a DJ does). */
+   *  of the 16-bar phrase or of its hook (or of the vocal run, if that ends first). 0 when it isn't
+   *  singing there or t is on such a line (the next line is left unsung, as a DJ does: leaving right
+   *  after the hook is the classic hip-hop move). */
   function unsungAt(outTrack, t) {
     const secs = outTrack.section_map || [];
     const sings = x => x.has_vocals && x.vocal_score > 0.35;
-    const lines = outTrack.phrase_16_times || [];
+    const hookEnds = (outTrack.hook_times || []).map(h => h + 8 * 4 * gridOf(outTrack).period);
+    const lines = (outTrack.phrase_16_times || []).concat(hookEnds).sort((a, b) => a - b);
     if (lines.some(x => Math.abs(x - t) < 0.1)) return 0;
     let i = secs.findIndex(x => t >= x.time - 0.05 && t < x.time + x.duration);
     if (i < 0 || !sings(secs[i])) return 0;
@@ -330,6 +349,24 @@ const MixBlocks = (() => {
    *  vocal can start during a lead-in and be cut at the switch). */
   function vocalCut(p, outTrack) {
     return Math.max(unsungAt(outTrack, vocalFade(p, outTrack)), unsungAt(outTrack, vocalGone(p, outTrack)));
+  }
+
+  /** Seconds of a vocal line the incoming has already sung when it comes in, by its labels: where it
+   *  lands (switches) or where its mids are in at the bass swap (blends), measured from the line's start
+   *  (its vocal run's start, a 16-bar phrase line or a hook start, whichever is latest). 0 when it isn't
+   *  singing there or comes in on such a start. Coming in mid-sentence sounds as wrong as cutting one. */
+  function vocalIn(p, inTrack) {
+    const s = p.style || defaultStyle(p);
+    const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
+    const t = s.kind === 'blend' ? p.inStartNative + swapBar * 4 * gridOf(inTrack).period : p.inStartNative;
+    const secs = inTrack.section_map || [];
+    const sings = x => x.has_vocals && x.vocal_score > 0.35;
+    let i = secs.findIndex(x => t >= x.time - 0.05 && t < x.time + x.duration);
+    if (i < 0 || !sings(secs[i])) return 0;
+    while (i > 0 && sings(secs[i - 1])) i--;
+    const starts = [secs[i].time].concat(inTrack.phrase_16_times || [], inTrack.hook_times || [])
+      .filter(x => x <= t + 0.1);
+    return Math.max(0, t - Math.max(...starts));
   }
 
   /** Outgoing native times where a vocal run ends (the next section has no lead vocal), after `from`. */
@@ -347,13 +384,14 @@ const MixBlocks = (() => {
   function label(p) {
     const s = p.style || defaultStyle(p);
     if (s.kind === 'blend') {
-      return `${p.bars}-bar blend` + ({ intro: ' from its intro', hook: ' into its hook' }[p.entry] || '') +
+      return `${p.bars}-bar blend` + ({ intro: ' from its intro', hook: ' into its hook', loop: ' over an intro loop' }[p.entry] || '') +
              ({ snap: ', mids snap', crossfade: ', mids crossfade', hats: ', hats in' }[s.mids] || '') +
              ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '');
     }
     const after = { echo: 'echo out', reverb: 'reverb out', cut: 'cut', brake: 'vinyl brake',
                     spinback: 'spinback' }[s.after];
-    const land = s.inHook ? ' into its hook' : s.inPreBars ? ' into its build' : '';
+    const land = { hook: ' into its hook', intro: ' into its intro', verse: ' into its first vocal line' }[s.inLand]
+      || (s.inPreBars ? ' into its build' : '');
     if (s.entry === 'split') return `${s.leadBars}-bar filter wash, ${after}${land}`;
     const before = { none: '', hpf: `${s.leadBars}-bar high-pass, `, roll: `${s.leadBars}-bar loop roll, `,
                      verb: `${s.leadBars}-bar reverb swell, `, riser: `${s.leadBars}-bar riser, ` }[s.before];
@@ -369,11 +407,13 @@ const MixBlocks = (() => {
                      hats: 'only the incoming hats play (high-passed) until the swap, where everything changes hands' }[s.mids];
       const tail = { eq: 'outgoing hats and fader down', filter: 'outgoing leaves through a rising high-pass',
                      echo: 'outgoing last beat echoes out', reverb: 'outgoing thrown into the reverb' }[s.tail];
-      const enters = { intro: 'the incoming plays from its intro', hook: 'the incoming reaches its hook as the blend ends' }[p.entry]
+      const enters = { intro: 'the incoming plays from its intro', hook: 'the incoming reaches its hook as the blend ends',
+                       loop: 'the incoming\'s beat-only bars loop under the outgoing (an automatic intro edit) and the track drops in on its hook at the bass swap' }[p.entry]
         || 'the incoming reaches its drop as the blend ends';
       return `${p.bars}-bar EQ blend, ${enters}, bass swapped on a downbeat, ${mids}, ${tail}`;
     }
-    const where = s.inHook ? 'on its hook (the phrase that comes back most)'
+    const where = s.inLand ? { hook: 'on its hook (the phrase that comes back most)', intro: 'on the 1 of its intro',
+                               verse: 'as its first vocal line starts' }[s.inLand]
       : s.inPreBars ? `${s.inPreBars} bars before its drop (its build)` : 'on its drop';
     const after = { echo: 'its last beat echoes out', reverb: 'it rings out in the reverb', cut: 'it stops dead',
                     brake: 'its last two beats slow to a halt like a turntable switched off',
@@ -402,15 +442,17 @@ const MixBlocks = (() => {
    *  at one moment. */
   function prefKeys(p) {
     const s = p.style || defaultStyle(p);
-    if (s.kind === 'blend') return ['blend', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`, `blend.entry.${p.entry || 'drop'}`];
-    const keys = [s.entry === 'split' ? 'wash' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
-                  `gap.land.${s.inHook ? 'hook' : s.inPreBars ? 'build' : 'drop'}`];
-    if (s.entry !== 'split') keys.push(`gap.before.${s.before}`);
+    const keys = s.kind === 'blend'
+      ? ['blend', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`, `blend.entry.${p.entry || 'drop'}`]
+      : [s.entry === 'split' ? 'wash' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
+         `gap.land.${s.inLand || (s.inPreBars ? 'build' : 'drop')}`];
+    if (s.kind !== 'blend' && s.entry !== 'split') keys.push(`gap.before.${s.before}`);
+    if (p.vocalInSec > 1) keys.push('in.midline');   // the incoming comes in partway through a sung line
     return keys;
   }
 
   return { perform, preSec, postSec, variants, defaultStyle, label, describe, prefKeys, lastResort, vocalCut,
-           vocalRunEnds };
+           vocalIn, vocalRunEnds };
 })();
 
 window.MixBlocks = MixBlocks;

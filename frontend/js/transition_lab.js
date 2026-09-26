@@ -381,7 +381,8 @@ const TransitionLab = (() => {
 
   // ── Confidence (0-100): how sure we are a candidate will sound good to this DJ ──
   // Sound: a clean render scores 100; every penalty point past 1.5 costs 5. Cutting the outgoing's
-  // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), and with
+  // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), so does
+  // bringing the incoming in partway through a sung line (c.vocalInSec), and with
   // clashing keys (c.keySeverity, 0-1) the two tracks' midrange heard together costs up to 0.5 points a
   // second. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
   // MixBlocks.prefKeys), starting from a prior that a clean handover will please, and a switch too when
@@ -393,6 +394,7 @@ const TransitionLab = (() => {
   // that could blend 65%.
   const TASTE_PRIOR = { blend: 0.85, wash: 0.85, switch: 0.8 };   // blends and washes: the handovers
   const SWITCH_WHEN_BLENDABLE = 0.5;
+  const DETAIL_PRIOR = { 'in.midline': 0.2 };   // details start neutral (0.5) but this, a DJ avoids it
 
   function taste(c, prefs = {}) {
     const [kind, ...details] = MixBlocks.prefKeys(c);
@@ -401,13 +403,13 @@ const TransitionLab = (() => {
       return (likes + prior * weight) / (n + weight);
     };
     let v = mean(kind, kind === 'switch' && !c.outOfRange ? SWITCH_WHEN_BLENDABLE : TASTE_PRIOR[kind], 4);
-    for (const key of details) v += (mean(key, 0.5, 4) - 0.5) / details.length;
+    for (const key of details) v += (mean(key, DETAIL_PRIOR[key] !== undefined ? DETAIL_PRIOR[key] : 0.5, 4) - 0.5) / details.length;
     return Math.max(0, Math.min(1, v));
   }
 
   function soundScore(c) {
     if (!c.measured) return null;
-    const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0)
+    const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0) + 0.25 * Math.min(30, c.vocalInSec || 0)
       + 0.5 * (c.keySeverity || 0) * (c.measured.tonal_overlap_s || 0);
     return Math.max(0, Math.min(100, 100 - 5 * Math.max(0, penalty - 1.5)));
   }

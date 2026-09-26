@@ -49,6 +49,18 @@ const MixPlanner = (() => {
     return sectionsIn(track, t0, t1).some(s => s.has_vocals && s.vocal_score > 0.35);
   }
 
+  /** An automatic intro edit's loop: the incoming's first 4-bar section with no lead vocal by its labels
+   *  (Gemini's: the spectral guess flags nearly everything) and a real groove (energy at least half the
+   *  track's median), or null. */
+  function introLoop(track, inBar) {
+    if (!track.vocal_source) return null;
+    const secs = track.section_map || [];
+    const body = median(secs.map(x => x.energy || 0)) || 1;
+    const s = secs.find(x => !(x.has_vocals && x.vocal_score > 0.35) && (x.energy || 0) >= 0.5 * body &&
+                             x.duration >= 3.9 * inBar);
+    return s ? { native: s.time, bars: 4 } : null;
+  }
+
   function median(a) {
     const s = [...a].sort((x, y) => x - y);
     return s[Math.floor(s.length / 2)];
@@ -98,6 +110,16 @@ const MixPlanner = (() => {
       const hook = (inTrack.hook_times || []).find(h => h - bars * inBar >= introCue - 0.05);
       if (hook !== undefined) inStart = hook - bars * inBar;
     }
+    // 'loop': an automatic intro edit, for tracks that start singing at once (as DJs use DJ-pool intro
+    // edits): its beat-only bars loop under the outgoing through the blend, and the track itself comes
+    // in at its hook (or first drop) on the bass swap. What it plays before that is never heard.
+    let loop = null;
+    if (opts.blend && entry === 'loop') {
+      const land = (inTrack.hook_times || []).concat(drop !== undefined ? [drop] : [])
+        .find(x => x - bars * inBar >= 0);
+      loop = land !== undefined ? introLoop(inTrack, inBar) : null;
+      if (loop) inStart = land - bars * inBar;
+    }
     if (opts.blend && entry === 'drop' && drop !== undefined) {
       const introBars = Math.round((drop - introCue) / inBar);
       if (introBars < bars) inBars = Math.max(8, Math.floor(introBars / 8) * 8);
@@ -113,7 +135,7 @@ const MixPlanner = (() => {
     // Bass swap bar. When the incoming drop lands at the end of the blend, swap on it. Otherwise
     // swap on the first downbeat past half-way where the incoming track really has bass, so the
     // swap never leaves bars with no bass at all (intros are often bass-less).
-    const dropAligned = opts.blend && drop !== undefined && Math.abs(inStart + bars * inBar - drop) < 0.1;
+    const dropAligned = opts.blend && (!!loop || (drop !== undefined && Math.abs(inStart + bars * inBar - drop) < 0.1));
     let swapBar = dropAligned ? bars : Math.max(1, Math.round(bars / 2));
     if (opts.blend && !dropAligned && inTrack.bar_low_db && inTrack.bar_low_db.length) {
       const ref = median(inTrack.bar_low_db) - 3;
@@ -143,7 +165,7 @@ const MixPlanner = (() => {
 
     // ── Exit point on the outgoing track: score its phrase starts ──
     const blendNative = (bars + tailBars) * outBar;
-    const inVocal = hasVocals(inTrack, inStart, inStart + bars * inBar);
+    const inVocal = !loop && hasVocals(inTrack, inStart, inStart + bars * inBar);
     const slots = opts.phraseLock === false ? outTrack.downbeat_times : outTrack.phrase_8_times;
     const cands = (slots || []).filter(t => t >= outNow && t + blendNative <= dur - 0.5);
     const exits = [];
@@ -210,7 +232,8 @@ const MixPlanner = (() => {
       inStartNative: inStart,
       startCtx: outDeck.audio.ctxTimeAt(best),
       vocalClash,
-      entry: opts.blend ? entry : 'drop',
+      entry: opts.blend ? (entry !== 'loop' || loop ? entry : 'intro') : 'drop',
+      loop,
       keyClash: !!opts.keyClash,
       outOfRange: Math.abs(outBpm / (inTrack.bpm || outBpm) - 1) > MAX_STRETCH,
       exit: chosen || null,       // the scored exit this plan uses (null: forced near the end)
@@ -237,24 +260,29 @@ const MixPlanner = (() => {
     const list = [];
     const seen = new Set();
     const add = (p, technique) => {
-      const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}@${p.inStartNative.toFixed(1)}`;
+      const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}@${p.inStartNative.toFixed(1)}@${p.loop ? 'loop' : ''}`;
       if (seen.has(key)) return;
       seen.add(key);
       list.push(Object.assign(p, { technique }));
     };
     const barsOptions = opts.blend ? (opts.barsOptions || [16, 8]) : [(opts.barsOptions || [16])[0]];
     const perBars = opts.perBars || 3;
-    // Blends also try the incoming's other entries (its intro, or ending on its hook), at their two
-    // best exits: a track whose first drop comes late would otherwise always enter deep inside it
-    const entries = opts.blend ? [['drop', perBars], ['intro', 2], ['hook', 2]] : [['drop', perBars + 1]];
+    // Blends also try the incoming's other entries (its intro, ending on its hook, or an automatic
+    // intro edit), at their two best exits: a track whose first drop comes late would otherwise always
+    // enter deep inside it. Every entry's best moment first, then their next ones (the list is capped)
+    const entries = opts.blend ? [['drop', perBars], ['intro', 2], ['hook', 2], ['loop', 2]] : [['drop', perBars + 1]];
+    const tech = opts.blend ? 'blend' : (opts.cutTechnique || 'echo_freeze');
+    const bases = [];
     for (const [entry, exits] of entries) {
       for (const bars of barsOptions) {
         const base = plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { entry }));
-        const tech = opts.blend ? 'blend' : (opts.cutTechnique || 'echo_freeze');
         add(base, tech);
-        for (const e of base.exits.slice(1, exits)) {
-          add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t, entry })), tech);
-        }
+        bases.push([base, entry, bars, exits]);
+      }
+    }
+    for (const [base, entry, bars, exits] of bases) {
+      for (const e of base.exits.slice(1, exits)) {
+        add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t, entry })), tech);
       }
     }
     // Moments asked for by the caller (planned there only if they are phrase lines still ahead), as
@@ -306,6 +334,7 @@ const MixPlanner = (() => {
       key_clash: !!c.keyClash,
       out_bass_dropouts: e.bassDropouts || 0,
       out_vocal_cut_s: r(c.vocalCutSec || 0),
+      in_vocal_mid_s: r(c.vocalInSec || 0),
       bass_holes: c.holes || 0,
       out_energy_falling: !!e.energyFalling,
       planner_score: e.score !== undefined ? r(e.score) : null,

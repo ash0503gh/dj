@@ -31,11 +31,14 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     song pair: the search decides.
   - Styles tried: beat-matched blends (mids overlap / snap / crossfade, or "hats in": only the
     incoming's hats, high-passed at 4 kHz, until the swap; outgoing out by EQ, filter, echo or reverb;
-    the incoming entering so its first drop lands as the blend ends, from its intro, or so its hook
-    lands as the blend ends) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb, cut,
+    the incoming entering so its first drop lands as the blend ends, from its intro, so its hook lands
+    as the blend ends, or over an automatic intro edit: its beat-only bars (no lead vocal by Gemini's
+    labels) loop under the outgoing and the track drops in on its hook at the bass swap, as DJs use
+    DJ-pool intro edits on tracks that start singing at once) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb, cut,
     vinyl brake or spinback, after a high-pass rise, a noise riser with an impact on the landing, a loop
     roll or a reverb swell) and filter washes (spectral crossfade), landing the incoming on its drop, on
-    the build before it, or on its hook (the 8-bar phrase that comes back most, found by the analyzer).
+    the build before it, on its hook (the 8-bar phrase that comes back most, found by the analyzer), on
+    its intro, or as its first vocal line starts.
     Brake and spinback exits are a last resort: searched after everything else (waiting for a clean
     moment included), played only when no other mix clears the bar and they beat the best one by 10.
   - Tempo: one constant grid fitted to the whole track; the tempo is checked against double/half and
@@ -64,7 +67,10 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     the bar.
   - Vocals: with Gemini's labels, a mix that fades or cuts the outgoing's lead vocal before its 16-bar
     phrase ends (checked where the fade starts and where the vocal is gone) loses confidence (0.25 points
-    a second), and the phrase lines right after a vocal run ends are offered as extra moments.
+    a second), and the phrase lines right after a vocal run ends are offered as extra moments; so are the
+    outgoing's next hook, as it starts and right after it (hook to hook: leaving right after a hook
+    doesn't count as cutting a line). An incoming that comes in partway through a sung line costs the
+    same 0.25 points a second, and its rating key "in.midline" starts at 0.2 (a DJ avoids it).
   - Next track: the library tracks that mix best after the one on air top the other deck's track list,
     and the best one shows as its "UP NEXT" line with a one-tap LOAD. Scored on the server from the
     stored analyses (no AI, `/api/suggest-next`): tempo within the 8% a blend allows (40 points),

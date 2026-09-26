@@ -2065,10 +2065,18 @@ document.addEventListener('DOMContentLoaded', () => {
     const lines = t.outTrack.phrase_8_times || [];
     const sings = x => (t.outTrack.section_map || []).some(s => s.has_vocals && s.vocal_score > 0.35 &&
                                                                 x >= s.time - 0.05 && x < s.time + s.duration);
-    const extraExits = labelled ? MixBlocks.vocalRunEnds(t.outTrack, position).flatMap(end => {
+    const vocalExits = labelled ? MixBlocks.vocalRunEnds(t.outTrack, position).flatMap(end => {
       const i = lines.findIndex(x => x >= end - 0.05);
       return i < 0 ? [] : lines.slice(i, i + 2).filter(x => !sings(x));
-    }).slice(0, 6) : [];
+    }).slice(0, 4) : [];
+    // Hook to hook: the outgoing's next hook (the phrase that comes back most) as it starts (a blend
+    // then swaps as it ends) and right after it, on the nearest phrase lines
+    const outBar = 4 * MixPlanner.gridOf(t.outTrack).period;
+    const near = x => lines.reduce((a, b) => (Math.abs(b - x) < Math.abs(a - x) ? b : a), Infinity);
+    const hookExits = (t.outTrack.hook_times || []).filter(h => h > position).slice(0, 1)
+      .flatMap(h => [near(h), near(h + 8 * outBar)]);
+    const extraExits = vocalExits.concat(hookExits)
+      .filter((x, i, all) => Number.isFinite(x) && all.findIndex(y => Math.abs(y - x) < 0.1) === i);
     const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
       now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 16, extraExits,
@@ -2080,7 +2088,8 @@ document.addEventListener('DOMContentLoaded', () => {
       if (start > pressedAt + LATE_WAIT_SEC) return;
       cands.push(Object.assign(c, { rank, keySeverity: clash, late: start > pressedAt + MAX_WAIT_SEC,
                                     lastResort: MixBlocks.lastResort(c),
-                                    vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0 }));
+                                    vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0,
+                                    vocalInSec: t.inTrack.vocal_source ? MixBlocks.vocalIn(c, t.inTrack) : 0 }));
     }));
     if (!cands.length) {
       commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars,
@@ -2395,7 +2404,8 @@ document.addEventListener('DOMContentLoaded', () => {
     t.marks = MixBlocks.perform(p, t.outDeck, t.inDeck);
     atCtx(t, T - lead, () => setPlayUI(t.inBtnPlay, true));
     if (!t.blend) {
-      const land = p.style && p.style.inHook ? 'LANDS ON ITS HOOK'
+      const land = p.style && p.style.inLand ? { hook: 'LANDS ON ITS HOOK', intro: 'DROPS INTO ITS INTRO',
+                                                 verse: 'COMES IN ON ITS FIRST LINE' }[p.style.inLand]
         : p.style && p.style.inPreBars ? 'LANDS ON ITS BUILD' : 'DROPS ON THE 1';
       atCtx(t, T, () => {
         transitionStatusBanner.textContent = `${(p.style ? MixBlocks.label(p) : 'echo out').toUpperCase()}: ${t.inName} ${land}`;
