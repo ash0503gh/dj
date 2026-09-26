@@ -369,7 +369,7 @@ const TransitionLab = (() => {
       const jev = scores && scores[c.id] ? scores[c.id].mean / 4 : 0.5;
       const clean = c.measured && best !== null ? 1 - Math.min(1, (c.measured.penalty - best) / ACCEPT_MARGIN) : 1;
       totals[c.id] = +(WEIGHTS.jev * jev + WEIGHTS.gemini * (c.id === gemini ? 1 : 0) + WEIGHTS.clean * clean +
-                       WEIGHTS.handover * (MixBlocks.prefKeys(c)[0] === 'handover' ? 1 : 0)).toFixed(3);
+                       WEIGHTS.handover * (MixBlocks.prefKeys(c)[0] !== 'switch' ? 1 : 0)).toFixed(3);
     }
     // Without AI signals only what was actually sound-checked can win
     const pool = !scores && !gemini ? ok.filter(c => c.measured) : ok;
@@ -391,7 +391,7 @@ const TransitionLab = (() => {
   // works musically, so it counts 30% and taste the rest. Before any rating a flawless handover reads
   // 94%, a flawless switch across a tempo gap 86% (93% with Jev's top rating), one between tempos
   // that could blend 65%.
-  const TASTE_PRIOR = { handover: 0.85, switch: 0.8 };
+  const TASTE_PRIOR = { blend: 0.85, wash: 0.85, switch: 0.8 };   // blends and washes: the handovers
   const SWITCH_WHEN_BLENDABLE = 0.5;
 
   function taste(c, prefs = {}) {

@@ -577,13 +577,19 @@ async def post_feedback(request: Request):
     return JSONResponse(content={"status": "success", "count": len(ratings)})
 
 
+def _rating_keys(keys: list) -> list:
+    """A rating's keys; ratings made before blends and filter washes were rated apart said 'handover'
+    for both: which one is in their other keys."""
+    return [("wash" if "gap.entry.split" in keys else "blend") if k == "handover" else k for k in keys]
+
+
 @app.get("/api/feedback/summary")
 async def feedback_summary():
     """Likes and ratings per feature key: {count, keys: {key: [likes, ratings]}}."""
     ratings = await _ratings()
     keys: dict = {}
     for r in ratings:
-        for k in r.get("keys", []):
+        for k in _rating_keys(r.get("keys", [])):
             likes, n = keys.get(k, [0, 0])
             keys[k] = [likes + int(r.get("rating", 0)), n + 1]
     return JSONResponse(content={"count": len(ratings), "keys": keys})

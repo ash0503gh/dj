@@ -397,12 +397,13 @@ const MixBlocks = (() => {
     return s.kind === 'gap' && LAST_RESORT.has(s.after);
   }
 
-  /** Feature keys the DJ's ratings are kept under. 'handover' mixes hand the floor over gradually
-   *  (blends, washes); 'switch' mixes change track at one moment. */
+  /** Feature keys the DJ's ratings are kept under, first the kind: 'blend' (beat-matched) and 'wash'
+   *  (spectral crossfade across a tempo gap) hand the floor over gradually; 'switch' mixes change track
+   *  at one moment. */
   function prefKeys(p) {
     const s = p.style || defaultStyle(p);
-    if (s.kind === 'blend') return ['handover', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`, `blend.entry.${p.entry || 'drop'}`];
-    const keys = [s.entry === 'split' ? 'handover' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
+    if (s.kind === 'blend') return ['blend', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`, `blend.entry.${p.entry || 'drop'}`];
+    const keys = [s.entry === 'split' ? 'wash' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
                   `gap.land.${s.inHook ? 'hook' : s.inPreBars ? 'build' : 'drop'}`];
     if (s.entry !== 'split') keys.push(`gap.before.${s.before}`);
     return keys;

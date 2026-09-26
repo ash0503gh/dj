@@ -51,7 +51,8 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Search: the planner's best moments x every style (60-150 mixes) are rendered offline and measured a
     few at a time while the music plays (~0.15-0.35 s each; bass gaps/mud, holes against the outgoing's own
     level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
-  - Confidence (0-100): measured sound and taste — the DJ's ratings of similar mixes (a GOOD /
+  - Confidence (0-100): measured sound and taste — the DJ's ratings of similar mixes, kept per kind
+    (blend, filter wash, switch) and per detail of the style (a GOOD /
     NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
     Jev has rated the leaders. Sound counts 60% for handovers (blends, washes: the check hears both
     tracks together) and 30% for switches (it can't hear whether a switch works musically). Taste starts

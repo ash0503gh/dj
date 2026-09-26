@@ -25,11 +25,15 @@ def test_ratings_are_kept_and_summed_per_key(monkeypatch):
         assert rate(1, ["handover", "gap.entry.split"]).json()["count"] == 1
         assert rate(0, ["switch", "gap.entry.at"]).status_code == 200
         assert rate(1, ["handover", "gap.entry.split"]).status_code == 200
+        assert rate(1, ["blend", "blend.mids.hats"]).status_code == 200
         assert client.post("/api/feedback", json={"rating": 1, "keys": []}).status_code == 400
 
+        # Blends and filter washes are rated apart; older ratings said 'handover' for both
         summary = client.get("/api/feedback/summary").json()
-        assert summary["count"] == 3
-        assert summary["keys"]["handover"] == [2, 2]
+        assert summary["count"] == 4
+        assert summary["keys"]["wash"] == [2, 2]
+        assert summary["keys"]["blend"] == [1, 1]
+        assert "handover" not in summary["keys"]
         assert summary["keys"]["switch"] == [0, 1]
 
         # A fresh instance reads them back from disk
