@@ -2236,9 +2236,10 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!soundCheckList) return;
     const bar = confidenceBar();
     const measured = cands.filter(c => c.measured && typeof c.conf === 'number').sort((a, b) => b.conf - a.conf);
-    const rows = measured.slice(0, 6);
+    // Three rows (the transition bar stays one row tall): the most confident, the one that plays among them
+    const rows = measured.slice(0, 3);
     const played = playedId && cands.find(c => c.id === playedId);
-    if (played && !rows.includes(played)) rows.push(played);
+    if (played && !rows.includes(played)) rows[rows.length ? rows.length - 1 : 0] = played;
     const head = document.createElement('div');
     head.className = 'check-summary';
     head.textContent = `${measured.length} of ${cands.length} mixes checked · plays at ${bar}%+`;

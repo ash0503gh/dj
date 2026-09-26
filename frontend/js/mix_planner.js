@@ -260,6 +260,11 @@ const MixPlanner = (() => {
     const list = [];
     const seen = new Set();
     const add = (p, technique) => {
+      // Too near the end for a real blend (it would last a bar or two): an echo out there instead
+      if (technique === 'blend' && p.bars < 4) {
+        p = plan(outTrack, outDeck, inTrack, p.bars, Object.assign({}, opts, { blend: false }));
+        technique = opts.cutTechnique || 'echo_freeze';
+      }
       const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}@${p.inStartNative.toFixed(1)}@${p.loop ? 'loop' : ''}`;
       if (seen.has(key)) return;
       seen.add(key);

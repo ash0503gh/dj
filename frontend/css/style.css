@@ -504,7 +504,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .audition-feedback-text { flex-basis: 100%; letter-spacing: 0; font-size: 12px; color: var(--text-2); }
 
 .sound-check { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.sound-check-list { display: flex; flex-direction: column; gap: 8px; height: 222px; overflow: hidden; }   /* room for 7 rows */
+.sound-check-list { display: flex; flex-direction: column; gap: 8px; height: 102px; overflow: hidden; }   /* summary + 3 rows */
 .sc-empty { font-size: 12px; color: var(--muted); line-height: 1.45; }
 .sound-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .conf-pick { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
