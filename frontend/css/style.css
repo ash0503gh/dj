@@ -243,7 +243,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .btn-upload:hover { color: var(--text); border-color: var(--line-3); }
 /* "Up next": the library track that mixes best after the one on air */
 .next-hint { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--text-2); }
-.next-hint[hidden] { display: none; }
+.next-hint[hidden] { display: flex; visibility: hidden; }   /* keeps its room */
 .next-hint .next-label { flex: none; color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
 .next-hint .next-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .next-hint .next-why { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
@@ -490,10 +490,11 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .status-banner {
   font-family: var(--font-cond); font-size: 20px; font-weight: 600; line-height: 1.2; color: var(--text);
   overflow-wrap: anywhere; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+  height: 2.4em;   /* always two lines: updates during a mix never move the page */
 }
 .ai-rec-body { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--text-2); line-height: 1.4; }
-.ai-rec-reason { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; }
-.ai-rec-technique { color: var(--text); font-weight: 500; }
+.ai-rec-reason { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; min-height: 1.4em; }
+.ai-rec-technique { color: var(--text); font-weight: 500; min-height: 1.4em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ai-audition-monitor { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11px; letter-spacing: 0.1em; color: var(--muted); }
 .audition-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--warn); animation: blink 1s infinite; }
 @keyframes blink { 50% { opacity: 0.3; } }
@@ -503,7 +504,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .audition-feedback-text { flex-basis: 100%; letter-spacing: 0; font-size: 12px; color: var(--text-2); }
 
 .sound-check { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.sound-check-list { display: flex; flex-direction: column; gap: 8px; }
+.sound-check-list { display: flex; flex-direction: column; gap: 8px; height: 222px; overflow: hidden; }   /* room for 7 rows */
 .sc-empty { font-size: 12px; color: var(--muted); line-height: 1.45; }
 .sound-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .conf-pick { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
@@ -514,7 +515,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .check-label { flex: 1 1 0; min-width: 0; font-size: 10px; letter-spacing: 0.06em; color: var(--sc); text-transform: uppercase;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mix-rating { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 10px; letter-spacing: 0.1em; color: var(--text-2); }
-.mix-rating[hidden] { display: none; }
+.mix-rating[hidden] { display: flex; visibility: hidden; }   /* keeps its room */
 .mix-rating .btn-tiny { height: 26px; font-size: 11px; }
 .mix-rating-note { color: var(--muted); letter-spacing: 0.02em; }
 .check-row { display: flex; align-items: center; gap: 10px; }
