@@ -64,6 +64,12 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Vocals: with Gemini's labels, a mix that fades or cuts the outgoing's lead vocal before its 16-bar
     phrase ends (checked where the fade starts and where the vocal is gone) loses confidence (0.25 points
     a second), and the phrase lines right after a vocal run ends are offered as extra moments.
+  - Next track: the library tracks that mix best after the one on air top the other deck's track list,
+    and the best one shows as its "UP NEXT" line with a one-tap LOAD. Scored on the server from the
+    stored analyses (no AI, `/api/suggest-next`): tempo within the 8% a blend allows (40 points),
+    matching keys (30), an instrumental intro before its vocals that isn't much quieter than the
+    track (20), similar loudness (10). One copy per song; the track on the other deck and tracks
+    already mixed this session are left out.
   - Waiting: a mix starts within 60 s of pressing MIX. When nothing there clears the bar, the search
     looks on to moments up to 2 minutes away (e.g. the end of the singer's line) and the banner says when
     it will mix; a clean mix a little later beats a poor one now.

@@ -241,6 +241,13 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-size: 12px; font-weight: 600; letter-spacing: 0.08em;
 }
 .btn-upload:hover { color: var(--text); border-color: var(--line-3); }
+/* "Up next": the library track that mixes best after the one on air */
+.next-hint { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--text-2); }
+.next-hint[hidden] { display: none; }
+.next-hint .next-label { flex: none; color: var(--accent); font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+.next-hint .next-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.next-hint .next-why { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.next-hint .btn-tiny { flex: none; height: 24px; padding: 0 10px; font-size: 11px; }
 
 .lcd-screen { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .lcd-item { background: var(--inset); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; min-width: 0; }
@@ -663,6 +670,8 @@ html.landscape-ui .deck-panel { padding: 8px; gap: 5px; border-radius: 8px; }
 html.landscape-ui .deck-top { flex-wrap: nowrap; align-items: center; column-gap: 6px; }
 html.landscape-ui .deck-top > .track-meta { display: none; }
 html.landscape-ui .deck-top > .deck-source { order: 0; flex: 1 1 auto; min-width: 0; gap: 4px; }
+html.landscape-ui .next-hint { font-size: 11px; gap: 6px; }
+html.landscape-ui .next-hint .next-why { display: none; }
 html.landscape-ui .deck-badge { width: 24px; height: 24px; font-size: 16px; border-radius: 5px; }
 html.landscape-ui .track-select-dropdown { height: 26px; font-size: 12px; padding: 0 6px; }
 html.landscape-ui .btn-upload { height: 26px; padding: 0 7px; font-size: 0; gap: 0; }

@@ -74,6 +74,13 @@ def get_json(key: str) -> Optional[dict]:
         return None
 
 
+def list_objects(prefix: str) -> Iterator[Tuple[str, str]]:
+    """(object name, last update) for every object under `prefix`, without downloading them."""
+    if enabled():
+        for blob in _b().list_blobs(prefix=prefix):
+            yield blob.name, str(blob.updated)
+
+
 def list_metadata(prefix: str) -> Iterator[Tuple[str, Dict[str, str]]]:
     """(object name, custom metadata) for every object under `prefix`, without downloading them."""
     if enabled():

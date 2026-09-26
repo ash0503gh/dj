@@ -14,8 +14,8 @@ import asyncio
 import functools
 import multiprocessing
 from concurrent.futures import ProcessPoolExecutor
-from typing import Optional
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
+from typing import List, Optional
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -32,6 +32,7 @@ from .stem_separator import separate_with_demucs, separate_fast_spectral
 from .ai_advisor import generate_ai_dj_strategy
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
 from .vocal_listen import carry_vocal_labels
+from . import next_track
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -251,6 +252,59 @@ async def get_presets():
             "description": "High energy club house transition with phrase-locked bass drop."
         })
     return JSONResponse(content={"status": "success", "tracks": available_tracks, "sets": sets})
+
+LIBRARY: dict = {}  # bucket analysis object -> (last update, next_track features), fetched once per change
+
+
+async def _library() -> list:
+    """next_track features of every analyzed track: the bucket's library and this instance's."""
+    feats = {}
+    if storage.enabled():
+        objs = await run_in_threadpool(lambda: [(n, u) for n, u in storage.list_objects("analysis/")
+                                                if n.count("/") == 1 and n.endswith(".json")])
+        stale = [(n, u) for n, u in objs if LIBRARY.get(n, (None,))[0] != u]
+
+        def fetch(item):
+            name, updated = item
+            an = storage.get_json(name) or {}
+            fid = an.get("file_id") or name[len("analysis/"):-len(".json")]
+            return name, updated, next_track.features(dict(an, file_id=fid)) if an else None
+
+        def fetch_all():
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(8) as ex:
+                return list(ex.map(fetch, stale))
+
+        for name, updated, f in (await run_in_threadpool(fetch_all) if stale else []):
+            LIBRARY[name] = (updated, f)
+        live = {n for n, _ in objs}
+        for name in [n for n in LIBRARY if n not in live]:
+            LIBRARY.pop(name, None)
+        feats = {f["file_id"]: f for _, f in LIBRARY.values() if f}
+    for fid, an in list(ANALYSIS_CACHE.items()):
+        if fid not in feats and os.path.exists(os.path.join(UPLOAD_DIR, fid)):
+            f = next_track.features(dict(an, file_id=fid))
+            if f:
+                feats[fid] = f
+    return list(feats.values())
+
+
+@app.get("/api/suggest-next")
+async def suggest_next(file_id: str, bpm: Optional[float] = None, exclude: List[str] = Query([]),
+                       limit: int = 6):
+    """Library tracks that mix best after `file_id` on air at `bpm` (next_track.py): stored analyses
+    only, no AI. `exclude`: file ids not to suggest (the other deck's track, tracks already played)."""
+    import urllib.parse
+    fid = urllib.parse.unquote(file_id)
+    an = await get_cached_analysis(fid)
+    if not an:
+        raise HTTPException(status_code=404, detail="Track not analyzed")
+    out = next_track.features(dict(an, file_id=fid))
+    if not out:
+        return JSONResponse(content={"status": "success", "suggestions": []})
+    ranked = next_track.rank(out, bpm or out["bpm"], await _library(), exclude, max(1, min(12, limit)))
+    return JSONResponse(content={"status": "success", "suggestions": ranked})
+
 
 @app.post("/api/load-preset")
 async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):

@@ -20,6 +20,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastRenderedMix = null;
   let lastTransitionCues = null;
   let lastPerformed = null;
+  let libraryOptionsHtml = '';     // every library track, for the decks' track lists
+  let suggestTimer = null;
+  const playedIds = new Set();     // tracks already mixed this session: not suggested again
   let currentAIRec = null;
   let serverHasJev = false;
   let serverHasGemini = false;
@@ -348,6 +351,7 @@ document.addEventListener('DOMContentLoaded', () => {
     strategyInputsChanged();
     updateTransitionOverlay();
     prefetchIncoming();
+    refreshSuggestions();
   }
 
   function toggleTransitionDirection() {
@@ -588,6 +592,7 @@ document.addEventListener('DOMContentLoaded', () => {
           }
           transitionStatusBanner.textContent = `${deckName}: ANALYSIS COMPLETE (${currentTrack.bpm.toFixed(1)} BPM, ${currentTrack.camelot})`;
           prefetchIncoming();
+          refreshSuggestions();
           listenForVocals(currentTrack);
         }
       }
@@ -822,6 +827,7 @@ document.addEventListener('DOMContentLoaded', () => {
     lastPerformed = null;
     pruneStretchCache();
     prefetchIncoming();
+    refreshSuggestions();
     listenForVocals(track);
   }
 
@@ -898,15 +904,89 @@ document.addEventListener('DOMContentLoaded', () => {
           const bpmClean = t.bpm ? t.bpm.toFixed(1) : '128.0';
           opts.push(`<option value="${t.file_id}">${titleClean} (${bpmClean} BPM, ${t.camelot || '--'})</option>`);
         });
+        libraryOptionsHtml = opts.slice(1).join('');
         const html = opts.join('');
         if (d1QuickSelect) d1QuickSelect.innerHTML = html;
         if (d2QuickSelect) d2QuickSelect.innerHTML = html;
+        refreshSuggestions();
       }
     } catch (e) {
       console.warn('Could not load preset dropdowns:', e);
     }
   }
   loadAvailableTracksDropdown();
+
+  // ── Next track: the library tracks that mix best after the one on air (scored on the server from the
+  // stored analyses: tempo, key, room to blend, loudness; no AI). They top the other deck's track
+  // list, and the best one shows as its "Up next" line with a one-tap LOAD ──
+  function refreshSuggestions() {
+    clearTimeout(suggestTimer);
+    suggestTimer = setTimeout(fetchSuggestions, 400);
+  }
+
+  async function fetchSuggestions() {
+    const on1 = engine.deck1.isPlaying, on2 = engine.deck2.isPlaying;
+    const outNum = on1 !== on2 ? (on1 ? 1 : 2) : (transitionDirection === '1_to_2' ? 1 : 2);
+    const outTrack = outNum === 1 ? track1Data : track2Data;
+    const nextNum = 3 - outNum;
+    showSuggestions(outNum, null, []);
+    if (!outTrack || !outTrack.file_id || outTrack.analyzing || !outTrack.grid) {
+      showSuggestions(nextNum, null, []);
+      return;
+    }
+    const nextTrack = nextNum === 1 ? track1Data : track2Data;
+    const params = new URLSearchParams({
+      file_id: outTrack.file_id,
+      bpm: MixPlanner.deckBpm(outTrack, outNum === 1 ? engine.deck1 : engine.deck2).toFixed(2),
+    });
+    [nextTrack && nextTrack.file_id, ...playedIds].filter(Boolean).forEach(id => params.append('exclude', id));
+    try {
+      const res = await fetch(`/api/suggest-next?${params}`);
+      const data = await res.json();
+      showSuggestions(nextNum, outTrack, data.status === 'success' ? data.suggestions : []);
+    } catch (e) {
+      console.warn('Next-track suggestions unavailable:', e);
+    }
+  }
+
+  /** A deck's track list (suggestions first when there are some) and its "Up next" line. */
+  function showSuggestions(deckNum, outTrack, list) {
+    const select = deckNum === 1 ? d1QuickSelect : d2QuickSelect;
+    const hint = document.getElementById(`d${deckNum}-next-hint`);
+    if (select) {
+      select.innerHTML = '<option value="">-- Choose Preset Track --</option>';
+      if (list.length) {
+        const top = document.createElement('optgroup');
+        top.label = `SUGGESTED NEXT (after ${outTrack.title || 'the track on air'})`;
+        list.forEach(sug => {
+          const o = document.createElement('option');
+          o.value = sug.file_id;
+          const title = sug.title.length > 32 ? `${sug.title.slice(0, 30)}…` : sug.title;
+          o.textContent = `★ ${sug.score} · ${title} · ${sug.bpm.toFixed(1)} ${sug.camelot || ''} · ${sug.reasons.slice(0, 2).join(', ')}`;
+          top.append(o);
+        });
+        const all = document.createElement('optgroup');
+        all.label = 'ALL TRACKS';
+        all.innerHTML = libraryOptionsHtml;
+        select.append(top, all);
+      } else {
+        select.insertAdjacentHTML('beforeend', libraryOptionsHtml);
+      }
+    }
+    if (!hint) return;
+    const best = list[0];
+    hint.hidden = !best;
+    if (!best) return;
+    const label = document.createElement('span'); label.className = 'next-label'; label.textContent = 'UP NEXT';
+    const title = document.createElement('span'); title.className = 'next-title'; title.textContent = best.title;
+    const why = document.createElement('span'); why.className = 'next-why'; why.textContent = best.reasons.join(' · ');
+    const load = document.createElement('button');
+    load.type = 'button'; load.className = 'btn-tiny'; load.textContent = 'LOAD';
+    load.title = `Load onto deck ${deckNum === 1 ? 'A' : 'B'} (fit ${best.score}/100)`;
+    load.addEventListener('click', () => { unlockAudio(); loadPresetTrack(best.file_id, `deck_${deckNum}`); });
+    hint.replaceChildren(label, title, why, load);
+  }
+  ['deck1', 'deck2'].forEach(d => ['play', 'pause'].forEach(ev => engine[d].audio.addEventListener(ev, refreshSuggestions)));
 
   async function loadInitialDefaultTracks() {
     try {
@@ -2408,6 +2488,8 @@ document.addEventListener('DOMContentLoaded', () => {
         setPitchReadout(t.outDeckNum);
       }
       pruneStretchCache(t.outTrack.file_id);
+      [t.outTrack.file_id, t.inTrack.file_id].forEach(id => { if (id) playedIds.add(id); });
+      refreshSuggestions();
       MixPlanner.neutral(t.inDeck, engine.ctx.currentTime, 1);
       ['btn-abort-transition', 'btn-manual-override'].forEach(id => {
         const b = document.getElementById(id);
