@@ -384,10 +384,15 @@ const TransitionLab = (() => {
   // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), and with
   // clashing keys (c.keySeverity, 0-1) the two tracks' midrange heard together costs up to 0.5 points a
   // second. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
-  // MixBlocks.prefKeys), starting from a prior that a clean mix will please (gradual handovers a little
-  // more than switches); half Jev's rating when there is one. A flawless mix reads 94% (handover) or
-  // 92% (switch) before any rating; Jev's "very good" (3 of 4) takes it to 92% or 91%.
+  // MixBlocks.prefKeys), starting from a prior that a clean handover will please, and a switch too when
+  // the tempos are too far apart to blend (when they aren't, the DJ wants a blend: a switch is a
+  // fallback); half Jev's rating when there is one. A handover's sound check hears the two tracks
+  // together, so it counts 60%; a switch plays nothing together and the check can't hear whether it
+  // works musically, so it counts 30% and taste the rest. Before any rating a flawless handover reads
+  // 94%, a flawless switch across a tempo gap 86% (93% with Jev's top rating), one between tempos
+  // that could blend 65%.
   const TASTE_PRIOR = { handover: 0.85, switch: 0.8 };
+  const SWITCH_WHEN_BLENDABLE = 0.5;
 
   function taste(c, prefs = {}) {
     const [kind, ...details] = MixBlocks.prefKeys(c);
@@ -395,7 +400,7 @@ const TransitionLab = (() => {
       const [likes, n] = prefs[key] || [0, 0];
       return (likes + prior * weight) / (n + weight);
     };
-    let v = mean(kind, TASTE_PRIOR[kind], 4);
+    let v = mean(kind, kind === 'switch' && !c.outOfRange ? SWITCH_WHEN_BLENDABLE : TASTE_PRIOR[kind], 4);
     for (const key of details) v += (mean(key, 0.5, 4) - 0.5) / details.length;
     return Math.max(0, Math.min(1, v));
   }
@@ -411,7 +416,8 @@ const TransitionLab = (() => {
     const sound = soundScore(c);
     if (sound === null) return null;
     const t = typeof c.jev === 'number' ? 0.5 * taste(c, prefs) + 0.5 * c.jev / 4 : taste(c, prefs);
-    return Math.round(0.6 * sound + 0.4 * 100 * t + (c.geminiPick ? 4 : 0));
+    const w = MixBlocks.prefKeys(c)[0] === 'switch' ? 0.3 : 0.6;
+    return Math.round(w * sound + (1 - w) * 100 * t + (c.geminiPick ? 4 : 0));
   }
 
   /** One number for "how clean did it sound" (lower is better): flams, bass holes/mud, level

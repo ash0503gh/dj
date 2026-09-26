@@ -1991,7 +1991,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }).slice(0, 6) : [];
     const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
       now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
-      barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 12, extraExits,
+      barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 16, extraExits,
     }));
     const clash = keySeverity(t.outTrack.camelot, t.inTrack.camelot);
     const cands = [];

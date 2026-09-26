@@ -86,12 +86,19 @@ const MixPlanner = (() => {
     // Key clash: keep the harmonic overlap short
     if (opts.blend && opts.keyClash) bars = Math.min(bars, 8);
 
-    // ── Incoming entry, planned backwards from its first drop ──
+    // ── Incoming entry. Blends: planned backwards from its first drop, so the drop lands as the blend
+    // ends (opts.entry 'drop', the default); from its intro ('intro'); or ending where its hook (the
+    // phrase that comes back most) begins ('hook') ──
     const introCue = inTrack.suggested_cue_intro || (inTrack.downbeat_times || [0])[0] || 0;
     let inStart = introCue;
     let inBars = bars;
     const drop = (inTrack.drop_times || []).find(d => d >= introCue + 8 * inBar - 0.05);
-    if (opts.blend && drop !== undefined) {
+    const entry = opts.entry || 'drop';
+    if (opts.blend && entry === 'hook') {
+      const hook = (inTrack.hook_times || []).find(h => h - bars * inBar >= introCue - 0.05);
+      if (hook !== undefined) inStart = hook - bars * inBar;
+    }
+    if (opts.blend && entry === 'drop' && drop !== undefined) {
       const introBars = Math.round((drop - introCue) / inBar);
       if (introBars < bars) inBars = Math.max(8, Math.floor(introBars / 8) * 8);
       inStart = Math.max(introCue, drop - inBars * inBar);
@@ -203,6 +210,7 @@ const MixPlanner = (() => {
       inStartNative: inStart,
       startCtx: outDeck.audio.ctxTimeAt(best),
       vocalClash,
+      entry: opts.blend ? entry : 'drop',
       keyClash: !!opts.keyClash,
       outOfRange: Math.abs(outBpm / (inTrack.bpm || outBpm) - 1) > MAX_STRETCH,
       exit: chosen || null,       // the scored exit this plan uses (null: forced near the end)
@@ -229,19 +237,24 @@ const MixPlanner = (() => {
     const list = [];
     const seen = new Set();
     const add = (p, technique) => {
-      const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}`;
+      const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}@${p.inStartNative.toFixed(1)}`;
       if (seen.has(key)) return;
       seen.add(key);
       list.push(Object.assign(p, { technique }));
     };
     const barsOptions = opts.blend ? (opts.barsOptions || [16, 8]) : [(opts.barsOptions || [16])[0]];
     const perBars = opts.perBars || 3;
-    for (const bars of barsOptions) {
-      const base = plan(outTrack, outDeck, inTrack, bars, opts);
-      const tech = opts.blend ? 'blend' : (opts.cutTechnique || 'echo_freeze');
-      add(base, tech);
-      for (const e of base.exits.slice(1, opts.blend ? perBars : perBars + 1)) {
-        add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t })), tech);
+    // Blends also try the incoming's other entries (its intro, or ending on its hook), at their two
+    // best exits: a track whose first drop comes late would otherwise always enter deep inside it
+    const entries = opts.blend ? [['drop', perBars], ['intro', 2], ['hook', 2]] : [['drop', perBars + 1]];
+    for (const [entry, exits] of entries) {
+      for (const bars of barsOptions) {
+        const base = plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { entry }));
+        const tech = opts.blend ? 'blend' : (opts.cutTechnique || 'echo_freeze');
+        add(base, tech);
+        for (const e of base.exits.slice(1, exits)) {
+          add(plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: e.t, entry })), tech);
+        }
       }
     }
     // Moments asked for by the caller (planned there only if they are phrase lines still ahead), as

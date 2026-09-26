@@ -23,6 +23,7 @@ const MixBlocks = (() => {
   const REVERB_TAIL_SEC = 3.0;   // roomImpulse() length (audio_engine.js)
   const FX_BEATS = { brake: 2, spinback: 2 };   // a vinyl brake or a spinback takes the last two beats
   const LAST_RESORT = new Set(['brake', 'spinback']);   // showy exits a DJ keeps for when nothing mixes cleanly
+  const HATS_HZ = 4000;   // 'hats' blends: the incoming's high-pass until the swap (above melody and voice)
 
   // ── Moves on one deck ──
 
@@ -89,9 +90,15 @@ const MixBlocks = (() => {
     curve(inDeck.faderGain.gain, T, T + Math.min(4, q) * bar, 0, 1);
     curve(inDeck.eqHigh.gain, T, T + q * bar, -12, 0);
     // Mids: 'overlap' rise to the swap and fall after it; 'snap' change hands on the swap's beat
-    // (two vocals or clashing keys never overlap); 'crossfade' trade places over the bar either side
+    // (two vocals or clashing keys never overlap); 'crossfade' trade places over the bar either side;
+    // 'hats': only the incoming's hats and percussion play (a 4 kHz high-pass) until the swap, where
+    // the filter opens over a beat: no vocal, melody or key of the incoming under the outgoing
     const around = [Math.max(T, swap - bar), Math.min(end, swap + bar)];
-    if (s.mids === 'snap') {
+    if (s.mids === 'hats') {
+      inDeck.eqMid.gain.setValueAtTime(0, T - 0.01);
+      inDeck.filterHPF.frequency.setValueAtTime(HATS_HZ, T - 0.01);
+      sweep(inDeck.filterHPF.frequency, swap - p.beatSec, swap, HATS_HZ, 20);
+    } else if (s.mids === 'snap') {
       curve(inDeck.eqMid.gain, T, swap - bar, -24, -14);
       curve(inDeck.eqMid.gain, swap - p.beatSec, swap, -14, 0, 8);
     } else if (s.mids === 'crossfade') {
@@ -102,7 +109,7 @@ const MixBlocks = (() => {
     // Bass swap on the 1
     bassKill(outDeck, swap, true);
     bassKill(inDeck, swap, false);
-    if (s.mids === 'snap') {
+    if (s.mids === 'snap' || s.mids === 'hats') {
       curve(outDeck.eqMid.gain, swap - p.beatSec, swap, 0, -24, 8);
     } else if (s.mids === 'crossfade') {
       curve(outDeck.eqMid.gain, around[0], around[1], 0, -24);
@@ -229,7 +236,7 @@ const MixBlocks = (() => {
     const add = (style, extra = {}) => out.push(Object.assign({}, p, extra, { style }));
     if (p.technique === 'blend') {
       const clash = p.vocalClash || p.keyClash;
-      for (const mids of clash ? ['snap', 'crossfade'] : ['overlap', 'crossfade', 'snap']) {
+      for (const mids of clash ? ['snap', 'crossfade', 'hats'] : ['overlap', 'crossfade', 'snap', 'hats']) {
         for (const tail of ['eq', 'filter', 'echo', 'reverb']) add({ kind: 'blend', mids, tail });
       }
       return out;
@@ -297,7 +304,7 @@ const MixBlocks = (() => {
     const bar = 4 * p.beatSec;
     const speed = gridOf(outTrack).period / p.beatSec;
     const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
-    const at = s.mids === 'snap' ? swapBar * bar : s.mids === 'crossfade' ? (swapBar + 1) * bar
+    const at = s.mids === 'snap' || s.mids === 'hats' ? swapBar * bar : s.mids === 'crossfade' ? (swapBar + 1) * bar
       : (p.bars + (p.tailBars || 0) - 1) * bar;
     return p.exitNative + at * speed;
   }
@@ -340,7 +347,8 @@ const MixBlocks = (() => {
   function label(p) {
     const s = p.style || defaultStyle(p);
     if (s.kind === 'blend') {
-      return `${p.bars}-bar blend` + ({ snap: ', mids snap', crossfade: ', mids crossfade' }[s.mids] || '') +
+      return `${p.bars}-bar blend` + ({ intro: ' from its intro', hook: ' into its hook' }[p.entry] || '') +
+             ({ snap: ', mids snap', crossfade: ', mids crossfade', hats: ', hats in' }[s.mids] || '') +
              ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '');
     }
     const after = { echo: 'echo out', reverb: 'reverb out', cut: 'cut', brake: 'vinyl brake',
@@ -357,10 +365,13 @@ const MixBlocks = (() => {
     const s = p.style || defaultStyle(p);
     if (s.kind === 'blend') {
       const mids = { overlap: 'mids blend gradually', snap: 'mids swap on the bass swap',
-                     crossfade: 'mids crossfade over the bar either side of the bass swap' }[s.mids];
+                     crossfade: 'mids crossfade over the bar either side of the bass swap',
+                     hats: 'only the incoming hats play (high-passed) until the swap, where everything changes hands' }[s.mids];
       const tail = { eq: 'outgoing hats and fader down', filter: 'outgoing leaves through a rising high-pass',
                      echo: 'outgoing last beat echoes out', reverb: 'outgoing thrown into the reverb' }[s.tail];
-      return `${p.bars}-bar EQ blend, bass swapped on a downbeat, ${mids}, ${tail}`;
+      const enters = { intro: 'the incoming plays from its intro', hook: 'the incoming reaches its hook as the blend ends' }[p.entry]
+        || 'the incoming reaches its drop as the blend ends';
+      return `${p.bars}-bar EQ blend, ${enters}, bass swapped on a downbeat, ${mids}, ${tail}`;
     }
     const where = s.inHook ? 'on its hook (the phrase that comes back most)'
       : s.inPreBars ? `${s.inPreBars} bars before its drop (its build)` : 'on its drop';
@@ -390,7 +401,7 @@ const MixBlocks = (() => {
    *  (blends, washes); 'switch' mixes change track at one moment. */
   function prefKeys(p) {
     const s = p.style || defaultStyle(p);
-    if (s.kind === 'blend') return ['handover', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`];
+    if (s.kind === 'blend') return ['handover', `blend.mids.${s.mids}`, `blend.tail.${s.tail}`, `blend.entry.${p.entry || 'drop'}`];
     const keys = [s.entry === 'split' ? 'handover' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
                   `gap.land.${s.inHook ? 'hook' : s.inPreBars ? 'build' : 'drop'}`];
     if (s.entry !== 'split') keys.push(`gap.before.${s.before}`);

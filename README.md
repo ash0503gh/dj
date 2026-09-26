@@ -29,8 +29,10 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     where the incoming enters, when the bass hands over) + a style (plain data: how the mids hand over,
     how the outgoing leaves, how the incoming enters, how long the lead-in is). Nothing is tied to a
     song pair: the search decides.
-  - Styles tried: beat-matched blends (mids overlap / snap / crossfade; outgoing out by EQ, filter, echo
-    or reverb) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb, cut,
+  - Styles tried: beat-matched blends (mids overlap / snap / crossfade, or "hats in": only the
+    incoming's hats, high-passed at 4 kHz, until the swap; outgoing out by EQ, filter, echo or reverb;
+    the incoming entering so its first drop lands as the blend ends, from its intro, or so its hook
+    lands as the blend ends) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb, cut,
     vinyl brake or spinback, after a high-pass rise, a noise riser with an impact on the landing, a loop
     roll or a reverb swell) and filter washes (spectral crossfade), landing the incoming on its drop, on
     the build before it, or on its hook (the 8-bar phrase that comes back most, found by the analyzer).
@@ -49,12 +51,16 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Search: the planner's best moments x every style (60-150 mixes) are rendered offline and measured a
     few at a time while the music plays (~0.15-0.35 s each; bass gaps/mud, holes against the outgoing's own
     level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
-  - Confidence (0-100): 60% measured sound, 40% taste — the DJ's ratings of similar mixes (a GOOD /
+  - Confidence (0-100): measured sound and taste — the DJ's ratings of similar mixes (a GOOD /
     NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
-    Jev has rated the leaders. A mix plays once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by
-    default; before any ratings a flawless blend reads 94% and a flawless switch 92%, Jev's rating moves
-    that a few points either way, and the DJ's ratings more); otherwise the search goes on through more
-    styles and later moments, and when it runs out the best one left plays, marked as under the bar.
+    Jev has rated the leaders. Sound counts 60% for handovers (blends, washes: the check hears both
+    tracks together) and 30% for switches (it can't hear whether a switch works musically). Taste starts
+    at 0.85 for handovers, 0.8 for switches across a tempo gap and 0.5 for switches between tempos that
+    could blend (blend when you can). Before any rating a flawless blend reads 94%, a switch across a
+    tempo gap 86% (93% with Jev's top rating), a switch that could have been a blend 65%. A mix plays
+    once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by default); otherwise the search goes on
+    through more styles and later moments, and when it runs out the best one left plays, marked as under
+    the bar.
   - Vocals: with Gemini's labels, a mix that fades or cuts the outgoing's lead vocal before its 16-bar
     phrase ends (checked where the fade starts and where the vocal is gone) loses confidence (0.25 points
     a second), and the phrase lines right after a vocal run ends are offered as extra moments.
