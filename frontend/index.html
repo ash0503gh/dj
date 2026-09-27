@@ -6,7 +6,7 @@
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=15.18">
+  <link rel="stylesheet" href="/css/style.css?v=15.19">
 </head>
 <body>
   <div class="dj-console">
@@ -50,6 +50,11 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/></svg>
       </button>
 
+      <button type="button" id="btn-controller" class="controller-chip" title="DJ controller (Numark Mixtrack Platinum)" aria-label="DJ controller">
+        <span class="controller-dot"></span>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="2" y="5" width="20" height="14" rx="2.5"/><circle cx="7.5" cy="12" r="3"/><circle cx="16.5" cy="12" r="3"/><path d="M12 8v8"/></svg>
+        <span class="controller-label">CONTROLLER</span>
+      </button>
       <button type="button" id="btn-ai-copilot" class="ai-engine-chip" title="AI co-pilot strategy and engine settings">
         <span class="engine-dot"></span>
         <span id="ai-engine-chip">Gemini 3.8 Flash · Jev fallback</span>
@@ -518,6 +523,40 @@
       </div>
     </div>
 
+    <!-- ═══ DJ controller ═══ -->
+    <div id="controller-modal" class="modal-overlay hidden">
+      <div class="modal-card controller-card" role="dialog" aria-modal="true" aria-labelledby="controller-title">
+        <div class="modal-header">
+          <h3 id="controller-title">DJ controller</h3>
+          <button type="button" id="btn-close-controller" class="btn-close" aria-label="Close">&times;</button>
+        </div>
+        <div class="modal-content ctl-body">
+          <div class="ctl-row">
+            <span id="ctl-status" class="ctl-status">Not connected.</span>
+            <button type="button" id="ctl-connect" class="btn btn-outline">CONNECT</button>
+          </div>
+          <div class="ctl-row">
+            <label class="ctl-label" for="ctl-output">SOUND OUTPUT</label>
+            <select id="ctl-output" class="ctl-select"><option value="">System default</option></select>
+            <button type="button" id="ctl-devices" class="btn btn-ghost" hidden>SHOW DEVICES</button>
+          </div>
+          <div id="ctl-output-note" class="ctl-note"></div>
+          <div class="ctl-test">
+            <span class="ctl-label">LAST TOUCHED</span>
+            <span id="ctl-last" class="ctl-last">Touch any control on the controller: it shows here.</span>
+          </div>
+          <ul class="ctl-map">
+            <li><b>Browse knob</b> the track list of the deck not playing · <b>LOAD</b> loads the highlighted track</li>
+            <li><b>Browse push</b> Auto MIX · <b>Shift + push</b> abort</li>
+            <li><b>Pads 1-4</b> the cue points (intro, build, drop, outro)</li>
+            <li><b>Jog</b> nudge while playing, scrub while paused · <b>Shift + jog</b> search</li>
+            <li><b>FX 1 / 2 / 3</b> echo / flanger / loop roll · <b>FX knob</b> how much</li>
+            <li>Knobs and faders pick up where the screen is; moving one during an Auto mix takes over</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
     <!-- ═══ AI co-pilot modal ═══ -->
     <div id="ai-modal" class="modal-overlay hidden">
       <div class="modal-card ai-modal-card" role="dialog" aria-modal="true" aria-labelledby="ai-modal-title">
@@ -583,15 +622,16 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=15.18"></script>
-  <script src="/js/mix_planner.js?v=15.18"></script>
-  <script src="/js/mix_blocks.js?v=15.18"></script>
-  <script src="/js/transition_lab.js?v=15.18"></script>
-  <script src="/js/mobile.js?v=15.18"></script>
-  <script src="/js/jog_wheel.js?v=15.18"></script>
-  <script src="/js/waveform.js?v=15.18"></script>
-  <script src="/js/knobs.js?v=15.18"></script>
-  <script src="/js/track_picker.js?v=15.18"></script>
-  <script src="/js/app.js?v=15.18"></script>
+  <script src="/js/audio_engine.js?v=15.19"></script>
+  <script src="/js/mix_planner.js?v=15.19"></script>
+  <script src="/js/mix_blocks.js?v=15.19"></script>
+  <script src="/js/transition_lab.js?v=15.19"></script>
+  <script src="/js/mobile.js?v=15.19"></script>
+  <script src="/js/jog_wheel.js?v=15.19"></script>
+  <script src="/js/waveform.js?v=15.19"></script>
+  <script src="/js/knobs.js?v=15.19"></script>
+  <script src="/js/track_picker.js?v=15.19"></script>
+  <script src="/js/controller.js?v=15.19"></script>
+  <script src="/js/app.js?v=15.19"></script>
 </body>
 </html>

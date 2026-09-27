@@ -129,6 +129,22 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .ai-engine-chip:hover { border-color: var(--line-2); color: var(--text); }
 .engine-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+/* DJ controller (controller.js): grey until one is connected */
+.controller-chip {
+  display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+  border: 1px solid transparent; border-radius: 6px; background: transparent;
+  color: var(--text-2); font-size: 12px; font-weight: 600; letter-spacing: 0.08em; flex-shrink: 0;
+}
+.controller-chip:hover { border-color: var(--line-2); color: var(--text); }
+.controller-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.controller-chip.on .controller-dot { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+/* Narrower screens: the top bar keeps its values and drops words (the phase bar stays, its readout goes) */
+@media (max-width: 1499px) {
+  .controller-label { display: none; }
+  .controller-chip { padding: 0 8px; }
+}
+@media (max-width: 1279px) { .phase-meter-hud .nav-label, .phase-status { display: none; } }
+@media (max-width: 1099px) { .nav-stat .nav-label { display: none; } }
 
 /* ── Waveforms ───────────────────────────────── */
 .master-waveform-panel {
@@ -292,6 +308,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .track-pick-row[aria-current="true"] { background: var(--deck-b-bg); }
 .deck-1 .track-pick-row[aria-current="true"] { background: var(--deck-a-bg); }
 .track-pick-row.played { opacity: 0.5; }
+.track-pick-row.hl { background: var(--raised); box-shadow: inset 2px 0 0 var(--accent); }   /* a controller's browse knob */
 .tp-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .tp-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .tp-why { font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -599,6 +616,20 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .player-container audio { width: 100%; }
 
 .shortcuts-card { width: min(980px, 100%); }
+.controller-card { width: min(620px, 100%); }
+.ctl-body { gap: 14px; }
+.ctl-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ctl-status { flex: 1 1 auto; min-width: 0; font-size: 14px; color: var(--text); }
+.ctl-label { font-size: 10px; font-weight: 700; letter-spacing: 0.12em; color: var(--muted); }
+.ctl-select {
+  flex: 1 1 200px; min-width: 0; height: 32px; padding: 0 8px; border-radius: 6px;
+  border: 1px solid var(--line-2); background: var(--inset); color: var(--text); font-size: 13px;
+}
+.ctl-note { font-size: 12px; color: var(--text-2); }
+.ctl-test { display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 8px; background: var(--inset); border: 1px solid var(--line); }
+.ctl-last { font-family: var(--font-mono); font-size: 14px; color: var(--accent); min-height: 1.4em; }
+.ctl-map { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--text-2); }
+.ctl-map b { color: var(--text); font-weight: 600; }
 .shortcuts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .shortcut-group { background: var(--inset); border: 1px solid var(--line); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
 .shortcut-group-title { font-size: 11px; letter-spacing: 0.14em; color: var(--muted); margin-bottom: 4px; }
@@ -693,7 +724,7 @@ html.landscape-ui .dj-console {
   padding: 0 max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left));
 }
 html.landscape-ui .top-nav { height: 40px; margin: 0 -8px; padding: 0 12px; gap: 12px; flex-wrap: nowrap; }
-html.landscape-ui .brand-name, html.landscape-ui .nav-key, html.landscape-ui .ai-engine-chip, html.landscape-ui #btn-shortcuts, html.landscape-ui .nav-stat .nav-label, html.landscape-ui .nav-unit { display: none; }
+html.landscape-ui .brand-name, html.landscape-ui .nav-key, html.landscape-ui .ai-engine-chip, html.landscape-ui .controller-chip, html.landscape-ui #btn-shortcuts, html.landscape-ui .nav-stat .nav-label, html.landscape-ui .nav-unit { display: none; }
 html.landscape-ui .nav-bpm { font-size: 16px; }
 html.landscape-ui .phase-meter-hud { padding: 3px 8px; gap: 6px; }
 html.landscape-ui .phase-meter-hud .nav-label { display: none; }

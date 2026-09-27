@@ -1255,7 +1255,93 @@ class DJAudioEngine {
     this.pflBusGain.connect(this.pflAnalyser);
     this.pflBusGain.connect(this.ctx.destination);
 
+    // The master's level (a controller's VU meter)
+    this.masterAnalyser = this.ctx.createAnalyser();
+    this.masterAnalyser.fftSize = 512;
+    this.masterGain.connect(this.masterAnalyser);
+
+    // Headphones: the cued decks and, by the cue mix, the master, at their own volume. They get their own
+    // outputs on a sound card with four (a DJ controller's: master on 1-2, headphones on 3-4, see
+    // routeOutputs); on a stereo one the cued decks play with the master, as they always did
+    this.headCue = this.ctx.createGain();
+    this.headMain = this.ctx.createGain();
+    this.headMain.gain.value = 0;
+    this.headGain = this.ctx.createGain();
+    this.pflBusGain.connect(this.headCue).connect(this.headGain);
+    this.masterGain.connect(this.headMain).connect(this.headGain);
+    this.headphonesOwnOutputs = false;
+
     this.setCrossfader(50, 'club');
+  }
+
+  /** Master on outputs 1-2 and the headphones on 3-4 when the sound card has four outputs, else both on
+   *  1-2 (the cued decks with the master). Returns whether the headphones have their own outputs. */
+  routeOutputs() {
+    const dest = this.ctx.destination;
+    const four = dest.maxChannelCount >= 4;
+    const unplug = (node, to) => { try { node.disconnect(to); } catch (e) { /* wasn't connected */ } };
+    unplug(this.masterGain, dest);
+    unplug(this.pflBusGain, dest);
+    if (this._outMerger) {
+      unplug(this.masterGain, this._outSplits[0]);
+      unplug(this.headGain, this._outSplits[1]);
+      this._outMerger.disconnect();
+      this._outMerger = null;
+    }
+    if (four) {
+      dest.channelCount = 4;
+      dest.channelCountMode = 'explicit';
+      dest.channelInterpretation = 'discrete';
+      this._outMerger = this.ctx.createChannelMerger(4);
+      this._outSplits = [0, 1].map(() => this.ctx.createChannelSplitter(2));
+      [this.masterGain, this.headGain].forEach((node, i) => {
+        node.channelCount = 2;
+        node.channelCountMode = 'explicit';     // a mono source still fills both sides
+        node.connect(this._outSplits[i]);
+        this._outSplits[i].connect(this._outMerger, 0, 2 * i);
+        this._outSplits[i].connect(this._outMerger, 1, 2 * i + 1);
+      });
+      this._outMerger.connect(dest);
+    } else {
+      dest.channelCount = 2;
+      dest.channelInterpretation = 'speakers';
+      this.masterGain.connect(dest);
+      this.pflBusGain.connect(dest);
+    }
+    this.headphonesOwnOutputs = four;
+    return four;
+  }
+
+  /** Play through another sound card (a DJ controller's): Chrome and Edge. Resolves to routeOutputs(). */
+  async setOutputDevice(deviceId) {
+    if (typeof this.ctx.setSinkId !== 'function') throw new Error('This browser cannot choose a sound output');
+    await this.ctx.setSinkId(deviceId);
+    return this.routeOutputs();
+  }
+
+  setMasterVolume(v) { // 0 - 1
+    this.masterGain.gain.setTargetAtTime(Math.max(0, Math.min(1, v)), this.ctx.currentTime, 0.02);
+  }
+
+  /** Headphone mix, 0 (the cued decks only) to 1 (the master only), equal power. */
+  setHeadMix(v) {
+    const x = Math.max(0, Math.min(1, v)) * Math.PI / 2;
+    const now = this.ctx.currentTime;
+    this.headCue.gain.setTargetAtTime(Math.cos(x), now, 0.02);
+    this.headMain.gain.setTargetAtTime(Math.sin(x), now, 0.02);
+  }
+
+  setHeadVolume(v) { // 0 - 1
+    this.headGain.gain.setTargetAtTime(Math.max(0, Math.min(1, v)), this.ctx.currentTime, 0.02);
+  }
+
+  /** The master's level now, 0 to 1 (-48 to 0 dBFS). */
+  getMasterLevel() {
+    const data = new Float32Array(this.masterAnalyser.fftSize);
+    this.masterAnalyser.getFloatTimeDomainData(data);
+    let peak = 0;
+    for (let i = 0; i < data.length; i++) peak = Math.max(peak, Math.abs(data[i]));
+    return peak > 0 ? Math.max(0, Math.min(1, 1 + (20 * Math.log10(peak)) / 48)) : 0;
   }
 
   setHeadphonePflVolume(val) { // 0 - 100

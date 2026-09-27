@@ -282,6 +282,8 @@ document.addEventListener('DOMContentLoaded', () => {
     if (aiModal) {
       aiModal.classList.add('hidden');
     }
+    const controllerModal = document.getElementById('controller-modal');
+    if (controllerModal) controllerModal.classList.add('hidden');
   }
 
   if (btnShortcuts) btnShortcuts.addEventListener('click', () => toggleShortcutsModal(true));
@@ -3022,6 +3024,40 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
     }
   });
+
+  // ── A hardware DJ controller (controller.js) plays the console through the screen's own controls ──
+  if (window.DJController) {
+    const deckOf = n => (n === 1 ? engine.deck1 : engine.deck2);
+    const trackOf = n => (n === 1 ? track1Data : track2Data);
+    // The deck a track is browsed for: the one not playing (deck B once A has a track)
+    const browseDeck = () => (engine.deck1.isPlaying !== engine.deck2.isPlaying ? (engine.deck1.isPlaying ? 2 : 1)
+      : (track1Data ? 2 : 1));
+    const visible = el => el && el.style.display !== 'none';
+    DJController.init({
+      engine,
+      deck: deckOf,
+      track: trackOf,
+      bpm: n => (trackOf(n) ? MixPlanner.deckBpm(trackOf(n), deckOf(n)) : 0),
+      synced: n => (n === 1 ? isDeck1SyncLocked : isDeck2SyncLocked),
+      // An Auto mix moving the mixer now (not while it searches or counts down: a knob touched then just
+      // adjusts the deck on air)
+      mixing: () => !!(isTransitioning && activeTransition && activeTransition.plan &&
+                       engine.ctx.currentTime >= activeTransition.plan.startCtx - (activeTransition.leadInSec || 0)),
+      mix: () => btnTriggerTransition.click(),
+      abort: () => { if (visible(btnAbortTransition)) btnAbortTransition.click(); },
+      takeOver: () => { if (visible(btnManualOverride)) btnManualOverride.click(); },
+      trim: n => deckOf(n).trimDb || 0,
+      setTrim: (n, db) => MixPlanner.setTrim(deckOf(n), db, engine.ctx.currentTime),
+      browse: (delta, n = browseDeck()) => { if (trackPickers[n]) trackPickers[n].browse(delta); },
+      browsed: () => [1, 2].map(n => trackPickers[n] && trackPickers[n].highlighted()).find(Boolean) || null,
+      load: (n, fileId) => {
+        unlockAudio();
+        Object.values(trackPickers).forEach(p => p.close());
+        loadPresetTrack(fileId, `deck_${n}`);
+      },
+      unlock: unlockAudio,
+    });
+  }
 
   requestAnimationFrame(loop);
 });

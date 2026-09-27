@@ -33,6 +33,7 @@ const TrackPicker = (() => {
     let suggestions = [];
     let suggestedAfter = '';
     let order = 'az';
+    let highlightId = null;     // the row a DJ controller's browse knob is on
     const coarse = window.matchMedia('(pointer: coarse)').matches;
 
     const trigger = document.createElement('button');
@@ -149,6 +150,21 @@ const TrackPicker = (() => {
       }
       list.replaceChildren(...rows);
       search.placeholder = `Search ${library.length} tracks`;
+      markHighlight();
+    }
+
+    function markHighlight() {
+      const rows = [...list.querySelectorAll('.track-pick-row')];
+      rows.forEach(r => r.classList.remove('hl'));
+      const r = rows.find(x => x.dataset.fileId === highlightId);
+      if (!r) return null;
+      r.classList.add('hl');
+      // In view: the list scrolls, never the page
+      if (r.offsetTop < list.scrollTop) list.scrollTop = r.offsetTop - 8;
+      else if (r.offsetTop + r.offsetHeight > list.scrollTop + list.clientHeight) {
+        list.scrollTop = r.offsetTop + r.offsetHeight - list.clientHeight + 8;
+      }
+      return r;
     }
 
     function pick(t) {
@@ -221,6 +237,18 @@ const TrackPicker = (() => {
       },
       /** The trigger shows the deck's track (null: none loaded). */
       showTrack(title) { triggerLabel.textContent = title ? cleanTitle(title) : 'Choose a track…'; },
+      /** A DJ controller's browse knob: opens the list and moves its highlight `delta` rows. */
+      browse(delta) {
+        if (panel.hidden) open();
+        const rows = [...list.querySelectorAll('.track-pick-row')];
+        if (!rows.length) return;
+        const i = rows.findIndex(x => x.dataset.fileId === highlightId);
+        highlightId = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + delta))].dataset.fileId;
+        markHighlight();
+      },
+      /** The highlighted track's file id while the list is open, else null. */
+      highlighted() { return panel.hidden ? null : highlightId; },
+      close,
     };
   }
 

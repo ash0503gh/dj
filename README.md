@@ -124,6 +124,28 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
 - **Lossless 24-Bit WAV Exporter**:
   - Offline mix rendering pipeline mirroring physical mixer knob motions.
 
+- **DJ controller (Numark Mixtrack Platinum, `frontend/js/controller.js`)**: over Web MIDI in Chrome or Edge
+  on a computer (not Safari). The CONTROLLER button in the top bar connects it once; after that it
+  reconnects on its own. Its controls play the console through the screen's own controls (the same buttons
+  and sliders), and the panel shows the last control touched, to check the mapping.
+  - Decks: play, cue, sync, pitch fader (14-bit, ±16%), pitch bend buttons (±4% while held), jog wheel
+    (nudges while playing, scrubs with short snippets while paused, searches with shift), EQ, filter,
+    gain (trim ±12 dB), channel fader, headphone cue. The layer buttons' decks 3 and 4 play decks A and B.
+  - Pads 1-4 (hot cue mode): the cue points (intro, build, drop, outro). Loops and samplers aren't in the
+    console, so their pads do nothing.
+  - Browse knob: the track list of the deck not playing, its highlight moving; LOAD A / LOAD B load the
+    highlighted track. Browse push: Auto MIX; shift + push: abort.
+  - FX 1 / 2 / 3 on each side: echo / flanger / a one-bar loop roll on that side's deck; the FX knob sets how
+    much is heard. Crossfader, master volume, headphone volume and cue mix.
+  - Knobs and faders pick up where the screen is: one does nothing until it reaches the on-screen value or
+    passes it (no jumps). Moved while an Auto mix is running (not while it searches or counts down), one
+    takes over from the mix, as the TAKE OVER button does.
+  - Lights: play, cue, sync, headphone cue, pads, FX; the master level on its meters; its jog screens show
+    BPM, time and length, the position ring and the spinning dot (MIDI sysex, asked for when connecting).
+  - Sound: with the controller chosen as sound output (the panel lists the devices), the master plays on its
+    outputs 1-2 and the headphones on 3-4 (the cued decks, and the master by the cue mix knob); on a stereo
+    sound card the cued decks play with the master, as before.
+
 ---
 
 ## Architecture Overview
