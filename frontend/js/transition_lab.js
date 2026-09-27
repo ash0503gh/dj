@@ -253,11 +253,13 @@ const TransitionLab = (() => {
    * out/inc: { buffer, tempoRatio, rate, trimDb }. ~0.1-0.3 s per candidate.
    */
   async function quickScore({ out, inc, plan }) {
-    const beat = plan.beatSec;
     // 4 bars before (the "pre" level), plus whatever the mix does before its start (gap lead-ins)
-    const preroll = 4 * 4 * beat + MixBlocks.preSec(plan);
+    const preroll = 4 * 4 * plan.beatSec + MixBlocks.preSec(plan);
     const { rendered, marks } = await renderBlend({ out, inc, plan, sr: QUICK_SR, preroll,
-                                                     tail: 4 * 4 * beat + 0.5, bands: true });
+                                                     tail: 4 * 4 * plan.beatSec + 0.5, bands: true });
+    // Measured a beat at a time; two at half time (the slower track's kicks fall on every other beat:
+    // a beat without one isn't a gap in the floor)
+    const beat = plan.beatSec * (plan.tempoMultiple === 2 ? 2 : 1);
     const ch = [0, 1, 2, 3, 4, 5, 6, 7].map(i => rendered.getChannelData(i));
     const nBeat = Math.floor(beat * QUICK_SR);
     const a0 = Math.floor(marks.start / beat), a1 = Math.floor(marks.end / beat);
@@ -395,7 +397,8 @@ const TransitionLab = (() => {
   // percent. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
   // MixBlocks.prefKeys), starting from a prior that a clean handover will please, and a switch too when
   // the tempos are too far apart to blend (when they aren't, the DJ wants a blend: a switch is a
-  // fallback); half Jev's rating when there is one. A handover's sound check hears the two tracks
+  // fallback); Jev's rating when there is one, as much as it has agreed with the DJ (jevWeight, at most
+  // half). A handover's sound check hears the two tracks
   // together, so it counts 60%; a switch plays nothing together and the check can't hear whether it
   // works musically, so it counts 30% and taste the rest. Before any rating a flawless handover reads
   // 94%, a flawless switch across a tempo gap 86% (93% with Jev's top rating), one between tempos
@@ -409,6 +412,19 @@ const TransitionLab = (() => {
   const GAP_BANDS = [[0.12, 'le12'], [0.20, '12-20'], [0.50, '20-50']];
   const gapBand = g => (GAP_BANDS.find(([edge]) => g <= edge) || [0, '50+'])[1];
   const SITUATION_WEIGHT = 4;
+  // A blend at half or double time (c.tempoMultiple) is a situation of its own
+  const situation = (kind, c) => (kind === 'blend' && c.tempoMultiple === 2 ? 'blend@tempo.half'
+    : kind === 'blend' && c.tempoMultiple === 0.5 ? 'blend@tempo.double' : `${kind}@gap.${gapBand(c.tempoGap)}`);
+
+  // Jev's rating counts as much as it has agreed with the DJ: how often its score put a mix they liked
+  // above one they didn't (prefs['jev.agree'] = [agreeing pairs, pairs], from the server). Half of
+  // taste at 80% agreement or more, none at a coin flip or worse; half until 100 pairs can tell
+  const JEV_TRUST = { full: 0.8, minPairs: 100 };
+  function jevWeight(prefs = {}) {
+    const [agree, pairs] = prefs['jev.agree'] || [0, 0];
+    if (pairs < JEV_TRUST.minPairs) return 0.5;
+    return 0.5 * Math.max(0, Math.min(1, (agree / pairs - 0.5) / (JEV_TRUST.full - 0.5)));
+  }
 
   function taste(c, prefs = {}, cap = true) {
     const [kind, ...details] = MixBlocks.prefKeys(c);
@@ -417,7 +433,7 @@ const TransitionLab = (() => {
       return (likes + prior * weight) / (n + weight);
     };
     let v = mean(kind, kind === 'switch' && !c.outOfRange ? SWITCH_WHEN_BLENDABLE : TASTE_PRIOR[kind], 4);
-    if (typeof c.tempoGap === 'number') v = mean(`${kind}@gap.${gapBand(c.tempoGap)}`, v, SITUATION_WEIGHT);
+    if (typeof c.tempoGap === 'number') v = mean(situation(kind, c), v, SITUATION_WEIGHT);
     for (const key of details) {
       let d = mean(key, DETAIL_PRIOR[key] !== undefined ? DETAIL_PRIOR[key] : 0.5, 4);
       if (key.startsWith('gap.land.') && key !== 'gap.land.soft') d = mean(`${key}@${kind}`, d, SITUATION_WEIGHT);
@@ -431,7 +447,7 @@ const TransitionLab = (() => {
    *  confidence bar: the DJ's likes decide between mixes, they don't make one sound any cleaner. */
   function likesBonus(c, prefs = {}) {
     const w = MixBlocks.prefKeys(c)[0] === 'switch' ? 0.3 : 0.6;
-    return (1 - w) * 100 * (typeof c.jev === 'number' ? 0.5 : 1) * (taste(c, prefs, false) - taste(c, prefs));
+    return (1 - w) * 100 * (typeof c.jev === 'number' ? 1 - jevWeight(prefs) : 1) * (taste(c, prefs, false) - taste(c, prefs));
   }
 
   function soundScore(c) {
@@ -446,7 +462,8 @@ const TransitionLab = (() => {
   function confidence(c, prefs = {}) {
     const sound = soundScore(c);
     if (sound === null) return null;
-    const t = typeof c.jev === 'number' ? 0.5 * taste(c, prefs) + 0.5 * c.jev / 4 : taste(c, prefs);
+    const wj = typeof c.jev === 'number' ? jevWeight(prefs) : 0;
+    const t = (1 - wj) * taste(c, prefs) + wj * (c.jev || 0) / 4;
     const w = MixBlocks.prefKeys(c)[0] === 'switch' ? 0.3 : 0.6;
     return Math.round(w * sound + (1 - w) * 100 * t + (c.geminiPick ? 4 : 0));
   }
@@ -594,7 +611,7 @@ const TransitionLab = (() => {
   }
 
   return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed,
-           taste, soundScore, confidence, likesBonus };
+           taste, soundScore, confidence, likesBonus, jevWeight };
 })();
 
 window.TransitionLab = TransitionLab;

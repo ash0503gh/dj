@@ -379,7 +379,8 @@ const MixBlocks = (() => {
   function vocalIn(p, inTrack) {
     const s = p.style || defaultStyle(p);
     const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
-    const t = s.kind === 'blend' ? p.inStartNative + swapBar * 4 * gridOf(inTrack).period : p.inStartNative;
+    // (a blend's bar is the plan's: half the incoming's own at half time)
+    const t = s.kind === 'blend' ? p.inStartNative + swapBar * (p.inBarSec || 4 * gridOf(inTrack).period) : p.inStartNative;
     const secs = inTrack.section_map || [];
     const sings = x => x.has_vocals && x.vocal_score > 0.35;
     let i = secs.findIndex(x => t >= x.time - 0.05 && t < x.time + x.duration);
@@ -405,7 +406,8 @@ const MixBlocks = (() => {
   function label(p) {
     const s = p.style || defaultStyle(p);
     if (s.kind === 'blend') {
-      return `${p.bars}-bar blend` + ({ intro: ' from its intro', hook: ' into its hook', loop: ' over an intro loop' }[p.entry] || '') +
+      const time = { 2: 'half-time ', 0.5: 'double-time ' }[p.tempoMultiple] || '';
+      return `${p.bars}-bar ${time}blend` + ({ intro: ' from its intro', hook: ' into its hook', loop: ' over an intro loop' }[p.entry] || '') +
              ({ snap: ', mids snap', crossfade: ', mids crossfade', hats: ', hats in' }[s.mids] || '') +
              ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '');
     }
@@ -431,7 +433,9 @@ const MixBlocks = (() => {
       const enters = { intro: 'the incoming plays from its intro', hook: 'the incoming reaches its hook as the blend ends',
                        loop: 'the incoming\'s beat-only bars loop under the outgoing (an automatic intro edit) and the track drops in on its hook at the bass swap' }[p.entry]
         || 'the incoming reaches its drop as the blend ends';
-      return `${p.bars}-bar EQ blend, ${enters}, bass swapped on a downbeat, ${mids}, ${tail}`;
+      const time = { 2: ' at half time (the incoming at half the tempo: its beats on every other beat)',
+                     0.5: ' at double time (the incoming at twice the tempo: two of its beats to each beat)' }[p.tempoMultiple] || '';
+      return `${p.bars}-bar EQ blend${time}, ${enters}, bass swapped on a downbeat, ${mids}, ${tail}`;
     }
     const where = s.inLand ? { hook: 'on its hook (the phrase that comes back most)', intro: 'on the 1 of its intro',
                                verse: 'as its first vocal line starts' }[s.inLand]

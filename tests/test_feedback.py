@@ -73,3 +73,22 @@ def test_situations_and_reasons(monkeypatch):
 
         assert client.post("/api/feedback/reason", json={"id": bad["id"], "reason": "meh"}).status_code == 400
         assert client.post("/api/feedback/reason", json={"id": "nope", "reason": "song"}).status_code == 404
+
+
+def test_jev_agreement_and_half_time_situation(monkeypatch):
+    with tempfile.TemporaryDirectory() as d:
+        monkeypatch.setattr(server, "UPLOAD_DIR", d)
+        monkeypatch.setattr(server, "FEEDBACK", {"ratings": None})
+        client = TestClient(server.app)
+        blend = ["blend", "blend.mids.hats", "blend.tail.filter", "blend.entry.drop"]
+        post = lambda r, jev, pair: client.post("/api/feedback", json={  # noqa: E731
+            "rating": r, "keys": blend, "jev": jev, "pair": pair}).json()
+        post(1, 1.0, {"tempo_gap": 0.5, "tempo_multiple": 2})       # liked, Jev low
+        post(0, 3.0, {"tempo_gap": 0.02})                            # disliked, Jev high
+        bad = post(0, 1.0, {"tempo_gap": 0.02})                     # disliked for the song: not Jev's call
+        client.post("/api/feedback/reason", json={"id": bad["id"], "reason": "song"})
+        keys = client.get("/api/feedback/summary").json()["keys"]
+        # Jev put the liked mix below the disliked one: it agreed in 0 of 1 pair
+        assert keys["jev.agree"] == [0, 1]
+        # A blend at half time is rated in a situation of its own
+        assert keys["blend@tempo.half"] == [1, 1] and keys["blend@gap.le12"] == [0, 1]

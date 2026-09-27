@@ -5,6 +5,7 @@ Handles audio uploads, track analysis, stem separation, mix rendering, presets, 
 
 import os
 import re
+import bisect
 import uuid
 import json
 import shutil
@@ -660,23 +661,40 @@ def _rating_keys(r: dict) -> list:
     if not keys:
         return []
     kind = keys[0]
-    gap = (r.get("pair") or {}).get("tempo_gap")
-    situation = [f"{kind}@gap.{_gap_band(gap)}"] if isinstance(gap, (int, float)) else []
+    pair = r.get("pair") or {}
+    gap, multiple = pair.get("tempo_gap"), pair.get("tempo_multiple")
+    if kind == "blend" and multiple in (2, 0.5):             # a blend at half or double time
+        situation = [f"blend@tempo.{'half' if multiple == 2 else 'double'}"]
+    else:
+        situation = [f"{kind}@gap.{_gap_band(gap)}"] if isinstance(gap, (int, float)) else []
     situation += [f"{k}@{kind}" for k in keys[1:] if k.startswith("gap.land.") and k != "gap.land.soft"]
     keys += situation
     parts = REASON_BLAME.get(r.get("reason")) if not r.get("rating") else None
     return [k for k in keys if _blamed(k, kind, parts)] if parts is not None else keys
 
 
+def _jev_agreement(ratings: list) -> list:
+    """How often Jev's score put a mix the DJ liked above one they didn't (a tie counts half):
+    [agreeing pairs, pairs]. A NOT FOR ME for the song choice says nothing about the mix: left out."""
+    scored = [r for r in ratings if isinstance(r.get("jev"), (int, float)) and r.get("reason") != "song"]
+    liked = [r["jev"] for r in scored if r.get("rating")]
+    disliked = sorted(r["jev"] for r in scored if not r.get("rating"))
+    agree = sum(bisect.bisect_left(disliked, a) + 0.5 * (bisect.bisect_right(disliked, a) - bisect.bisect_left(disliked, a))
+                for a in liked)
+    return [agree, len(liked) * len(disliked)]
+
+
 @app.get("/api/feedback/summary")
 async def feedback_summary():
-    """Likes and ratings per feature key: {count, keys: {key: [likes, ratings]}}."""
+    """Likes and ratings per feature key: {count, keys: {key: [likes, ratings]}}, and under "jev.agree"
+    how well Jev's ratings have matched the DJ's (the console weighs Jev by it)."""
     ratings = await _ratings()
     keys: dict = {}
     for r in ratings:
         for k in _rating_keys(r):
             likes, n = keys.get(k, [0, 0])
             keys[k] = [likes + int(r.get("rating", 0)), n + 1]
+    keys["jev.agree"] = _jev_agreement(ratings)
     return JSONResponse(content={"count": len(ratings), "keys": keys})
 
 

@@ -29,7 +29,9 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     where the incoming enters, when the bass hands over) + a style (plain data: how the mids hand over,
     how the outgoing leaves, how the incoming enters, how long the lead-in is). Nothing is tied to a
     song pair: the search decides.
-  - Styles tried: beat-matched blends within 12% of tempo, the incoming keylocked (past 8% a blend costs
+  - Styles tried: beat-matched blends within 12% of tempo (at the incoming's own tempo, or at half or double
+    time: a 90 BPM track under a 180 BPM dhol mix plays its beats on every other beat, planned with the
+    incoming counted at that multiple), the incoming keylocked (past 8% a blend costs
     0.5 points per extra percent: the stretch starts to smear) (mids overlap, snap (change hands over the
     bar before the swap: the outgoing's mids go over its first three beats, the incoming's come over the
     last three, gradual but never both at full), crossfade, or "hats in": only the incoming's hats,
@@ -66,8 +68,12 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     at most 5.2 over 519 comparisons; a switch's exit moves it far more, so switches get no such bound).
   - Confidence (0-100): measured sound and taste — the DJ's ratings of similar mixes, kept per kind
     (blend, filter wash, switch) and per detail of the style (a GOOD /
-    NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
-    Jev has rated the leaders. Ratings are also kept per situation: how far apart the tempos were (up to
+    NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), and Jev's rating once
+    Jev has rated the leaders, weighed by how well Jev has agreed with the DJ: up to half of taste at 80%
+    agreement (how often its score put a mix they liked above one they didn't), none at a coin flip or
+    worse, half until 100 such pairs exist. At no weight the search doesn't wait for Jev; it still rates
+    the mix that plays, so its agreement keeps being measured. A half- or double-time blend is rated in a
+    situation of its own. Ratings are also kept per situation: how far apart the tempos were (up to
     12%, 12-20%, 20-50%, more) and, for a switch or wash, where it landed for that kind of mix; a
     situation starts from the overall rating and counts as much after 4 ratings of its own (washes are
     liked across wide tempo gaps and not between 12 and 20%: the same technique, another situation).
@@ -94,7 +100,8 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     the other deck's tempo ("BLENDS" within 12%, else how far apart); tracks mixed this session are dimmed.
   - Next track: the library tracks that mix best after the one on air top the other deck's track list,
     and the best one shows as its "UP NEXT" line with a one-tap LOAD. Scored on the server from the
-    stored analyses (no AI, `/api/suggest-next`): tempo within the 12% a blend allows (40 points),
+    stored analyses (no AI, `/api/suggest-next`): tempo within the 12% a blend allows, at the track's own
+    tempo or at half or double time (40 points, 5 fewer at half or double time),
     matching keys (30), an instrumental intro before its vocals that isn't much quieter than the
     track (20), similar loudness (10). One copy per song; the track on the other deck and tracks
     already mixed this session are left out.
@@ -104,7 +111,7 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     its confidence and when it starts ("8-BAR BLEND, HATS IN · 94% · STARTS IN 36 S").
   - Keys: with clashing keys (severity from the Camelot distance, 0-1), every second both tracks'
     midrange is heard together, FX tails included, costs up to 0.5 points.
-  - AI: Jev rates every measured mix (free, 48 a request); Gemini only breaks a near tie
+  - AI: Jev rates every measured mix (free, 48 a request) while its ratings count; Gemini only breaks a near tie
     between confident mixes when there is time (at most one call per mix, often none). Gemini also
     listens to each track once and marks which sections really carry a lead vocal.
   - `TransitionLab.benchmark({ outId, inId })` renders the planner's candidates, scores them, and shows what

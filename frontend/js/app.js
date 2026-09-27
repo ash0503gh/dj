@@ -1483,7 +1483,12 @@ document.addEventListener('DOMContentLoaded', () => {
   function computePhaseError(masterDeck, masterTrack, slaveDeck, slaveTrack) {
     const now = engine.ctx.currentTime;
     const m = MixPlanner.beatPhase(masterTrack, masterDeck.audio.timeAt(now));
-    const s = MixPlanner.beatPhase(slaveTrack, slaveDeck.audio.timeAt(now));
+    // A deck at half or double time (a half-time blend): its beats counted at the other's tempo
+    const mult = MixPlanner.tempoMultiple(MixPlanner.deckBpm(masterTrack, masterDeck),
+                                          MixPlanner.deckBpm(slaveTrack, slaveDeck)) || 1;
+    const g = MixPlanner.gridOf(slaveTrack);
+    const sPos = ((slaveDeck.audio.timeAt(now) - g.first) / g.period) * mult;
+    const s = { phase: sPos - Math.floor(sPos) };
     let phaseDiff = s.phase - m.phase;
     if (phaseDiff > 0.5) phaseDiff -= 1.0;
     if (phaseDiff < -0.5) phaseDiff += 1.0;
@@ -1870,10 +1875,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const outTrack = isDir1to2 ? track1Data : track2Data;
     const inTrack = isDir1to2 ? track2Data : track1Data;
     if (!inTrack.grid || !outTrack.grid) return;
-    const ratio = MixPlanner.deckBpm(outTrack, isDir1to2 ? engine.deck1 : engine.deck2) / inTrack.bpm;
-    if (Math.abs(ratio - 1) >= 0.0005 && Math.abs(ratio - 1) <= MixPlanner.MAX_STRETCH) {
-      stretchedBuffer(inTrack, ratio);
-    }
+    // At the tempo a blend would use (half or double time included); none for a switch
+    const outBpm = MixPlanner.deckBpm(outTrack, isDir1to2 ? engine.deck1 : engine.deck2);
+    const multiple = MixPlanner.tempoMultiple(outBpm, inTrack.bpm);
+    const ratio = multiple ? outBpm / (inTrack.bpm * multiple) : 1;
+    if (Math.abs(ratio - 1) >= 0.0005) stretchedBuffer(inTrack, ratio);
   }
 
   function setPlayUI(btn, playing) {
@@ -2038,7 +2044,11 @@ document.addEventListener('DOMContentLoaded', () => {
    * bar. Jev rates every measured candidate (no Gemini); Gemini only breaks a near tie.
    */
   async function searchAndMix(t, planOpts, bars, aiModel, attempt = 0, pressedAt = engine.ctx.currentTime) {
-    const gap = Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1) > MixPlanner.MAX_STRETCH;
+    // Tempos a blend can match, at the incoming's own or at half or double time (90 under 180 BPM, as a
+    // DJ blends a dhol mix into a 90 BPM track): the plans count the incoming at that multiple
+    const multiple = MixPlanner.tempoMultiple(MixPlanner.deckBpm(t.outTrack, t.outDeck), t.inTrack.bpm);
+    const gap = multiple === null;
+    const inPlanned = gap ? t.inTrack : MixPlanner.atTempoMultiple(t.inTrack, multiple);
     // The decision card shows the search, then the mix it picked: nothing from before
     [aiRecTechnique, aiRecReason, aiRecConfidence].forEach(el => { if (el) el.textContent = ''; });
     // Gemini's vocal labels (when it has listened) let the mix wait for the singer: the phrase lines
@@ -2061,10 +2071,17 @@ document.addEventListener('DOMContentLoaded', () => {
       .flatMap(h => [near(h), near(h + 8 * outBar)]);
     const extraExits = vocalExits.concat(hookExits)
       .filter((x, i, all) => Number.isFinite(x) && all.findIndex(y => Math.abs(y - x) < 0.1) === i);
-    const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, planOpts, {
+    const searchOpts = Object.assign({}, planOpts, {
       now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 16, extraExits,
-    }));
+    });
+    const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, inPlanned, searchOpts);
+    // At half or double time the washes and switches of the tempo gap stay on offer (as fallbacks to a
+    // blend: a DJ blends when tempos allow): the search weighs the blends against them
+    if (multiple && multiple !== 1) {
+      MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, searchOpts, { blend: false }))
+        .forEach(sk => skeletons.push(Object.assign(sk, { outOfRange: false })));
+    }
     const clash = keySeverity(t.outTrack.camelot, t.inTrack.camelot);
     // The situation its rating is kept under (as the rating stores it: pair.tempo_gap)
     const tempoGap = +Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1).toFixed(3);
@@ -2078,7 +2095,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     vocalInSec: t.inTrack.vocal_source ? MixBlocks.vocalIn(c, t.inTrack) : 0 }));
     }));
     if (!cands.length) {
-      commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars,
+      commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, inPlanned, bars,
         Object.assign({}, planOpts, { now: engine.ctx.currentTime, blend: !gap, leadSec: 3.0 })),
         { technique: gap ? 'echo_freeze' : 'blend' }), 'NO ROOM TO SEARCH: THE PLANNER\'S OWN MIX');
       return;
@@ -2097,7 +2114,9 @@ document.addEventListener('DOMContentLoaded', () => {
     t.search = cands;
 
     const bar = confidenceBar();
-    const useAI = aiModel !== 'local';
+    // Jev's ratings count only as much as they have agreed with the DJ's (TransitionLab.jevWeight): with
+    // no weight, the search doesn't wait for them
+    const jevCounts = aiModel !== 'local' && TransitionLab.jevWeight(tastePrefs) > 0;
     const deadline = c => c.startCtx - MixBlocks.preSec(c) - 1.5;   // last moment to commit to c
     const rescore = () => cands.forEach(c => { if (c.measured) c.conf = TransitionLab.confidence(c, tastePrefs); });
     const liveAt = now => cands.filter(c => c.measured && deadline(c) > now);
@@ -2124,7 +2143,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const batch = [];
       while (next < cands.length && batch.length < Math.max(3, RENDERS_AT_ONCE)) {
         const c = cands[next++];
-        if (deadline(c) > engine.ctx.currentTime + 1 && ceiling(c, useAI, aiModel, bestCase(c)) > floor) batch.push(c);
+        if (deadline(c) > engine.ctx.currentTime + 1 && ceiling(c, jevCounts, aiModel, bestCase(c)) > floor) batch.push(c);
       }
       if (batch.length) await measureCandidates(t, batch);
       if (activeTransition !== t) return;
@@ -2143,12 +2162,12 @@ document.addEventListener('DOMContentLoaded', () => {
       // shouldn't mean a long wait
       const bestScore = bestOf(live);
       const done = next >= cands.length ||
-        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, useAI, aiModel, bestCase(c)) > bestScore);
+        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, jevCounts, aiModel, bestCase(c)) > bestScore);
       const quickDone = checked >= QUICK_LOOK || done;
       // Once the quick look is in, Jev rates every measured candidate (free; 48 a request, five answers
       // each, within its 255), and the ones measured later in further rounds: all compared alike
       const unrated = live.filter(c => c.jev === undefined);
-      if (useAI && quickDone && (!jev || jev.settled) && jevRounds < 8 && unrated.length && live.length > 1) {
+      if (jevCounts && quickDone && (!jev || jev.settled) && jevRounds < 8 && unrated.length && live.length > 1) {
         jevRounds++;
         const ask = unrated.length > 1 ? unrated.slice(0, 48) : unrated.concat(live.filter(c => c !== unrated[0]).slice(0, 1));
         jev = { settled: false };
@@ -2158,14 +2177,14 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       }
       // With Jev in play, only candidates it has looked at are compared (its rating moves confidence)
-      const pool = useAI && live.some(c => c.jev !== undefined) ? live.filter(c => c.jev !== undefined) : live;
+      const pool = jevCounts && live.some(c => c.jev !== undefined) ? live.filter(c => c.jev !== undefined) : live;
       const ranked = pool.slice().sort((a, b) => utility(b) - utility(a));
       const confident = ranked.filter(c => c.conf >= bar);
       if (performance.now() - shown > 300 || done) {
         shown = performance.now();
         transitionStatusBanner.textContent = `SEARCHING ${next}/${cands.length}`;   // looked at, measured or ruled out
       }
-      const aiReady = !useAI || (jev && jev.settled && (jevRounds >= 8 || live.every(c => c.jev !== undefined)))
+      const aiReady = !jevCounts || (jev && jev.settled && (jevRounds >= 8 || live.every(c => c.jev !== undefined)))
         || live.length < 2;
       // A clean mix that clears the bar plays; a last-resort exit only when none does and it still leads
       // the ranking with its handicap
@@ -2176,7 +2195,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (ranked.length) return settleOn(t, ranked, aiModel, bar, true);
         // Every moment passed while searching: look again from here
         if (attempt < 1) return searchAndMix(t, planOpts, bars, aiModel, attempt + 1, pressedAt);
-        commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars,
+        commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, inPlanned, bars,
           Object.assign({}, planOpts, { now: engine.ctx.currentTime, blend: !gap, leadSec: 3.0 })),
           { technique: gap ? 'echo_freeze' : 'blend' }), 'SEARCH RAN OUT OF TIME: THE PLANNER\'S OWN MIX');
         return;
@@ -2188,9 +2207,9 @@ document.addEventListener('DOMContentLoaded', () => {
   /** The most confidence a candidate could get before it is measured: a flawless sound check (or the
    *  best case `measured` allows), Jev's top rating (when Jev rates) and Gemini's tie-break, plus what
    *  the DJ's likes add when choosing. */
-  function ceiling(c, useAI, aiModel, measured = { penalty: 0 }) {
+  function ceiling(c, jevCounts, aiModel, measured = { penalty: 0 }) {
     const best = Object.assign({}, c, {
-      measured, jev: useAI ? 4 : undefined, geminiPick: aiModel.startsWith('gemini'),
+      measured, jev: jevCounts ? 4 : undefined, geminiPick: aiModel.startsWith('gemini'),
     });
     return TransitionLab.confidence(best, tastePrefs) + TransitionLab.likesBonus(best, tastePrefs);
   }
@@ -2229,6 +2248,15 @@ document.addEventListener('DOMContentLoaded', () => {
     console.info(`Auto mix: ${pick.id} (${MixBlocks.label(pick)}) at ${pick.conf}% of ${checked} checked`, pick.measured);
     pick.pair = { out: t.outTrack.file_id, in: t.inTrack.file_id,
                   tempo_gap: +Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1).toFixed(3) };
+    if (pick.technique === 'blend' && pick.tempoMultiple !== 1) pick.pair.tempo_multiple = pick.tempoMultiple;
+    // Jev's rating doesn't count yet: it still rates the mix that plays (never waited for), so how well
+    // it agrees with the DJ keeps being measured
+    if (aiModel !== 'local' && pick.jev === undefined && TransitionLab.jevWeight(tastePrefs) === 0) {
+      const other = ranked.find(c => c !== pick);
+      askAI(t, other ? [pick, other] : [pick], ['jev'], 'jev-latest').then(d => {
+        if (d.scores && d.scores[pick.id]) pick.jev = d.scores[pick.id].mean;
+      });
+    }
     const note = `${MixBlocks.label(pick)} · CONFIDENCE ${pick.conf}%` +
       (pick.requested && pick.vocalCutSec < 0.5 ? ' · AFTER THE VOCAL LINE' : '') +
       (pick.late ? ` · NOTHING CLEAN WITHIN A MINUTE: MIXING AT ${formatTime(pick.exitNative)}` : '') +

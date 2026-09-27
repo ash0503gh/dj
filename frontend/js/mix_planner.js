@@ -38,6 +38,33 @@ const MixPlanner = (() => {
     return deck.audio.tempoRatio * deck.audio.playbackRate;
   }
 
+  /** The multiple of the incoming's tempo a blend can match to the outgoing's: 1 (its own), 2 (it is
+   *  at half the tempo: 90 under 180 BPM, a half-time blend) or 0.5 (double: 180 under 90); its own
+   *  first. null when none is within MAX_STRETCH (only a switch or a wash then). */
+  function tempoMultiple(outBpm, inBpm) {
+    if (!outBpm || !inBpm) return 1;
+    const m = [1, 2, 0.5].find(x => Math.abs(outBpm / (inBpm * x) - 1) <= MAX_STRETCH);
+    return m === undefined ? null : m;
+  }
+
+  /** The incoming track counted at `m` times its tempo, to plan a half- or double-time blend: its beats,
+   *  bars and per-bar bass levels at 1/m the length (a bar of the outgoing lasts a bar of it); its drops,
+   *  hooks, sections and phrase lines where they are. */
+  function atTempoMultiple(track, m) {
+    if (m === 1) return track;
+    const g = gridOf(track);
+    const lv = track.bar_low_db || [];
+    const barLow = m > 1 ? lv.flatMap(x => Array(m).fill(x))
+      : lv.filter((x, i) => i % 2 === 0).map((x, k) => Math.min(x, lv[2 * k + 1] !== undefined ? lv[2 * k + 1] : x));
+    return Object.assign({}, track, {
+      bpm: (track.bpm || 128) * m,
+      grid: Object.assign({}, track.grid, { first_beat: g.first, period: g.period / m,
+                                            downbeat_offset: ((track.grid && track.grid.downbeat_offset) || 0) * m }),
+      bar_low_db: barLow,
+      tempoMultiple: m,
+    });
+  }
+
   function deckBpm(track, deck) {
     return (track.bpm || 128) * deckSpeed(deck);
   }
@@ -225,8 +252,9 @@ const MixPlanner = (() => {
       dropAligned,
       inTrimDb,
       tempoRatio,
+      tempoMultiple: inTrack.tempoMultiple || 1,   // 2: a half-time blend, 0.5: double time (atTempoMultiple)
       masterBpm: outBpm,
-      inBarSec: inBar,            // the incoming's bar at its native tempo
+      inBarSec: inBar,            // the incoming's bar at its native tempo (half a bar at half time)
       beatSec,
       blendSec: (bars + tailBars) * 4 * beatSec,
       exitNative: best,
@@ -472,7 +500,8 @@ const MixPlanner = (() => {
     return { start: T, swap, end: T + D };
   }
 
-  return { MAX_STRETCH, CLEAN_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, candidates, candidateFeatures,
+  return { MAX_STRETCH, CLEAN_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, tempoMultiple, atTempoMultiple,
+           plan, candidates, candidateFeatures,
            trackSummary, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals,
            curve, bassKill, swapTime };
 })();

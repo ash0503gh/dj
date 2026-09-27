@@ -80,3 +80,9 @@ def test_same_audio_under_another_name_is_one_song():
     lib = [next_track.features(a) for a in LIB + [renamed]]
     names = [r["file_id"] for r in next_track.rank(lib[0], 122.0, lib)]
     assert sum("blends" in n for n in names) == 1
+
+
+def test_half_tempo_track_blends_at_half_time():
+    lib = [next_track.features(a) for a in LIB + [analysis("deck_1_half.mp3", 61.0, "8A", "h")]]
+    half = next(r for r in next_track.rank(lib[0], 122.0, lib) if r["file_id"] == "deck_1_half.mp3")
+    assert half["blend"] and "half time" in half["reasons"][0]

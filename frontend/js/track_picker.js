@@ -2,7 +2,8 @@
  * track_picker.js - The decks' track browser. Every library track once (the server merges copies),
  * under a clean name, with search, A-Z or tempo order, the suggested next tracks on top, and how each
  * track's tempo sits with the other deck's: "BLENDS" within 12% (the console stretches it, keylocked),
- * or how far apart. Tracks played this session are dimmed.
+ * "HALF-TIME" / "DOUBLE-TIME" when it blends at half or double its tempo, or how far apart. Tracks played
+ * this session are dimmed.
  */
 const TrackPicker = (() => {
   const BLEND_GAP = 0.12;   // MixPlanner.MAX_STRETCH
@@ -76,9 +77,12 @@ const TrackPicker = (() => {
 
     function tempoHint(bpm, otherBpm) {
       if (!otherBpm || !bpm) return null;
+      const fits = m => Math.abs(otherBpm / (bpm * m) - 1) <= BLEND_GAP;   // MixPlanner.tempoMultiple
+      if (fits(1)) return { text: 'BLENDS', ok: true };
+      if (fits(2)) return { text: 'HALF-TIME', ok: true };
+      if (fits(0.5)) return { text: 'DOUBLE-TIME', ok: true };
       const gap = otherBpm / bpm - 1;
-      return Math.abs(gap) <= BLEND_GAP ? { text: 'BLENDS', ok: true }
-        : { text: `${gap > 0 ? '+' : '−'}${Math.round(Math.abs(gap) * 100)}%`, ok: false };
+      return { text: `${gap > 0 ? '+' : '−'}${Math.round(Math.abs(gap) * 100)}%`, ok: false };
     }
 
     function row(t, ctx, extra = null) {

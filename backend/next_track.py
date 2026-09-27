@@ -2,7 +2,8 @@
 next_track.py - Which library track to load next, after the one on air.
 
 Scored from the stored analyses alone (no AI, no audio): how close the tempo is (within
-MAX_STRETCH the console can beat-match and blend; beyond it only switch), how well the keys sit
+MAX_STRETCH the console can beat-match and blend, at the track's own tempo or at half or double time;
+beyond it only switch), how well the keys sit
 together (Camelot), how much room the track gives to blend in (instrumental intro before its lead
 vocal, and not much quieter than its body), and how close its loudness is. The same song uploaded
 under several names or decks is suggested once.
@@ -89,11 +90,22 @@ def song_key(title: str) -> str:
     return "".join(ch for ch in t if ch.isalnum())
 
 
+def tempo_fit(master_bpm: float, bpm: float):
+    """(gap, multiple): the tempo gap at the multiple of its tempo a blend can match (1: its own, 2: at
+    half time, 0.5: at double time; its own first, as the console's MixPlanner.tempoMultiple), or its
+    own gap and None when no blend can."""
+    for m in (1, 2, 0.5):
+        g = master_bpm / (bpm * m) - 1
+        if abs(g) <= MAX_STRETCH:
+            return g, m
+    return master_bpm / bpm - 1, None
+
+
 def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[str, Any]:
     """0-100 for playing `cand` after `out` (on air at `master_bpm`), with the reasons in words."""
-    gap = master_bpm / cand["bpm"] - 1
+    gap, multiple = tempo_fit(master_bpm, cand["bpm"])
     g = abs(gap)
-    blend = g <= MAX_STRETCH
+    blend = multiple is not None
     if g <= 0.02:
         tempo = 40.0
     elif g <= CLEAN_STRETCH:
@@ -102,9 +114,12 @@ def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[
         tempo = 25 - 10 * (g - CLEAN_STRETCH) / (MAX_STRETCH - CLEAN_STRETCH)
     else:
         tempo = max(0.0, 15 - 100 * (g - MAX_STRETCH))
+    if multiple in (2, 0.5):
+        tempo -= 5                        # a blend at its own tempo is still the classic one
     sev = key_severity(out.get("camelot"), cand.get("camelot"))
     key = 30 * (1 - sev)
-    reasons = [f"blends ({g * 100:.1f}% tempo)" if blend else f"tempo {g * 100:.0f}% away: switch only"]
+    time = {2: " at half time", 0.5: " at double time"}.get(multiple, "")
+    reasons = [f"blends{time} ({g * 100:.1f}% tempo)" if blend else f"tempo {g * 100:.0f}% away: switch only"]
     reasons.append("keys match" if sev == 0 else f"keys {'clash' if sev >= 0.6 else 'rub'} ({out.get('camelot')}→{cand.get('camelot')})")
     intro_bars = None
     if not blend:
