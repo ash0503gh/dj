@@ -10,7 +10,8 @@ under several names or decks is suggested once.
 
 from typing import Any, Dict, Iterable, List, Optional
 
-MAX_STRETCH = 0.08           # frontend MixPlanner.MAX_STRETCH: tempo gap beyond which there is no blend
+MAX_STRETCH = 0.12           # frontend MixPlanner.MAX_STRETCH: tempo gap beyond which there is no blend
+CLEAN_STRETCH = 0.08         # frontend MixPlanner.CLEAN_STRETCH: stretching past it costs a little
 INTRO_BARS_FULL = 16         # an instrumental intro this long is all the room a blend needs
 
 
@@ -84,8 +85,10 @@ def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[
     blend = g <= MAX_STRETCH
     if g <= 0.02:
         tempo = 40.0
+    elif g <= CLEAN_STRETCH:
+        tempo = 40 - 15 * (g - 0.02) / (CLEAN_STRETCH - 0.02)
     elif blend:
-        tempo = 40 - 15 * (g - 0.02) / (MAX_STRETCH - 0.02)
+        tempo = 25 - 10 * (g - CLEAN_STRETCH) / (MAX_STRETCH - CLEAN_STRETCH)
     else:
         tempo = max(0.0, 15 - 100 * (g - MAX_STRETCH))
     sev = key_severity(out.get("camelot"), cand.get("camelot"))

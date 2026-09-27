@@ -99,18 +99,21 @@ const MixBlocks = (() => {
     // Hats and groove in over the first quarter
     curve(inDeck.faderGain.gain, T, T + Math.min(4, q) * bar, 0, 1);
     curve(inDeck.eqHigh.gain, T, T + q * bar, -12, 0);
-    // Mids: 'overlap' rise to the swap and fall after it; 'snap' change hands on the swap's beat
-    // (two vocals or clashing keys never overlap); 'crossfade' trade places over the bar either side;
-    // 'hats': only the incoming's hats and percussion play (a 4 kHz high-pass) until the swap, where
-    // the filter opens over a beat: no vocal, melody or key of the incoming under the outgoing
+    // Mids: 'overlap' rise to the swap and fall after it; 'snap' change hands over the bar before the
+    // swap, the outgoing's going over its first three beats and the incoming's coming over the last
+    // three (gradual, but two vocals or clashing keys never both at full); 'crossfade' trade places
+    // over the bar either side; 'hats': only the incoming's hats and percussion play (a 4 kHz
+    // high-pass) until the bar before the swap, where the outgoing's mids go and its filter opens
+    // after them, the same way
     const around = [Math.max(T, swap - bar), Math.min(end, swap + bar)];
+    const follow = swap - 0.75 * bar;
     if (s.mids === 'hats') {
       inDeck.eqMid.gain.setValueAtTime(0, T - 0.01);
       inDeck.filterHPF.frequency.setValueAtTime(HATS_HZ, T - 0.01);
-      sweep(inDeck.filterHPF.frequency, swap - p.beatSec, swap, HATS_HZ, 20);
+      sweep(inDeck.filterHPF.frequency, follow, swap, HATS_HZ, 20);
     } else if (s.mids === 'snap') {
-      curve(inDeck.eqMid.gain, T, swap - bar, -24, -14);
-      curve(inDeck.eqMid.gain, swap - p.beatSec, swap, -14, 0, 8);
+      curve(inDeck.eqMid.gain, T, follow, -24, -14);
+      curve(inDeck.eqMid.gain, follow, swap, -14, 0);
     } else if (s.mids === 'crossfade') {
       curve(inDeck.eqMid.gain, around[0], around[1], -24, 0);
     } else {
@@ -120,7 +123,7 @@ const MixBlocks = (() => {
     bassKill(outDeck, swap, true);
     bassKill(inDeck, swap, false);
     if (s.mids === 'snap' || s.mids === 'hats') {
-      curve(outDeck.eqMid.gain, swap - p.beatSec, swap, 0, -24, 8);
+      curve(outDeck.eqMid.gain, swap - bar, swap - 0.25 * bar, 0, -24);
     } else if (s.mids === 'crossfade') {
       curve(outDeck.eqMid.gain, around[0], around[1], 0, -24);
     } else {
@@ -157,11 +160,12 @@ const MixBlocks = (() => {
     const beat = p.beatSec;
     const lead = (s.leadBars || 0) * 4 * beat;
     const fx = (FX_BEATS[s.after] || 0) * beat;
+    const soft = s.soft ? 2 * p.inBarSec : 0;                  // a soft landing rises in over two bars
     const inLead = p.inLeadSec || 0;
     const inFrom = T - inLead;
     const outVol = outDeck.faderGain.gain.value;
     neutral(outDeck, T - Math.max(lead, beat, fx) - 0.05, outVol);
-    neutral(inDeck, inFrom - 0.05, s.entry === 'split' ? 0.5 : 0.7);
+    neutral(inDeck, inFrom - 0.05, s.entry === 'split' || s.soft ? 0.5 : 0.7);
     setTrim(inDeck, p.inTrimDb || 0, inFrom - 0.05);
 
     if (s.entry === 'split') {
@@ -174,7 +178,14 @@ const MixBlocks = (() => {
       inF.exponentialRampToValueAtTime(20, T);
       curve(inDeck.faderGain.gain, inFrom, T, 0.5, 1);
     } else {
-      inDeck.faderGain.gain.linearRampToValueAtTime(1, T + p.inBarSec);
+      if (soft) {
+        // Soft landing: the incoming rises in (fader from half, its high-pass opening from 300 Hz)
+        // instead of arriving near full volume
+        curve(inDeck.faderGain.gain, T, T + soft, 0.5, 1);
+        sweep(inDeck.filterHPF.frequency, T, T + soft, 300, 20);
+      } else {
+        inDeck.faderGain.gain.linearRampToValueAtTime(1, T + p.inBarSec);
+      }
       if (s.before === 'hpf') {
         sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
       } else if (s.before === 'riser') {
@@ -203,7 +214,8 @@ const MixBlocks = (() => {
     // purpose: the sound check doesn't count that stretch as a hole (clashes and everything after the
     // switch still count)
     const build = ['hpf', 'riser', 'roll', 'verb'].includes(s.before) ? [T - lead, T] : fx ? [T - fx, T] : null;
-    return { start: T - Math.max(lead, inLead, beat, fx), swap: T, end: T + tail, build };
+    return { start: T - Math.max(lead, inLead, beat, fx), swap: T, end: T + Math.max(tail, soft), build,
+             soft: soft ? [T, T + soft] : null };
   }
 
   /** The default style of a planner skeleton (what the console did before styles existed). */
@@ -233,7 +245,10 @@ const MixBlocks = (() => {
   function postSec(p) {
     const s = p.style || defaultStyle(p);
     const tail = { echo: ECHO_TAIL_BEATS * p.beatSec, reverb: REVERB_TAIL_SEC };
-    if (s.kind === 'gap') return Math.max(p.beatSec, tail[s.after] || 0, s.before === 'verb' ? REVERB_TAIL_SEC : 0);
+    if (s.kind === 'gap') {
+      return Math.max(p.beatSec, tail[s.after] || 0, s.before === 'verb' ? REVERB_TAIL_SEC : 0,
+                      s.soft ? 2 * (p.inBarSec || 4 * p.beatSec) : 0);
+    }
     return (p.bars + (p.tailBars || 0)) * 4 * p.beatSec + (tail[s.tail] || 0);
   }
 
@@ -256,10 +271,15 @@ const MixBlocks = (() => {
     for (const inPreBars of [0, 8]) {
       const land = p.inStartNative - inPreBars * inBar;     // where the incoming is at the switch
       if (land < 0) continue;
-      const at = (before, leadBars, after) =>
-        add({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars },
+      const at = (before, leadBars, after, soft) =>
+        add(Object.assign({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars }, soft ? { soft } : {}),
             { inStartNative: land, inLeadSec: 0 });
       for (const after of ['echo', 'reverb', 'cut', 'brake', 'spinback']) at('none', 0, after);
+      // Soft landings of the plain switches (not onto a build, already quiet; risers keep their hit)
+      if (!inPreBars) {
+        for (const after of ['echo', 'reverb', 'cut']) at('none', 0, after, true);
+        for (const after of ['echo', 'cut']) at('roll', 2, after, true);
+      }
       for (const leadBars of [2, 4]) for (const after of ['echo', 'reverb']) at('hpf', leadBars, after);
       for (const leadBars of [2, 4]) for (const after of ['echo', 'cut']) at('riser', leadBars, after);
       for (const leadBars of [1, 2]) for (const after of ['echo', 'reverb', 'cut']) at('roll', leadBars, after);
@@ -285,10 +305,11 @@ const MixBlocks = (() => {
     for (const [inLand, land] of lands) {
       if (land === undefined || land === null || used.some(u => Math.abs(u - land) < inBar / 2)) continue;
       used.push(land);
-      const at = (before, leadBars, after) =>
-        add({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars: 0, inLand },
+      const at = (before, leadBars, after, soft) =>
+        add(Object.assign({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars: 0, inLand }, soft ? { soft } : {}),
             { inStartNative: land, inLeadSec: 0 });
       for (const after of ['echo', 'reverb', 'cut', 'brake', 'spinback']) at('none', 0, after);
+      for (const after of ['echo', 'reverb', 'cut']) at('none', 0, after, true);
       at('hpf', 2, 'echo');
       for (const after of ['echo', 'cut']) at('riser', 2, after);
     }
@@ -306,7 +327,7 @@ const MixBlocks = (() => {
     let at;                                                   // ctx seconds after p.startCtx
     if (s.kind === 'blend') {
       const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
-      at = swapBar * bar - (s.mids === 'crossfade' ? bar : 0);
+      at = swapBar * bar - (['crossfade', 'snap', 'hats'].includes(s.mids) ? bar : 0);
     } else {
       at = s.entry === 'split' || s.before !== 'none' ? -(s.leadBars || 0) * bar : 0;
     }
@@ -395,16 +416,16 @@ const MixBlocks = (() => {
     if (s.entry === 'split') return `${s.leadBars}-bar filter wash, ${after}${land}`;
     const before = { none: '', hpf: `${s.leadBars}-bar high-pass, `, roll: `${s.leadBars}-bar loop roll, `,
                      verb: `${s.leadBars}-bar reverb swell, `, riser: `${s.leadBars}-bar riser, ` }[s.before];
-    return `${before}${after}${land}`;
+    return `${before}${after}${land}${s.soft ? ', soft landing' : ''}`;
   }
 
   /** What a style does, in a DJ's words (for the AI and the sound-check panel). */
   function describe(p) {
     const s = p.style || defaultStyle(p);
     if (s.kind === 'blend') {
-      const mids = { overlap: 'mids blend gradually', snap: 'mids swap on the bass swap',
+      const mids = { overlap: 'mids blend gradually', snap: 'mids change hands over the bar before the bass swap',
                      crossfade: 'mids crossfade over the bar either side of the bass swap',
-                     hats: 'only the incoming hats play (high-passed) until the swap, where everything changes hands' }[s.mids];
+                     hats: 'only the incoming hats play (high-passed) until the bar before the swap, where its filter opens as the outgoing mids go' }[s.mids];
       const tail = { eq: 'outgoing hats and fader down', filter: 'outgoing leaves through a rising high-pass',
                      echo: 'outgoing last beat echoes out', reverb: 'outgoing thrown into the reverb' }[s.tail];
       const enters = { intro: 'the incoming plays from its intro', hook: 'the incoming reaches its hook as the blend ends',
@@ -428,7 +449,8 @@ const MixBlocks = (() => {
       verb: `outgoing swells into the reverb for ${s.leadBars} bars`,
       riser: `a noise riser builds for ${s.leadBars} bars over the outgoing's rising high-pass, an impact hits on the landing`,
     }[s.before];
-    return `tempo-gap switch: ${before}, incoming lands ${where}; ${after}`;
+    return `tempo-gap switch: ${before}, incoming lands ${where}` +
+      `${s.soft ? ', rising in over two bars (its filter opening, fader coming up) rather than at full volume' : ''}; ${after}`;
   }
 
   /** A move a DJ only makes when no clean mix is on offer (a brake or a spinback out). */
@@ -447,6 +469,7 @@ const MixBlocks = (() => {
       : [s.entry === 'split' ? 'wash' : 'switch', `gap.entry.${s.entry}`, `gap.after.${s.after}`,
          `gap.land.${s.inLand || (s.inPreBars ? 'build' : 'drop')}`];
     if (s.kind !== 'blend' && s.entry !== 'split') keys.push(`gap.before.${s.before}`);
+    if (s.soft) keys.push('gap.land.soft');
     if (p.vocalInSec > 1) keys.push('in.midline');   // the incoming comes in partway through a sung line
     return keys;
   }

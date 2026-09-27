@@ -29,16 +29,22 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     where the incoming enters, when the bass hands over) + a style (plain data: how the mids hand over,
     how the outgoing leaves, how the incoming enters, how long the lead-in is). Nothing is tied to a
     song pair: the search decides.
-  - Styles tried: beat-matched blends (mids overlap / snap / crossfade, or "hats in": only the
-    incoming's hats, high-passed at 4 kHz, until the swap; outgoing out by EQ, filter, echo or reverb;
+  - Styles tried: beat-matched blends within 12% of tempo, the incoming keylocked (past 8% a blend costs
+    0.5 points per extra percent: the stretch starts to smear) (mids overlap, snap (change hands over the
+    bar before the swap: the outgoing's mids go over its first three beats, the incoming's come over the
+    last three, gradual but never both at full), crossfade, or "hats in": only the incoming's hats,
+    high-passed at 4 kHz, until the bar before the swap, where its filter opens the same way as the
+    outgoing's mids go; outgoing out by EQ, filter, echo or reverb;
     the incoming entering so its first drop lands as the blend ends, from its intro, so its hook lands
     as the blend ends, or over an automatic intro edit: its beat-only bars (no lead vocal by Gemini's
     labels) loop under the outgoing and the track drops in on its hook at the bass swap, as DJs use
-    DJ-pool intro edits on tracks that start singing at once) and, when tempos are more than 8% apart, switches on a phrase line (echo, reverb, cut,
+    DJ-pool intro edits on tracks that start singing at once) and, when tempos are more than 12% apart, switches on a phrase line (echo, reverb, cut,
     vinyl brake or spinback, after a high-pass rise, a noise riser with an impact on the landing, a loop
     roll or a reverb swell) and filter washes (spectral crossfade), landing the incoming on its drop, on
     the build before it, on its hook (the 8-bar phrase that comes back most, found by the analyzer), on
-    its intro, or as its first vocal line starts.
+    its intro, or as its first vocal line starts. Plain switches also come in a soft-landing version:
+    the incoming rises in over two bars (fader from half, a 300 Hz high-pass opening) rather than at
+    full volume, and the sound check allows that rise 9 dB.
     Brake and spinback exits are a last resort: searched after everything else (waiting for a clean
     moment included), played only when no other mix clears the bar and they beat the best one by 10.
   - Tempo: one constant grid fitted to the whole track; the tempo is checked against double/half and

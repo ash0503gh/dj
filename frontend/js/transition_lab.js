@@ -230,6 +230,7 @@ const TransitionLab = (() => {
   }
 
   const QUICK_SR = 11025;
+  const SOFT_ALLOW_DB = 9;   // a soft landing starts its fader at half (-6 dB) under a 300 Hz high-pass
 
   /** RMS in dB of consecutive `n`-sample blocks. */
   function blockDb(x, n) {
@@ -274,11 +275,14 @@ const TransitionLab = (() => {
     const beatMatched = plan.technique === 'blend';
     // A deliberate build (MixBlocks marks it) empties the floor on purpose: not a hole or a gap
     const inBuild = b => marks.build && b >= Math.floor(marks.build[0] / beat) && b < Math.floor(marks.build[1] / beat);
+    // A soft landing rises in on purpose: its bars aren't bass gaps or dips, and a beat there is a hole
+    // only past the SOFT_ALLOW_DB its fader and filter start below full
+    const inSoft = b => marks.soft && b >= Math.floor(marks.soft[0] / beat) && b < Math.floor(marks.soft[1] / beat);
     let highClash = 0, tonal = 0;
     for (let b = a0; b < Math.min(a1, lows[0].length); b++) {
       if (midHeard[0][b] && midHeard[1][b]) tonal++;
       if (active[0][b] && active[1][b]) both++;
-      if (!active[0][b] && !active[1][b] && !inBuild(b)) neither++;
+      if (!active[0][b] && !active[1][b] && !inBuild(b) && !inSoft(b)) neither++;
       if (midOn[0][b] && midOn[1][b] && Math.abs(mids[0][b] - mids[1][b]) < 6) clash++;
       if (!beatMatched && highOn[0][b] && highOn[1][b] && Math.abs(highs[0][b] - highs[1][b]) < 6) highClash++;
     }
@@ -292,14 +296,15 @@ const TransitionLab = (() => {
     const pre = med(bars.slice(Math.max(0, b0 - 4), b0));
     const post = med(bars.slice(b1, b1 + 4).length ? bars.slice(b1, b1 + 4) : bars.slice(-1));
     const span = bars.slice(b0, Math.max(b0 + 1, b1));
-    const outsideBuild = span.filter((v, k) => !inBuild((b0 + k) * 4 + 3));
+    const outsideBuild = span.filter((v, k) => !inBuild((b0 + k) * 4 + 3) && !inSoft((b0 + k) * 4 + 3));
     const during = outsideBuild.length ? outsideBuild : span;
     // A hole at beat resolution: the quietest beat of the transition (and the beat after it) against
     // the outgoing's own level in the 16 beats before the switch, dry: the same yardstick for every
     // style at this moment, whatever it does before the switch
     const beatsDb = blockDb(mix, nBeat);
     const floorDb = med(dryBeatsDb(out, plan.exitNative, 16, beat)) + (out.trimDb || 0);
-    const heard = beatsDb.slice(a0, Math.max(a0 + 1, a1 + 1)).filter((v, k) => !inBuild(a0 + k));
+    const heard = beatsDb.slice(a0, Math.max(a0 + 1, a1 + 1)).map((v, k) => (inSoft(a0 + k) ? v + SOFT_ALLOW_DB : v))
+      .filter((v, k) => !inBuild(a0 + k));
     const hole = heard.length ? floorDb - Math.min(...heard) : 0;
     const m = {
       hole_db: +Math.max(0, hole).toFixed(2),
@@ -384,7 +389,8 @@ const TransitionLab = (() => {
   // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), so does
   // bringing the incoming in partway through a sung line (c.vocalInSec), and with
   // clashing keys (c.keySeverity, 0-1) the two tracks' midrange heard together costs up to 0.5 points a
-  // second. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
+  // second. A blend that stretches the incoming more than 8% (keylocked) costs 0.5 points per extra
+  // percent. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
   // MixBlocks.prefKeys), starting from a prior that a clean handover will please, and a switch too when
   // the tempos are too far apart to blend (when they aren't, the DJ wants a blend: a switch is a
   // fallback); half Jev's rating when there is one. A handover's sound check hears the two tracks
@@ -409,7 +415,9 @@ const TransitionLab = (() => {
 
   function soundScore(c) {
     if (!c.measured) return null;
+    const stretch = c.technique === 'blend' ? Math.max(0, Math.abs((c.tempoRatio || 1) - 1) - MixPlanner.CLEAN_STRETCH) : 0;
     const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0) + 0.25 * Math.min(30, c.vocalInSec || 0)
+      + 50 * stretch
       + 0.5 * (c.keySeverity || 0) * (c.measured.tonal_overlap_s || 0);
     return Math.max(0, Math.min(100, 100 - 5 * Math.max(0, penalty - 1.5)));
   }

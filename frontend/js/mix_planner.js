@@ -12,7 +12,8 @@
  *     themselves (and the other styles a mix can take) are in mix_blocks.js.
  */
 const MixPlanner = (() => {
-  const MAX_STRETCH = 0.08;    // beyond ±8% a blend sounds wrong: use an overlap-free technique
+  const MAX_STRETCH = 0.12;    // beyond ±12% a blend sounds wrong: use an overlap-free technique
+  const CLEAN_STRETCH = 0.08;  // keylocked stretching past ±8% starts to smear: blends beyond it cost a little
   const KILL_HZ = 220;         // isolator bass-kill frequency
   const OPEN_HZ = 10;
 
@@ -471,7 +472,7 @@ const MixPlanner = (() => {
     return { start: T, swap, end: T + D };
   }
 
-  return { MAX_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, candidates, candidateFeatures,
+  return { MAX_STRETCH, CLEAN_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, plan, candidates, candidateFeatures,
            trackSummary, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals,
            curve, bassKill, swapTime };
 })();
