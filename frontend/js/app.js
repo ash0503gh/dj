@@ -2097,13 +2097,13 @@ document.addEventListener('DOMContentLoaded', () => {
         { technique: gap ? 'echo_freeze' : 'blend' }), 'NO ROOM TO SEARCH: THE PLANNER\'S OWN MIX');
       return;
     }
-    // Most promising first: the best confidence each could reach (the DJ's taste, a vocal line it would
-    // cut), the planner's own order, the classic default style of each moment. Mixes past the minute
-    // come later, and last-resort exits (brake, spinback) last of all: the search only gets to them
-    // when nothing before them clears the bar
+    // Most promising first: the best confidence each could reach (the DJ's taste, likes past its cap
+    // included, a vocal line it would cut), the planner's own order, the classic default style of each
+    // moment. Mixes past the minute come later, and last-resort exits (brake, spinback) last of all:
+    // the search only gets to them when nothing before them clears the bar
     cands.forEach(c => {
       c.promise = TransitionLab.confidence(Object.assign({}, c, { measured: { penalty: 0 } }), tastePrefs)
-        - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0) - (c.late ? 1000 : 0)
+        + TransitionLab.likesBonus(c, tastePrefs) - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0) - (c.late ? 1000 : 0)
         - (c.lastResort ? 2000 : 0);
     });
     cands.sort((a, b) => b.promise - a.promise);
@@ -2132,9 +2132,9 @@ document.addEventListener('DOMContentLoaded', () => {
       const checked = cands.filter(c => c.measured).length;
       // Done when every candidate has been tried, or when none left could beat the best found even
       // with a flawless sound check and Jev's top rating (a high bar shouldn't mean a long wait)
-      const bestConf = live.length ? Math.max(...live.map(c => c.conf)) : -1;
+      const bestScore = live.length ? Math.max(...live.map(c => c.conf + TransitionLab.likesBonus(c, tastePrefs))) : -1;
       const done = next >= cands.length ||
-        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, useAI, aiModel) > bestConf);
+        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, useAI, aiModel) > bestScore);
       const quickDone = checked >= QUICK_LOOK || done;
       // Once the quick look is in, Jev rates every measured candidate (free; 48 a request, five answers
       // each, within its 255), and the ones measured later in further rounds: all compared alike
@@ -2181,17 +2181,21 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   /** The most confidence a candidate could get before it is measured: a flawless sound check, Jev's
-   *  top rating (when Jev rates) and Gemini's tie-break. */
+   *  top rating (when Jev rates) and Gemini's tie-break, plus what the DJ's likes add when choosing. */
   function ceiling(c, useAI, aiModel) {
-    return TransitionLab.confidence(Object.assign({}, c, {
+    const best = Object.assign({}, c, {
       measured: { penalty: 0 }, jev: useAI ? 4 : undefined, geminiPick: aiModel.startsWith('gemini'),
-    }), tastePrefs);
+    });
+    return TransitionLab.confidence(best, tastePrefs) + TransitionLab.likesBonus(best, tastePrefs);
   }
 
   /** Sooner is better once it's past 20 s: a much better mix may be worth a wait, not a long one. A
-   *  last-resort exit must beat a clean mix by 10 points to be chosen over it. */
+   *  last-resort exit must beat a clean mix by 10 points to be chosen over it. A style the DJ has liked
+   *  a lot gets the points taste's cap took from it: their likes decide between mixes (the bar still
+   *  goes by confidence alone). */
   function utility(c) {
-    return c.conf - 0.1 * Math.max(0, (c.startCtx - engine.ctx.currentTime) - 20) - (c.lastResort ? 10 : 0);
+    return c.conf + TransitionLab.likesBonus(c, tastePrefs)
+      - 0.1 * Math.max(0, (c.startCtx - engine.ctx.currentTime) - 20) - (c.lastResort ? 10 : 0);
   }
 
   /** Commit to the best of `ranked` (confident ones, or the best left when `below` the bar). A near
@@ -2213,6 +2217,9 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     }
     const checked = t.search.filter(c => c.measured).length;
+    // Without the DJ's likes another mix would have won: say so (it plays under a higher percentage)
+    const withoutLikes = c => utility(c) - TransitionLab.likesBonus(c, tastePrefs);
+    const likesDecided = !pick.geminiPick && ranked.some(c => withoutLikes(c) > withoutLikes(pick));
     console.info(`Auto mix: ${pick.id} (${MixBlocks.label(pick)}) at ${pick.conf}% of ${checked} checked`, pick.measured);
     pick.pair = { out: t.outTrack.file_id, in: t.inTrack.file_id,
                   tempo_gap: +Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1).toFixed(3) };
@@ -2226,7 +2233,8 @@ document.addEventListener('DOMContentLoaded', () => {
       (pick.late ? ` · NOTHING CLEAN WITHIN A MINUTE: MIXING AT ${formatTime(pick.exitNative)}` : '') +
       (pick.lastResort ? ' · LAST RESORT: NO CLEAN MIX FOUND' : '') +
       (below ? ` (UNDER YOUR ${bar}%: BEST OF ${checked} CHECKED)` : '') +
-      (pick.geminiPick ? ' · GEMINI BROKE A TIE' : '');
+      (pick.geminiPick ? ' · GEMINI BROKE A TIE' : '') +
+      (likesDecided ? ' · YOUR LIKES DECIDED' : '');
     commitTransitionPlan(t, pick, note);
   }
 

@@ -67,8 +67,10 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     tracks together) and 30% for switches (it can't hear whether a switch works musically). Taste starts
     at 0.85 for handovers, 0.8 for switches across a tempo gap and 0.5 for switches between tempos that
     could blend (blend when you can). Before any rating a flawless blend reads 94%, a switch across a
-    tempo gap 86% (93% with Jev's top rating), a switch that could have been a blend 65%. A mix plays
-    once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by default); otherwise the search goes on
+    tempo gap 86% (93% with Jev's top rating), a switch that could have been a blend 65%. Taste is
+    capped at 1; what the cap takes from a style the DJ has liked a lot (a kind they like with details
+    they like too) counts when choosing between mixes, never toward the bar ("YOUR LIKES DECIDED" when
+    it changes the pick). A mix plays once one clears the bar (MIX AT 95 / 90 / 80 / 70%, 90 by default); otherwise the search goes on
     through more styles and later moments, and when it runs out the best one left plays, marked as under
     the bar.
   - Vocals: with Gemini's labels, a mix that fades or cuts the outgoing's lead vocal before its 16-bar

@@ -402,7 +402,7 @@ const TransitionLab = (() => {
   const SWITCH_WHEN_BLENDABLE = 0.5;
   const DETAIL_PRIOR = { 'in.midline': 0.2 };   // details start neutral (0.5) but this, a DJ avoids it
 
-  function taste(c, prefs = {}) {
+  function taste(c, prefs = {}, cap = true) {
     const [kind, ...details] = MixBlocks.prefKeys(c);
     const mean = (key, prior, weight) => {
       const [likes, n] = prefs[key] || [0, 0];
@@ -410,7 +410,15 @@ const TransitionLab = (() => {
     };
     let v = mean(kind, kind === 'switch' && !c.outOfRange ? SWITCH_WHEN_BLENDABLE : TASTE_PRIOR[kind], 4);
     for (const key of details) v += (mean(key, DETAIL_PRIOR[key] !== undefined ? DETAIL_PRIOR[key] : 0.5, 4) - 0.5) / details.length;
-    return Math.max(0, Math.min(1, v));
+    return Math.max(0, cap ? Math.min(1, v) : v);
+  }
+
+  /** The confidence points taste's cap takes from a style the DJ has liked a lot (a kind of mix they
+   *  like, with details they like too). They count when choosing between mixes, never toward the
+   *  confidence bar: the DJ's likes decide between mixes, they don't make one sound any cleaner. */
+  function likesBonus(c, prefs = {}) {
+    const w = MixBlocks.prefKeys(c)[0] === 'switch' ? 0.3 : 0.6;
+    return (1 - w) * 100 * (typeof c.jev === 'number' ? 0.5 : 1) * (taste(c, prefs, false) - taste(c, prefs));
   }
 
   function soundScore(c) {
@@ -573,7 +581,7 @@ const TransitionLab = (() => {
   }
 
   return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed,
-           taste, soundScore, confidence };
+           taste, soundScore, confidence, likesBonus };
 })();
 
 window.TransitionLab = TransitionLab;
