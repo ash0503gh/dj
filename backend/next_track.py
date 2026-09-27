@@ -64,8 +64,19 @@ def features(an: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "bar_sec": 4 * 60.0 / bpm,
         "intro_s": intro_s,
         "intro_energy": intro_energy,
-        "song": an.get("content_sha1") or song_key(title),
+        "songs": song_ids(an, title),
     }
+
+
+def song_ids(an: Dict[str, Any], title: str) -> List[str]:
+    """Ways the same song shows up under another name: its fingerprint, its audio (the same duration,
+    tempo and key: an analysis of the same audio gives the same ones) and its name."""
+    ids = ["name:" + song_key(title)]
+    if an.get("duration") and an.get("bpm"):
+        ids.append(f"audio:{float(an['duration']):.1f}|{float(an['bpm']):.2f}|{an.get('camelot')}")
+    if an.get("content_sha1"):
+        ids.append("sha1:" + str(an["content_sha1"]))
+    return ids
 
 
 def song_key(title: str) -> str:
@@ -133,12 +144,10 @@ def rank(out: Dict[str, Any], master_bpm: float, library: Iterable[Dict[str, Any
     in `exclude` (file ids: the other deck's track, tracks already played)."""
     lib = [c for c in library if c]
     ex = set(exclude)
-    excluded = {c["song"] for c in lib if c["file_id"] in ex} | {out.get("song")}
-    best: Dict[str, Dict[str, Any]] = {}
-    for c in lib:
-        if c["song"] in excluded:
-            continue
-        s = score(out, master_bpm, c)
-        if c["song"] not in best or s["score"] > best[c["song"]]["score"]:
-            best[c["song"]] = s
-    return sorted(best.values(), key=lambda s: -s["score"])[:limit]
+    taken = set(out.get("songs") or []).union(*[c["songs"] for c in lib if c["file_id"] in ex])
+    best = []
+    for c, s in sorted(((c, score(out, master_bpm, c)) for c in lib), key=lambda cs: -cs[1]["score"]):
+        if not taken.intersection(c["songs"]):   # the best-scoring copy of each song
+            best.append(s)
+        taken.update(c["songs"])
+    return best[:limit]

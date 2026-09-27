@@ -6,7 +6,7 @@
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=15.16">
+  <link rel="stylesheet" href="/css/style.css?v=15.17">
 </head>
 <body>
   <div class="dj-console">
@@ -116,10 +116,7 @@
           </details>
           <span id="d1-state" class="deck-state">EMPTY</span>
           <div class="deck-source">
-            <label class="visually-hidden" for="d1-quick-select">Library track for deck A</label>
-            <select id="d1-quick-select" class="track-select-dropdown">
-              <option value="">Choose a track…</option>
-            </select>
+            <div id="d1-track-pick" class="track-pick"></div>
             <button type="button" id="d1-btn-upload" class="btn-upload">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
               UPLOAD
@@ -283,10 +280,7 @@
           </details>
           <span id="d2-state" class="deck-state">EMPTY</span>
           <div class="deck-source">
-            <label class="visually-hidden" for="d2-quick-select">Library track for deck B</label>
-            <select id="d2-quick-select" class="track-select-dropdown">
-              <option value="">Choose a track…</option>
-            </select>
+            <div id="d2-track-pick" class="track-pick"></div>
             <button type="button" id="d2-btn-upload" class="btn-upload">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 16V4M6 10l6-6 6 6M4 20h16"/></svg>
               UPLOAD
@@ -429,7 +423,7 @@
 
       <div class="sound-check">
         <div class="sound-check-head">
-          <span class="section-label">SOUND CHECK</span>
+          <span class="section-label">AUTO MIX</span>
           <label class="conf-pick" title="Auto only plays a mix at least this confident; until then it keeps searching">MIX AT
             <select id="confidence-select">
               <option value="proven">95%+</option>
@@ -439,13 +433,22 @@
             </select>
           </label>
         </div>
-        <div id="sound-check-list" class="sound-check-list">
-          <span class="sc-empty">Auto tries the mixing styles worth trying for each pair, measures every one before it plays and only mixes when confident. Violet: Jev’s rating out of 4.</span>
-        </div>
         <div id="mix-rating" class="mix-rating" hidden>
-          <span class="mix-rating-q">RATE THAT MIX</span>
-          <button type="button" class="btn-tiny" data-rate="1">GOOD</button>
-          <button type="button" class="btn-tiny" data-rate="0">NOT FOR ME</button>
+          <div class="mix-rating-rows">
+            <div class="mix-rating-row">
+              <span class="mix-rating-q">RATE THAT MIX</span>
+              <button type="button" class="btn-tiny" data-rate="1">GOOD</button>
+              <button type="button" class="btn-tiny" data-rate="0">NOT FOR ME</button>
+            </div>
+            <div class="mix-rating-row mix-rating-why" hidden>
+              <span class="mix-rating-q">WHY?</span>
+              <button type="button" class="btn-tiny" data-reason="sudden">TOO SUDDEN</button>
+              <button type="button" class="btn-tiny" data-reason="clash">CLASH</button>
+              <button type="button" class="btn-tiny" data-reason="entry">BAD ENTRY</button>
+              <button type="button" class="btn-tiny" data-reason="energy">ENERGY DROP</button>
+              <button type="button" class="btn-tiny" data-reason="song">SONG CHOICE</button>
+            </div>
+          </div>
           <span class="mix-rating-note"></span>
         </div>
       </div>
@@ -580,14 +583,15 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=15.16"></script>
-  <script src="/js/mix_planner.js?v=15.16"></script>
-  <script src="/js/mix_blocks.js?v=15.16"></script>
-  <script src="/js/transition_lab.js?v=15.16"></script>
-  <script src="/js/mobile.js?v=15.16"></script>
-  <script src="/js/jog_wheel.js?v=15.16"></script>
-  <script src="/js/waveform.js?v=15.16"></script>
-  <script src="/js/knobs.js?v=15.16"></script>
-  <script src="/js/app.js?v=15.16"></script>
+  <script src="/js/audio_engine.js?v=15.17"></script>
+  <script src="/js/mix_planner.js?v=15.17"></script>
+  <script src="/js/mix_blocks.js?v=15.17"></script>
+  <script src="/js/transition_lab.js?v=15.17"></script>
+  <script src="/js/mobile.js?v=15.17"></script>
+  <script src="/js/jog_wheel.js?v=15.17"></script>
+  <script src="/js/waveform.js?v=15.17"></script>
+  <script src="/js/knobs.js?v=15.17"></script>
+  <script src="/js/track_picker.js?v=15.17"></script>
+  <script src="/js/app.js?v=15.17"></script>
 </body>
 </html>

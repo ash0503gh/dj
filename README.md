@@ -67,7 +67,13 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Confidence (0-100): measured sound and taste — the DJ's ratings of similar mixes, kept per kind
     (blend, filter wash, switch) and per detail of the style (a GOOD /
     NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once
-    Jev has rated the leaders. Sound counts 60% for handovers (blends, washes: the check hears both
+    Jev has rated the leaders. Ratings are also kept per situation: how far apart the tempos were (up to
+    12%, 12-20%, 20-50%, more) and, for a switch or wash, where it landed for that kind of mix; a
+    situation starts from the overall rating and counts as much after 4 ratings of its own (washes are
+    liked across wide tempo gaps and not between 12 and 20%: the same technique, another situation).
+    After NOT FOR ME one optional tap says why (too sudden, clash, bad entry, energy drop, song choice):
+    the rating then counts only against the parts of the mix that reason is about, and a song choice
+    against none. Sound counts 60% for handovers (blends, washes: the check hears both
     tracks together) and 30% for switches (it can't hear whether a switch works musically). Taste starts
     at 0.85 for handovers, 0.8 for switches across a tempo gap and 0.5 for switches between tempos that
     could blend (blend when you can). Before any rating a flawless blend reads 94%, a switch across a
@@ -83,15 +89,19 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     outgoing's next hook, as it starts and right after it (hook to hook: leaving right after a hook
     doesn't count as cutting a line). An incoming that comes in partway through a sung line costs the
     same 0.25 points a second, and its rating key "in.midline" starts at 0.2 (a DJ avoids it).
+  - Track lists: each deck's browser lists every song once (copies uploaded from both decks or under
+    another name merged), under a clean name, with search, A-Z or BPM order, and each track's fit with
+    the other deck's tempo ("BLENDS" within 12%, else how far apart); tracks mixed this session are dimmed.
   - Next track: the library tracks that mix best after the one on air top the other deck's track list,
     and the best one shows as its "UP NEXT" line with a one-tap LOAD. Scored on the server from the
-    stored analyses (no AI, `/api/suggest-next`): tempo within the 8% a blend allows (40 points),
+    stored analyses (no AI, `/api/suggest-next`): tempo within the 12% a blend allows (40 points),
     matching keys (30), an instrumental intro before its vocals that isn't much quieter than the
     track (20), similar loudness (10). One copy per song; the track on the other deck and tracks
     already mixed this session are left out.
   - Waiting: a mix starts within 60 s of pressing MIX. When nothing there clears the bar, the search
-    looks on to moments up to 2 minutes away (e.g. the end of the singer's line) and the banner says when
-    it will mix; a clean mix a little later beats a poor one now.
+    looks on to moments up to 2 minutes away (e.g. the end of the singer's line); a clean mix a little
+    later beats a poor one now. The panel says only "SEARCHING 11/200" while it searches, then the mix,
+    its confidence and when it starts ("8-BAR BLEND, HATS IN · 94% · STARTS IN 36 S").
   - Keys: with clashing keys (severity from the Camelot distance, 0-1), every second both tracks'
     midrange is heard together, FX tails included, costs up to 0.5 points.
   - AI: Jev rates every measured mix (free, 48 a request); Gemini only breaks a near tie

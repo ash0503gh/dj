@@ -248,6 +248,60 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .next-hint .next-title { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
 .next-hint .next-why { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 .next-hint .btn-tiny { flex: none; height: 24px; padding: 0 10px; font-size: 11px; }
+/* Deck track browser (track_picker.js): search, A-Z or BPM, suggested next first, tempo fit per track */
+.track-pick { position: relative; flex: 1 1 auto; min-width: 0; }
+.track-pick-button {
+  width: 100%; height: 34px; display: flex; align-items: center; padding: 0 28px 0 10px; position: relative;
+  border-radius: 6px; border: 1px solid var(--line-2); background: var(--inset); color: var(--text);
+  font-size: 13px; text-align: left;
+}
+.track-pick-button::after {
+  content: ""; position: absolute; right: 11px; top: 50%; width: 6px; height: 6px; margin-top: -4px;
+  border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg);
+}
+.track-pick-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.track-pick-panel {
+  position: absolute; z-index: 60; top: calc(100% + 6px); left: 0; width: min(440px, 92vw);
+  display: flex; flex-direction: column; max-height: min(420px, 62vh);
+  background: var(--panel); border: 1px solid var(--line-3); border-radius: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+}
+.track-pick-panel[hidden] { display: none; }
+.track-pick-panel.up { top: auto; bottom: calc(100% + 6px); }   /* more room above the button */
+.deck-2 .track-pick-panel { left: auto; right: 0; }
+.track-pick-head { display: flex; gap: 8px; padding: 8px; border-bottom: 1px solid var(--line); }
+.track-pick-search {
+  flex: 1 1 auto; min-width: 0; height: 32px; padding: 0 10px; border-radius: 6px;
+  border: 1px solid var(--line-2); background: var(--inset); color: var(--text); font-size: 13px;
+}
+.track-pick-sorts { display: flex; flex: none; border: 1px solid var(--line-2); border-radius: 6px; overflow: hidden; }
+.track-pick-sorts button {
+  height: 30px; padding: 0 10px; border: none; background: transparent; color: var(--muted);
+  font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
+}
+.track-pick-sorts button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+.track-pick-list { position: relative; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 2px 6px 8px; }
+.track-pick-section {
+  padding: 10px 6px 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.track-pick-row {
+  width: 100%; min-height: 40px; display: flex; align-items: center; gap: 10px; padding: 6px 8px;
+  border: none; border-radius: 6px; background: transparent; color: var(--text); font-size: 13px; text-align: left;
+}
+.track-pick-row:hover, .track-pick-row:focus-visible { background: var(--raised); }
+.track-pick-row[aria-current="true"] { background: var(--deck-b-bg); }
+.deck-1 .track-pick-row[aria-current="true"] { background: var(--deck-a-bg); }
+.track-pick-row.played { opacity: 0.5; }
+.tp-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tp-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tp-why { font-size: 11px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tp-meta { flex: none; font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.tp-tag { flex: none; width: 50px; text-align: right; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; color: var(--muted); }
+.tp-tag.ok { color: var(--ok); }
+.track-pick-empty { padding: 14px 8px; font-size: 12px; color: var(--muted); }
+@media (max-width: 520px) {   /* phones upright: a sheet across the bottom of the screen */
+  html:not(.landscape-ui) .track-pick-panel { position: fixed; top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 72vh; }
+}
 
 .lcd-screen { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
 .lcd-item { background: var(--inset); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; min-width: 0; }
@@ -504,27 +558,20 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .audition-feedback-text { flex-basis: 100%; letter-spacing: 0; font-size: 12px; color: var(--text-2); }
 
 .sound-check { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.sound-check-list { display: flex; flex-direction: column; gap: 8px; height: 102px; overflow: hidden; }   /* summary + 3 rows */
-.sc-empty { font-size: 12px; color: var(--muted); line-height: 1.45; }
 .sound-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .conf-pick { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
 .conf-pick select { background: var(--raised); color: var(--text); border: 1px solid var(--line-3); border-radius: 4px;
   font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }
-.check-summary { font-size: 10px; letter-spacing: 0.08em; color: var(--muted); text-transform: uppercase; }
-.check-row .check-bar { flex: 0 1 64px; }
-.check-label { flex: 1 1 0; min-width: 0; font-size: 10px; letter-spacing: 0.06em; color: var(--sc); text-transform: uppercase;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mix-rating { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 10px; letter-spacing: 0.1em; color: var(--text-2); }
+/* Rating after each Auto mix: GOOD / NOT FOR ME, then (optional) why, in the same row: nothing moves */
+.mix-rating { display: flex; flex-direction: column; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--text-2); }
 .mix-rating[hidden] { display: flex; visibility: hidden; }   /* keeps its room */
-.mix-rating .btn-tiny { height: 26px; font-size: 11px; }
-.mix-rating-note { color: var(--muted); letter-spacing: 0.02em; }
-.check-row { display: flex; align-items: center; gap: 10px; }
-.check-id { width: 20px; font-family: var(--font-mono); font-weight: 700; }
-.check-bar { flex-grow: 1; height: 8px; background: #1d1d21; border-radius: 4px; overflow: hidden; }
-.check-bar > span { display: block; height: 100%; background: var(--sc); }
-.check-score { width: 40px; text-align: right; font-family: var(--font-mono); font-size: 13px; }
-.check-jev { width: 28px; text-align: right; font-family: var(--font-mono); font-size: 12px; color: #b98cff; }
-.check-verdict { width: 72px; font-size: 10px; letter-spacing: 0.1em; color: var(--sc); }
+.mix-rating-rows { display: grid; }   /* the rows share one place: swapping them moves nothing */
+.mix-rating-row { grid-area: 1 / 1; display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: none; }
+.mix-rating-row::-webkit-scrollbar { display: none; }
+.mix-rating-row[hidden] { display: flex; visibility: hidden; }
+.mix-rating .btn-tiny { flex: none; height: 26px; padding: 0 9px; font-size: 11px; }
+.mix-rating-q { flex: none; }
+.mix-rating-note { min-height: 1.4em; color: var(--muted); letter-spacing: 0.02em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* ── Dialogs ─────────────────────────────────── */
 .modal-overlay {
@@ -675,6 +722,8 @@ html.landscape-ui .next-hint { font-size: 11px; gap: 6px; }
 html.landscape-ui .next-hint .next-why { display: none; }
 html.landscape-ui .deck-badge { width: 24px; height: 24px; font-size: 16px; border-radius: 5px; }
 html.landscape-ui .track-select-dropdown { height: 26px; font-size: 12px; padding: 0 6px; }
+html.landscape-ui .track-pick-button { height: 26px; font-size: 12px; padding: 0 22px 0 6px; }
+html.landscape-ui .track-pick-panel { width: 360px; }   /* vw is the upright width in the turned console */
 html.landscape-ui .btn-upload { height: 26px; padding: 0 7px; font-size: 0; gap: 0; }
 html.landscape-ui .grid-menu > summary, html.landscape-ui .deck-state { font-size: 9px; padding: 2px 5px; }
 html.landscape-ui .lcd-screen { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }

@@ -20,9 +20,9 @@ document.addEventListener('DOMContentLoaded', () => {
   let lastRenderedMix = null;
   let lastTransitionCues = null;
   let lastPerformed = null;
-  let libraryOptionsHtml = '';     // every library track, for the decks' track lists
   let suggestTimer = null;
   const playedIds = new Set();     // tracks already mixed this session: not suggested again
+  const trackPickers = {};         // each deck's track browser (track_picker.js)
   let currentAIRec = null;
   let serverHasJev = false;
   let serverHasGemini = false;
@@ -100,7 +100,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const d1BtnPlay = document.getElementById('d1-btn-play');
   const d1BtnCue = document.getElementById('d1-btn-cue');
   const d1BtnSync = document.getElementById('d1-btn-sync');
-  const d1QuickSelect = document.getElementById('d1-quick-select');
 
   // Deck 2
   const deck2Panel = document.getElementById('deck-2-panel');
@@ -118,7 +117,6 @@ document.addEventListener('DOMContentLoaded', () => {
   const d2BtnPlay = document.getElementById('d2-btn-play');
   const d2BtnCue = document.getElementById('d2-btn-cue');
   const d2BtnSync = document.getElementById('d2-btn-sync');
-  const d2QuickSelect = document.getElementById('d2-quick-select');
 
   // Mixer
   const crossfader = document.getElementById('crossfader');
@@ -751,6 +749,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function loadTrackIntoDeck(deckNum, track) {
     resetDeckEQs(deckNum);
+    if (trackPickers[deckNum]) trackPickers[deckNum].showTrack(track.title || track.filename);
     track.hot_cues = computeTrackHotCues(track);
 
     // Update Hot Cue buttons title/tooltip with exact timestamps
@@ -774,7 +773,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (deckNum === 1) {
       track1Data = track;
-      d1Title.textContent = track.title || track.filename;
+      d1Title.textContent = TrackPicker.cleanTitle(track.title || track.filename);
       d1Bpm.textContent = bpmStr;
       d1Key.textContent = keyStr;
       d1Key.title = track.key || '';
@@ -797,7 +796,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }
     } else {
       track2Data = track;
-      d2Title.textContent = track.title || track.filename;
+      d2Title.textContent = TrackPicker.cleanTitle(track.title || track.filename);
       d2Bpm.textContent = bpmStr;
       d2Key.textContent = keyStr;
       d2Key.title = track.key || '';
@@ -853,23 +852,28 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  // --- Quick Select Dropdowns ---
-  d1QuickSelect.addEventListener('change', async (e) => {
-    if (!e.target.value) return;
-    unlockAudio();
-    await loadPresetTrack(e.target.value, 'deck_1');
-  });
-  d2QuickSelect.addEventListener('change', async (e) => {
-    if (!e.target.value) return;
-    unlockAudio();
-    await loadPresetTrack(e.target.value, 'deck_2');
+  // --- The decks' track browsers (track_picker.js): the library, suggested next tracks first ---
+  [1, 2].forEach((n) => {
+    const root = document.getElementById(`d${n}-track-pick`);
+    if (!root) return;
+    trackPickers[n] = TrackPicker.create({
+      root, deckNum: n,
+      context: () => {
+        // The other deck's tempo as it plays (how each track would sit with it), this deck's track
+        const other = n === 1 ? track2Data : track1Data;
+        const own = n === 1 ? track1Data : track2Data;
+        return { otherBpm: other && other.bpm ? MixPlanner.deckBpm(other, n === 1 ? engine.deck2 : engine.deck1) : null,
+                 currentId: own && own.file_id, played: playedIds };
+      },
+      onPick: (fileId) => { unlockAudio(); loadPresetTrack(fileId, `deck_${n}`); },
+    });
   });
 
   async function loadPresetTrack(fileId, deck) {
     if (!fileId) return;
     const isDeck1 = (deck === 'deck_1');
     const deckName = isDeck1 ? 'DECK 1' : 'DECK 2';
-    transitionStatusBanner.textContent = `LOADING ${fileId} INTO ${deckName}...`;
+    transitionStatusBanner.textContent = `LOADING ${TrackPicker.cleanTitle(fileId).toUpperCase()} INTO ${deckName}...`;
 
     const form = new FormData();
     form.append('file_id', fileId);
@@ -883,7 +887,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       if (data.status === 'success' && data.track) {
         loadTrackIntoDeck(isDeck1 ? 1 : 2, data.track);
-        transitionStatusBanner.textContent = `${deckName}: ${data.track.title || fileId} LOADED & READY`;
+        transitionStatusBanner.textContent = `${deckName}: ${TrackPicker.cleanTitle(data.track.title || fileId).toUpperCase()} LOADED & READY`;
       } else {
         transitionStatusBanner.textContent = `FAILED TO LOAD: ${data.detail || 'Unknown error'}`;
       }
@@ -898,16 +902,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch('/api/presets');
       const data = await res.json();
       if (data.status === 'success' && data.tracks) {
-        const opts = ['<option value="">-- Choose Preset Track --</option>'];
-        data.tracks.forEach(t => {
-          const titleClean = t.title.length > 35 ? t.title.substring(0, 32) + '...' : t.title;
-          const bpmClean = t.bpm ? t.bpm.toFixed(1) : '128.0';
-          opts.push(`<option value="${t.file_id}">${titleClean} (${bpmClean} BPM, ${t.camelot || '--'})</option>`);
-        });
-        libraryOptionsHtml = opts.slice(1).join('');
-        const html = opts.join('');
-        if (d1QuickSelect) d1QuickSelect.innerHTML = html;
-        if (d2QuickSelect) d2QuickSelect.innerHTML = html;
+        Object.values(trackPickers).forEach(p => p.setLibrary(data.tracks));
         refreshSuggestions();
       }
     } catch (e) {
@@ -949,36 +944,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  /** A deck's track list (suggestions first when there are some) and its "Up next" line. */
+  /** A deck's track browser (suggestions first when there are some) and its "Up next" line. */
   function showSuggestions(deckNum, outTrack, list) {
-    const select = deckNum === 1 ? d1QuickSelect : d2QuickSelect;
     const hint = document.getElementById(`d${deckNum}-next-hint`);
-    if (select) {
-      select.innerHTML = '<option value="">-- Choose Preset Track --</option>';
-      if (list.length) {
-        const top = document.createElement('optgroup');
-        top.label = `SUGGESTED NEXT (after ${outTrack.title || 'the track on air'})`;
-        list.forEach(sug => {
-          const o = document.createElement('option');
-          o.value = sug.file_id;
-          const title = sug.title.length > 32 ? `${sug.title.slice(0, 30)}…` : sug.title;
-          o.textContent = `★ ${sug.score} · ${title} · ${sug.bpm.toFixed(1)} ${sug.camelot || ''} · ${sug.reasons.slice(0, 2).join(', ')}`;
-          top.append(o);
-        });
-        const all = document.createElement('optgroup');
-        all.label = 'ALL TRACKS';
-        all.innerHTML = libraryOptionsHtml;
-        select.append(top, all);
-      } else {
-        select.insertAdjacentHTML('beforeend', libraryOptionsHtml);
-      }
-    }
+    if (trackPickers[deckNum]) trackPickers[deckNum].setSuggestions(list, outTrack && outTrack.title);
     if (!hint) return;
     const best = list[0];
     hint.hidden = !best;
     if (!best) return;
     const label = document.createElement('span'); label.className = 'next-label'; label.textContent = 'UP NEXT';
-    const title = document.createElement('span'); title.className = 'next-title'; title.textContent = best.title;
+    const title = document.createElement('span'); title.className = 'next-title'; title.textContent = TrackPicker.cleanTitle(best.title);
     const why = document.createElement('span'); why.className = 'next-why'; why.textContent = best.reasons.join(' · ');
     const load = document.createElement('button');
     load.type = 'button'; load.className = 'btn-tiny'; load.textContent = 'LOAD';
@@ -1956,7 +1931,6 @@ document.addEventListener('DOMContentLoaded', () => {
       inDeckNum: isDir1to2 ? 2 : 1,
       outBtnPlay: isDir1to2 ? d1BtnPlay : d2BtnPlay,
       inBtnPlay: isDir1to2 ? d2BtnPlay : d1BtnPlay,
-      inName: isDir1to2 ? 'DECK 2' : 'DECK 1',
       timers: [],
       intervals: [],
     };
@@ -2065,6 +2039,8 @@ document.addEventListener('DOMContentLoaded', () => {
    */
   async function searchAndMix(t, planOpts, bars, aiModel, attempt = 0, pressedAt = engine.ctx.currentTime) {
     const gap = Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1) > MixPlanner.MAX_STRETCH;
+    // The decision card shows the search, then the mix it picked: nothing from before
+    [aiRecTechnique, aiRecReason, aiRecConfidence].forEach(el => { if (el) el.textContent = ''; });
     // Gemini's vocal labels (when it has listened) let the mix wait for the singer: the phrase lines
     // right after each vocal run ends are offered too (not once the next run has started), and a mix
     // that cuts a vocal line loses confidence
@@ -2090,11 +2066,13 @@ document.addEventListener('DOMContentLoaded', () => {
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 16, extraExits,
     }));
     const clash = keySeverity(t.outTrack.camelot, t.inTrack.camelot);
+    // The situation its rating is kept under (as the rating stores it: pair.tempo_gap)
+    const tempoGap = +Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1).toFixed(3);
     const cands = [];
     skeletons.forEach((sk, rank) => MixBlocks.variants(sk, t.inTrack).forEach(c => {
       const start = c.startCtx - MixBlocks.preSec(c);
       if (start > pressedAt + LATE_WAIT_SEC) return;
-      cands.push(Object.assign(c, { rank, keySeverity: clash, late: start > pressedAt + MAX_WAIT_SEC,
+      cands.push(Object.assign(c, { rank, keySeverity: clash, tempoGap, late: start > pressedAt + MAX_WAIT_SEC,
                                     lastResort: MixBlocks.lastResort(c),
                                     vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0,
                                     vocalInSec: t.inTrack.vocal_source ? MixBlocks.vocalIn(c, t.inTrack) : 0 }));
@@ -2185,11 +2163,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const confident = ranked.filter(c => c.conf >= bar);
       if (performance.now() - shown > 300 || done) {
         shown = performance.now();
-        renderSoundCheck(cands);
-        const best = ranked.length ? Math.max(...ranked.map(c => c.conf)) : null;
-        transitionStatusBanner.textContent = `SEARCHING: ${checked}/${cands.length} MIXES CHECKED` +
-          (best !== null ? ` · BEST ${best}%` : '') + ` · PLAYS AT ${bar}%` +
-          (cands.slice(0, next).some(c => c.late) ? ' · LOOKING PAST THE MINUTE' : '');
+        transitionStatusBanner.textContent = `SEARCHING ${next}/${cands.length}`;   // looked at, measured or ruled out
       }
       const aiReady = !useAI || (jev && jev.settled && (jevRounds >= 8 || live.every(c => c.jev !== undefined)))
         || live.length < 2;
@@ -2255,11 +2229,6 @@ document.addEventListener('DOMContentLoaded', () => {
     console.info(`Auto mix: ${pick.id} (${MixBlocks.label(pick)}) at ${pick.conf}% of ${checked} checked`, pick.measured);
     pick.pair = { out: t.outTrack.file_id, in: t.inTrack.file_id,
                   tempo_gap: +Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1).toFixed(3) };
-    renderSoundCheck(t.search, pick.id);
-    // The decision card shows the mix that will play, not the recommendation made before the search
-    if (aiRecTechnique) aiRecTechnique.textContent = MixBlocks.label(pick);
-    if (aiRecReason) aiRecReason.textContent = `${MixBlocks.describe(pick)}.`;
-    if (aiRecConfidence) aiRecConfidence.textContent = `${pick.conf}% CONFIDENT`;
     const note = `${MixBlocks.label(pick)} · CONFIDENCE ${pick.conf}%` +
       (pick.requested && pick.vocalCutSec < 0.5 ? ' · AFTER THE VOCAL LINE' : '') +
       (pick.late ? ` · NOTHING CLEAN WITHIN A MINUTE: MIXING AT ${formatTime(pick.exitNative)}` : '') +
@@ -2268,45 +2237,6 @@ document.addEventListener('DOMContentLoaded', () => {
       (pick.geminiPick ? ' · GEMINI BROKE A TIE' : '') +
       (likesDecided ? ' · YOUR LIKES DECIDED' : '');
     commitTransitionPlan(t, pick, note);
-  }
-
-  /** The sound-check panel: the most confident mixes found so far and which one plays. */
-  const soundCheckList = document.getElementById('sound-check-list');
-  function renderSoundCheck(cands, playedId = null) {
-    if (!soundCheckList) return;
-    const bar = confidenceBar();
-    const measured = cands.filter(c => c.measured && typeof c.conf === 'number').sort((a, b) => b.conf - a.conf);
-    // Three rows (the transition bar stays one row tall): the most confident, the one that plays among them
-    const rows = measured.slice(0, 3);
-    const played = playedId && cands.find(c => c.id === playedId);
-    if (played && !rows.includes(played)) rows[rows.length ? rows.length - 1 : 0] = played;
-    const head = document.createElement('div');
-    head.className = 'check-summary';
-    head.textContent = `${measured.length} of ${cands.length} mixes checked · plays at ${bar}%+`;
-    soundCheckList.replaceChildren(head, ...rows.map(c => {
-      const plays = c.id === playedId;
-      const color = plays ? 'var(--ok)' : c.conf >= bar ? 'var(--accent)' : 'var(--muted)';
-      const row = document.createElement('div');
-      row.className = 'check-row';
-      row.style.setProperty('--sc', color);
-      row.title = `${MixBlocks.describe(c)}. Leaves at ${formatTime(c.exitNative)}; measured penalty ` +
-        `${c.measured.penalty} (lower is cleaner)` +
-        (c.vocalCutSec > 0.5 ? `; cuts the outgoing's vocal ${Math.round(c.vocalCutSec)} s before its line ends` : '') +
-        (c.geminiPick ? '; Gemini broke a tie in its favour' : '');
-      const id = document.createElement('span'); id.className = 'check-id'; id.textContent = c.id;
-      const meter = document.createElement('span'); meter.className = 'check-bar';
-      const fill = document.createElement('span'); fill.style.width = `${Math.max(4, c.conf)}%`;
-      meter.append(fill);
-      const val = document.createElement('span'); val.className = 'check-score'; val.textContent = `${c.conf}%`;
-      val.title = 'Confidence: measured sound, your ratings and Jev';
-      const jev = document.createElement('span'); jev.className = 'check-jev';
-      jev.textContent = typeof c.jev === 'number' ? c.jev.toFixed(1) : '';
-      if (typeof c.jev === 'number') jev.title = `Jev rating: ${c.jev.toFixed(1)} of 4`;
-      const what = document.createElement('span'); what.className = 'check-label';
-      what.textContent = (plays ? 'PLAYS: ' : '') + MixBlocks.label(c);
-      row.append(id, meter, val, jev, what);
-      return row;
-    }));
   }
 
   /** Render candidates offline from the decks' own buffers and measure them (c.measured). */
@@ -2334,7 +2264,7 @@ document.addEventListener('DOMContentLoaded', () => {
       t.blend = plan.technique === 'blend';
     }
     t.plan = plan;
-    t.aiNote = aiNote;
+    if (aiNote) console.info(`Mix note: ${aiNote}`);   // the panel shows only the mix, its confidence and when
     const tech = t.tech;
     // How long before its start the mix already moves something (gap styles lead in)
     t.leadInSec = plan.style ? MixBlocks.preSec(plan) : cutLeadInBeats(tech, plan.bars) * plan.beatSec;
@@ -2370,6 +2300,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const total0 = Math.max(0.001, p.startCtx - engine.ctx.currentTime);
     const label = p.style ? MixBlocks.label(p).toUpperCase()
       : t.blend ? `${p.bars}-BAR BLEND` : t.tech.toUpperCase().replace(/_/g, ' ');
+    // The decision line: the mix, how confident, when it starts; then that it is mixing
+    const line = state => [label, typeof p.conf === 'number' ? `${p.conf}%` : null, state].filter(Boolean).join(' · ');
+    const show = text => { if (transitionStatusBanner.textContent !== text) transitionStatusBanner.textContent = text; };
     phraseHud.classList.remove('hidden');
     t.intervals.push(setInterval(() => {
       const remain = p.startCtx - engine.ctx.currentTime;
@@ -2377,21 +2310,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const beats = remain / p.beatSec;
         phraseHudCounter.textContent = `IN ON THE 1: ${Math.floor(beats / 4)} BARS (${Math.floor(beats % 4) + 1}/4)`;
         phraseHudProgress.style.width = `${(100 * (1 - remain / total0)).toFixed(1)}%`;
-        transitionStatusBanner.textContent = `🎯 ${label} → ${t.inName} IN ${remain.toFixed(1)}s ` +
-          `@ ${p.masterBpm.toFixed(2)} BPM${t.blend && p.vocalClash ? ' (VOCAL CLASH: MIDS SWAP WITH BASS)' : ''}` +
-          (t.aiNote ? ` · ${t.aiNote.toUpperCase()}` : '');
+        show(line(`STARTS IN ${Math.ceil(remain)} S`));   // wraps as one piece
       } else {
         phraseHud.classList.add('hidden');
-        if (t.blend && t.marks) {
-          const now = engine.ctx.currentTime;
-          const total = p.bars + (p.tailBars || 0);
-          const bar = Math.min(total, Math.floor(-remain / (4 * p.beatSec)) + 1);
-          const stage = now < t.marks.swap
-            ? (p.dropAligned ? 'HATS & MIDS IN, BASS SWAPS ON THE DROP' : 'HATS & MIDS IN')
-            : 'BASS SWAPPED ON THE 1, OUTGOING OUT';
-          transitionStatusBanner.textContent =
-            `🎚️ BLEND BAR ${bar}/${total}: ${stage}`;
-        }
+        show(line('MIXING'));
       }
     }, 50));
   }
@@ -2444,14 +2366,6 @@ document.addEventListener('DOMContentLoaded', () => {
     t.inDeck.play(T - lead, p.inStartNative - lead);
     t.marks = MixBlocks.perform(p, t.outDeck, t.inDeck);
     atCtx(t, T - lead, () => setPlayUI(t.inBtnPlay, true));
-    if (!t.blend) {
-      const land = p.style && p.style.inLand ? { hook: 'LANDS ON ITS HOOK', intro: 'DROPS INTO ITS INTRO',
-                                                 verse: 'COMES IN ON ITS FIRST LINE' }[p.style.inLand]
-        : p.style && p.style.inPreBars ? 'LANDS ON ITS BUILD' : 'DROPS ON THE 1';
-      atCtx(t, T, () => {
-        transitionStatusBanner.textContent = `${(p.style ? MixBlocks.label(p) : 'echo out').toUpperCase()}: ${t.inName} ${land}`;
-      });
-    }
     atCtx(t, t.marks.end + 0.05, () => completeTransition(t));
   }
 
@@ -2514,10 +2428,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (cutTime !== null) MixPlanner.cutAt(outDeck, cutTime);
 
-    atCtx(t, T, () => {
-      setPlayUI(t.inBtnPlay, true);
-      transitionStatusBanner.textContent = `💥 ${t.tech.toUpperCase().replace(/_/g, ' ')}: ${t.inName} DROPS ON THE 1`;
-    });
+    atCtx(t, T, () => setPlayUI(t.inBtnPlay, true));
     atCtx(t, T + tail, () => completeTransition(t));
   }
 
@@ -2551,37 +2462,64 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 40);
   }
 
-  // ── The DJ rates each Auto mix: the ratings steer the confidence of mixes like it ──
+  // ── The DJ rates each Auto mix: the ratings steer the confidence of mixes like it. After NOT FOR ME
+  // one optional tap says why, and the server then blames only that part of the mix (a song choice
+  // blames none). The counts come back from the server, which also keeps them per situation ──
   const ratingBox = document.getElementById('mix-rating');
+  const REASON_NOTES = { sudden: 'Noted: smoother mixes there.', clash: 'Noted: less of the two together.',
+                         entry: 'Noted: better places to come in.', energy: 'Noted: keep the energy up.',
+                         song: 'Noted: the mix itself was fine.' };
   let ratedMix = null;
+  let unexplained = null;     // the last NOT FOR ME, a reason can still be added to (a promise of its id)
+  let ratingTimer = null;
+  const refreshTaste = () => fetch('/api/feedback/summary').then(r => (r.ok ? r.json() : null))
+    .then(d => { if (d && d.keys) tastePrefs = d.keys; }).catch(() => {});
+  /** Show the GOOD / NOT FOR ME row ('rate'), the reasons ('why') or neither, with a note under them. */
+  function showRating(row, note, hideAfterMs = 0) {
+    ratingBox.querySelectorAll('.mix-rating-row').forEach(r => {
+      r.hidden = r.classList.contains('mix-rating-why') ? row !== 'why' : row !== 'rate';
+    });
+    ratingBox.querySelector('.mix-rating-note').textContent = note;
+    ratingBox.hidden = false;
+    clearTimeout(ratingTimer);
+    if (hideAfterMs) ratingTimer = setTimeout(() => { ratingBox.hidden = true; unexplained = null; }, hideAfterMs);
+  }
   function askForRating(plan) {
     if (!ratingBox) return;
     ratedMix = plan;
-    ratingBox.querySelector('.mix-rating-note').textContent = `${MixBlocks.label(plan)} (${plan.conf}%)`;
-    ratingBox.hidden = false;
+    unexplained = null;
+    showRating('rate', `${MixBlocks.label(plan)}${typeof plan.conf === 'number' ? ` (${plan.conf}%)` : ''}`);
   }
   if (ratingBox) {
     ratingBox.addEventListener('click', (e) => {
-      const btn = e.target.closest('[data-rate]');
-      if (!btn || !ratedMix) return;
-      const like = btn.dataset.rate === '1';
-      const keys = MixBlocks.prefKeys(ratedMix);
-      keys.forEach(k => {
-        const [likes, n] = tastePrefs[k] || [0, 0];
-        tastePrefs[k] = [likes + (like ? 1 : 0), n + 1];
-      });
-      fetch('/api/feedback', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          rating: like ? 1 : 0, keys, style: ratedMix.style, label: MixBlocks.label(ratedMix),
-          confidence: ratedMix.conf, measured: ratedMix.measured, jev: ratedMix.jev ?? null,
-          gemini_pick: !!ratedMix.geminiPick, pair: ratedMix.pair || null,
-        }),
-      }).catch(err => console.warn('Rating not saved:', err));
-      ratingBox.querySelector('.mix-rating-note').textContent = like ? 'Noted: more mixes like this one.'
-                                                                     : 'Noted: fewer mixes like this one.';
-      ratedMix = null;
-      setTimeout(() => { if (!ratedMix) ratingBox.hidden = true; }, 2500);
+      const rate = e.target.closest('[data-rate]');
+      const why = e.target.closest('[data-reason]');
+      if (rate && ratedMix) {
+        const like = rate.dataset.rate === '1';
+        const saved = fetch('/api/feedback', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            rating: like ? 1 : 0, keys: MixBlocks.prefKeys(ratedMix), style: ratedMix.style,
+            label: MixBlocks.label(ratedMix), confidence: ratedMix.conf, measured: ratedMix.measured,
+            jev: ratedMix.jev ?? null, gemini_pick: !!ratedMix.geminiPick, pair: ratedMix.pair || null,
+          }),
+        }).then(r => r.json()).then(d => d.id).catch(err => { console.warn('Rating not saved:', err); return null; });
+        saved.then(refreshTaste);
+        ratedMix = null;
+        if (like) {
+          showRating(null, 'Noted: more mixes like this one.', 2500);
+        } else {
+          unexplained = saved;
+          showRating('why', 'Noted. What was wrong? (optional)', 20000);
+        }
+      } else if (why && unexplained) {
+        const reason = why.dataset.reason;
+        unexplained.then(id => id && fetch('/api/feedback/reason', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, reason }),
+        })).then(refreshTaste).catch(err => console.warn('Reason not saved:', err));
+        unexplained = null;
+        showRating(null, REASON_NOTES[reason], 2500);
+      }
     });
   }
 

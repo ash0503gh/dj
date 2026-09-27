@@ -403,6 +403,12 @@ const TransitionLab = (() => {
   const TASTE_PRIOR = { blend: 0.85, wash: 0.85, switch: 0.8 };   // blends and washes: the handovers
   const SWITCH_WHEN_BLENDABLE = 0.5;
   const DETAIL_PRIOR = { 'in.midline': 0.2 };   // details start neutral (0.5) but this, a DJ avoids it
+  // A mix is also rated in its situation: how far apart the tempos are (c.tempoGap, |out / in - 1|;
+  // same edges as the server's GAP_BANDS), and for a switch or wash, where it lands for that kind. A
+  // situation starts from the overall rating and needs SITUATION_WEIGHT ratings to count as much
+  const GAP_BANDS = [[0.12, 'le12'], [0.20, '12-20'], [0.50, '20-50']];
+  const gapBand = g => (GAP_BANDS.find(([edge]) => g <= edge) || [0, '50+'])[1];
+  const SITUATION_WEIGHT = 4;
 
   function taste(c, prefs = {}, cap = true) {
     const [kind, ...details] = MixBlocks.prefKeys(c);
@@ -411,7 +417,12 @@ const TransitionLab = (() => {
       return (likes + prior * weight) / (n + weight);
     };
     let v = mean(kind, kind === 'switch' && !c.outOfRange ? SWITCH_WHEN_BLENDABLE : TASTE_PRIOR[kind], 4);
-    for (const key of details) v += (mean(key, DETAIL_PRIOR[key] !== undefined ? DETAIL_PRIOR[key] : 0.5, 4) - 0.5) / details.length;
+    if (typeof c.tempoGap === 'number') v = mean(`${kind}@gap.${gapBand(c.tempoGap)}`, v, SITUATION_WEIGHT);
+    for (const key of details) {
+      let d = mean(key, DETAIL_PRIOR[key] !== undefined ? DETAIL_PRIOR[key] : 0.5, 4);
+      if (key.startsWith('gap.land.') && key !== 'gap.land.soft') d = mean(`${key}@${kind}`, d, SITUATION_WEIGHT);
+      v += (d - 0.5) / details.length;
+    }
     return Math.max(0, cap ? Math.min(1, v) : v);
   }
 

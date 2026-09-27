@@ -17,11 +17,12 @@ from backend import next_track, server  # noqa: E402
 
 
 def analysis(fid, bpm, key, sha, sung_from=40.0, loud=-7.0):
-    """A labelled analysis: 4-bar sections, instrumental until `sung_from`."""
+    """A labelled analysis: 4-bar sections, instrumental until `sung_from` (the same audio, `sha`, is
+    as long in every copy)."""
     bar = 4 * 60.0 / bpm
     sections = [{"time": t * 4 * bar, "duration": 4 * bar, "energy": 1.0, "vocal_score": 1.0,
                  "has_vocals": t * 4 * bar >= sung_from} for t in range(12)]
-    return {"file_id": fid, "title": fid, "bpm": bpm, "camelot": key, "duration": 200.0, "loudness_db": loud,
+    return {"file_id": fid, "title": fid, "bpm": bpm, "camelot": key, "duration": 180.0 + ord(sha), "loudness_db": loud,
             "suggested_cue_intro": 0.0, "section_map": sections, "vocal_source": "gemini:x", "content_sha1": sha,
             "analysis_version": server.ANALYSIS_VERSION}
 
@@ -72,3 +73,10 @@ def test_endpoint(monkeypatch):
         assert res["status"] == "success"
         assert names[0].endswith("blends.mp3")
         assert "deck_1_rubs.mp3" not in names and not any(n.endswith("on_air.mp3") for n in names)
+
+
+def test_same_audio_under_another_name_is_one_song():
+    renamed = dict(analysis("deck_2_blends_edit.mp3", 122.0, "9A", "b"), content_sha1=None)   # no fingerprint
+    lib = [next_track.features(a) for a in LIB + [renamed]]
+    names = [r["file_id"] for r in next_track.rank(lib[0], 122.0, lib)]
+    assert sum("blends" in n for n in names) == 1

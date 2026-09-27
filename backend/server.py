@@ -4,6 +4,7 @@ Handles audio uploads, track analysis, stem separation, mix rendering, presets, 
 """
 
 import os
+import re
 import uuid
 import json
 import shutil
@@ -127,7 +128,8 @@ async def persist_analysis(file_id: str, an: dict) -> None:
     """Keep an analysis in memory, on local disk and (Cloud Run) in the bucket."""
     ANALYSIS_CACHE[file_id] = an
     save_cache_to_disk()
-    meta = {k: an.get(k) for k in ("title", "bpm", "camelot", "key", "duration") if an.get(k) is not None}
+    meta = {k: an.get(k) for k in ("title", "bpm", "camelot", "key", "duration", "content_sha1")
+            if an.get(k) is not None}
     await run_in_threadpool(storage.put_json, f"analysis/{file_id}.json", an, meta)
 
 
@@ -212,35 +214,49 @@ async def rank_techniques_energy(techniques: str = ""):
     ranked = ENERGY_MGR.rank_techniques(candidates)
     return JSONResponse(content={"status": "success", "ranked": ranked, "state": ENERGY_MGR.get_state()})
 
+def _song_keys(file_id: str, data: dict) -> list:
+    """Ways the same song shows up again under another name: its file name without the deck prefix,
+    its audio (the same duration, tempo and key: an analysis of the same audio gives the same ones)
+    and its fingerprint when known."""
+    name = re.sub(r"\.[a-z0-9]{2,4}$", "", re.sub(r"^(deck_[12]_|lib_)", "", file_id, flags=re.I), flags=re.I)
+    keys = ["name:" + re.sub(r"[^a-z0-9]", "", name.lower())]
+    if data.get("duration") and data.get("bpm"):
+        keys.append(f"audio:{float(data['duration']):.1f}|{float(data['bpm']):.2f}|{data.get('camelot')}")
+    if data.get("content_sha1"):
+        keys.append("sha1:" + str(data["content_sha1"]))
+    return keys
+
+
 @app.get("/api/presets")
 async def get_presets():
-    """Returns available pre-loaded club tracks and sets."""
+    """Returns available pre-loaded club tracks and sets: every song once, however many copies were
+    uploaded (from either deck, or under another name)."""
     load_cache_from_disk()
-    available_tracks = []
+    candidates = []
     for fn, data in ANALYSIS_CACHE.items():
         if os.path.exists(os.path.join(UPLOAD_DIR, fn)):
-            available_tracks.append({
-                "file_id": fn,
-                "title": data.get("title", fn),
-                "bpm": data.get("bpm", 128.0),
-                "camelot": data.get("camelot", "--"),
-                "key": data.get("key", "--"),
-                "duration": data.get("duration", 180.0)
-            })
-    # Cloud Run: the library lives in the bucket (metadata only, no downloads)
-    listed = {t["file_id"] for t in available_tracks}
+            candidates.append((fn, data))
+    # Cloud Run: the library lives in the bucket (metadata only, no downloads). Only the analyses at
+    # its top level: analysis/by-sha1/ holds pointers between copies of the same audio, not tracks
+    listed = {fn for fn, _ in candidates}
     remote = await run_in_threadpool(lambda: list(storage.list_metadata("analysis/")))
     for name, meta in remote:
         fid = name[len("analysis/"):-len(".json")]
-        if fid not in listed:
+        if name.count("/") == 1 and name.endswith(".json") and fid not in listed:
+            candidates.append((fid, meta))
+    available_tracks, seen = [], set()
+    for fid, data in candidates:
+        keys = _song_keys(fid, data)
+        if not any(k in seen for k in keys):
             available_tracks.append({
                 "file_id": fid,
-                "title": meta.get("title", fid),
-                "bpm": float(meta.get("bpm", 128.0)),
-                "camelot": meta.get("camelot", "--"),
-                "key": meta.get("key", "--"),
-                "duration": float(meta.get("duration", 180.0)),
+                "title": data.get("title", fid),
+                "bpm": float(data.get("bpm", 128.0)),
+                "camelot": data.get("camelot", "--"),
+                "key": data.get("key", "--"),
+                "duration": float(data.get("duration", 180.0)),
             })
+        seen.update(keys)
 
     sets = []
     if os.path.exists(os.path.join(UPLOAD_DIR, "Laserpack.mp3")) and os.path.exists(os.path.join(UPLOAD_DIR, "Overworld.mp3")):
@@ -558,29 +574,98 @@ async def _ratings() -> list:
     return FEEDBACK["ratings"]
 
 
-@app.post("/api/feedback")
-async def post_feedback(request: Request):
-    """A rating of one Auto mix. Body: {rating: 1 | 0, keys: [...] (MixBlocks.prefKeys), style, label,
-    confidence, measured, jev, gemini_pick, pair}."""
-    body = await request.json()
-    keys = [str(k)[:64] for k in (body.get("keys") or [])][:12]
-    if not keys:
-        raise HTTPException(status_code=400, detail="no keys")
-    ratings = await _ratings()
-    record = {k: body.get(k) for k in ("style", "label", "confidence", "measured", "jev", "gemini_pick", "pair")}
-    record.update(rating=1 if body.get("rating") in (1, True, "1") else 0, keys=keys, at=int(time.time()))
-    ratings.append(record)
+async def _save_ratings(ratings: list) -> None:
     del ratings[:-2000]
     with open(os.path.join(UPLOAD_DIR, "feedback.json"), "w") as f:
         json.dump({"ratings": ratings}, f)
     await run_in_threadpool(storage.put_json, "feedback/ratings.json", {"ratings": ratings}, {"count": len(ratings)})
-    return JSONResponse(content={"status": "success", "count": len(ratings)})
 
 
-def _rating_keys(keys: list) -> list:
-    """A rating's keys; ratings made before blends and filter washes were rated apart said 'handover'
-    for both: which one is in their other keys."""
-    return [("wash" if "gap.entry.split" in keys else "blend") if k == "handover" else k for k in keys]
+async def _fresh_ratings() -> list:
+    """The ratings as stored now (another instance may have added some since this one read them)."""
+    if storage.enabled():
+        FEEDBACK["ratings"] = None
+    return await _ratings()
+
+
+@app.post("/api/feedback")
+async def post_feedback(request: Request):
+    """A rating of one Auto mix. Body: {rating: 1 | 0, keys: [...] (MixBlocks.prefKeys), style, label,
+    confidence, measured, jev, gemini_pick, pair}. Returns its id (for a reason given after)."""
+    body = await request.json()
+    keys = [str(k)[:64] for k in (body.get("keys") or [])][:12]
+    if not keys:
+        raise HTTPException(status_code=400, detail="no keys")
+    ratings = await _fresh_ratings()
+    record = {k: body.get(k) for k in ("style", "label", "confidence", "measured", "jev", "gemini_pick", "pair")}
+    record.update(rating=1 if body.get("rating") in (1, True, "1") else 0, keys=keys, at=int(time.time()),
+                  id=uuid.uuid4().hex[:12])
+    ratings.append(record)
+    await _save_ratings(ratings)
+    return JSONResponse(content={"status": "success", "count": len(ratings), "id": record["id"]})
+
+
+# What a NOT FOR ME with a reason blames: only the parts of the mix the reason is about ("kind": the
+# kind of mix, in any situation). A song choice blames no part of the mix.
+REASON_BLAME = {
+    "sudden": ("kind", "blend.mids.", "gap.entry.", "gap.before.", "gap.after.", "gap.land.soft"),
+    "clash": ("kind", "blend.mids.", "blend.tail.", "gap.entry.", "gap.after."),
+    "entry": ("blend.entry.", "gap.land.", "in.midline"),
+    "energy": ("kind", "blend.tail.", "gap.before.", "gap.after.", "gap.land."),
+    "song": (),
+}
+
+
+@app.post("/api/feedback/reason")
+async def feedback_reason(request: Request):
+    """Why the DJ didn't like a mix (one tap after NOT FOR ME). Body: {id, reason}."""
+    body = await request.json()
+    if body.get("reason") not in REASON_BLAME:
+        raise HTTPException(status_code=400, detail="unknown reason")
+    ratings = await _fresh_ratings()
+    record = next((r for r in reversed(ratings) if r.get("id") and r.get("id") == body.get("id")), None)
+    if record is None:
+        raise HTTPException(status_code=404, detail="no such rating")
+    record["reason"] = body["reason"]
+    await _save_ratings(ratings)
+    return JSONResponse(content={"status": "success"})
+
+
+# How far apart the tempos were (|out / in - 1|): the situations a kind of mix is rated in apart.
+# Same edges as the console's TransitionLab.gapBand
+GAP_BANDS = ((0.12, "le12"), (0.20, "12-20"), (0.50, "20-50"))
+
+
+def _gap_band(gap: float) -> str:
+    return next((name for edge, name in GAP_BANDS if gap <= edge), "50+")
+
+
+def _blamed(key: str, kind: str, parts: tuple) -> bool:
+    base = key.split("@")[0]
+    if base == kind:
+        return "kind" in parts
+    if base == "gap.land.soft":
+        return base in parts
+    return any(base.startswith(p) for p in parts if p != "kind")
+
+
+def _rating_keys(r: dict) -> list:
+    """The keys one rating counts toward: its style's keys (ratings made before blends and filter
+    washes were rated apart said 'handover' for both: which one is in their other keys), its kind of
+    mix in its situation (how far apart the tempos were, e.g. 'wash@gap.12-20') and a switch or
+    wash's landing for that kind ('gap.land.build@switch'). A NOT FOR ME with a reason counts only
+    toward the parts of the mix the reason is about."""
+    keys = list(r.get("keys") or [])
+    keys = [("wash" if "gap.entry.split" in keys else "blend") if k == "handover" else k for k in keys]
+    if not keys:
+        return []
+    kind = keys[0]
+    gap = (r.get("pair") or {}).get("tempo_gap")
+    situation = [f"{kind}@gap.{_gap_band(gap)}"] if isinstance(gap, (int, float)) else []
+    situation += [f"{k}@{kind}" for k in keys[1:] if k.startswith("gap.land.") and k != "gap.land.soft"]
+    keys += situation
+    parts = REASON_BLAME.get(r.get("reason")) if not r.get("rating") else None
+    return [k for k in keys if _blamed(k, kind, parts)] if parts is not None else keys
 
 
 @app.get("/api/feedback/summary")
@@ -589,7 +674,7 @@ async def feedback_summary():
     ratings = await _ratings()
     keys: dict = {}
     for r in ratings:
-        for k in _rating_keys(r.get("keys", [])):
+        for k in _rating_keys(r):
             likes, n = keys.get(k, [0, 0])
             keys[k] = [likes + int(r.get("rating", 0)), n + 1]
     return JSONResponse(content={"count": len(ratings), "keys": keys})
