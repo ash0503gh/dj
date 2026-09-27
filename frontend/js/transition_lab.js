@@ -322,16 +322,18 @@ const TransitionLab = (() => {
   const MEASURED = new Set(['blend', 'echo_freeze']);   // skeletons MixBlocks can perform in any style
 
   /** Measure every blend and tempo-gap candidate in place (c.measured). The incoming is `inc` for
-   *  blends (at the master tempo) and `incNative` (its own tempo) otherwise. */
-  async function measureAll(cands, out, inc, incNative = inc) {
-    for (const c of cands) {
-      if (!MEASURED.has(c.technique) || c.measured) continue;
+   *  blends (at the master tempo) and `incNative` (its own tempo) otherwise. `parallel` renders run at
+   *  once (each offline render has its own audio thread; each holds its 8-band render in memory). */
+  async function measureAll(cands, out, inc, incNative = inc, parallel = 1) {
+    const todo = cands.filter(c => MEASURED.has(c.technique) && !c.measured);
+    const one = async c => {
       try {
         c.measured = await quickScore({ out, inc: c.technique === 'blend' ? inc : incNative, plan: c });
       } catch (err) {
         console.warn(`Could not measure candidate ${c.id}:`, err);
       }
-    }
+    };
+    for (let k = 0; k < todo.length; k += parallel) await Promise.all(todo.slice(k, k + parallel).map(one));
     return cands;
   }
 

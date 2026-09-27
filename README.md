@@ -57,9 +57,13 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Memory (phones close tabs that hold too much): a deck that mixed out drops its keylocked copy,
     keylocked copies are kept only for tracks on the decks, and touch devices don't keep the last
     mix's buffers for export.
-  - Search: the planner's best moments x every style (60-150 mixes) are rendered offline and measured a
-    few at a time while the music plays (~0.15-0.35 s each; bass gaps/mud, holes against the outgoing's own
-    level, level dips/spikes, mid and hat clashes of two tempos; deliberate builds excused).
+  - Search: the planner's best moments x every style (60-500 mixes) are rendered offline and measured a
+    few at a time while the music plays (~0.15-0.35 s each, four renders at once on a computer, one on a
+    phone; bass gaps/mud, holes against the outgoing's own level, level dips/spikes, mid and hat clashes
+    of two tempos; deliberate builds excused). A mix that couldn't beat the best found even at its best
+    case isn't measured: a flawless sound check, or for a blend whose family (same moment and style,
+    another tail) has been measured, 6 penalty points cleaner than the family's cleanest (tails moved it
+    at most 5.2 over 519 comparisons; a switch's exit moves it far more, so switches get no such bound).
   - Confidence (0-100): measured sound and taste — the DJ's ratings of similar mixes, kept per kind
     (blend, filter wash, switch) and per detail of the style (a GOOD /
     NOT FOR ME prompt after each Auto mix, stored per feature at `/api/feedback`), half Jev's rating once

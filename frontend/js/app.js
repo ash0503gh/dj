@@ -1818,6 +1818,11 @@ document.addEventListener('DOMContentLoaded', () => {
   const TIE_BUDGET_SEC = 8;    // how long the AI may take to rate or break a tie
   const MAX_WAIT_SEC = 60;     // a mix starts within a minute of pressing MIX...
   const LATE_WAIT_SEC = 120;   // ...unless none there clears the bar: then the next clean moment, within two
+  // A family of blends: one moment and style but for how the outgoing leaves (its tail), which moves
+  // the sound check little (at most 5.2 penalty points and 1.2 s of both tracks' midrange heard
+  // together, over 519 comparisons on 9 pairs). Once one is measured, the rest are taken to sound at
+  // most this much cleaner. A switch's exit (echo, cut, brake...) moves it far more: no such bound
+  const FAMILY_MARGIN = { penalty: 6, tonal: 1.5 };
   const confidenceSelect = document.getElementById('confidence-select');
   if (confidenceSelect) {
     try { confidenceSelect.value = localStorage.getItem('mix_confidence') || 'strict'; } catch (e) { /* blocked */ }
@@ -1852,6 +1857,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Phones and tablets: memory for the decks' tracks, not for spare keylocked copies or export buffers
   // (a decoded 4-minute track is ~90 MB; iOS closes a tab that holds too many)
   const LOW_MEMORY = window.matchMedia('(pointer: coarse)').matches;
+  // Sound-check renders in flight at once while searching (each has its own audio thread and holds its
+  // 8-band render, ~20 MB): four is ~3x faster than one on a desktop; phones render one at a time
+  const RENDERS_AT_ONCE = LOW_MEMORY ? 1 : 4;
 
   /** Forget keylocked copies of tracks no longer on a deck, and of `fileId` (a deck done with it). */
   function pruneStretchCache(fileId = null) {
@@ -2103,8 +2111,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // the search only gets to them when nothing before them clears the bar
     cands.forEach(c => {
       c.promise = TransitionLab.confidence(Object.assign({}, c, { measured: { penalty: 0 } }), tastePrefs)
-        + TransitionLab.likesBonus(c, tastePrefs) - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0) - (c.late ? 1000 : 0)
-        - (c.lastResort ? 2000 : 0);
+        + TransitionLab.likesBonus(c, tastePrefs) - 2 * c.rank + (sameStyle(c.style, MixBlocks.defaultStyle(c)) ? 5 : 0)
+        - (c.late ? 1000 : 0) - (c.lastResort ? 2000 : 0);
     });
     cands.sort((a, b) => b.promise - a.promise);
     cands.forEach((c, i) => { c.id = `M${i + 1}`; });
@@ -2114,27 +2122,50 @@ document.addEventListener('DOMContentLoaded', () => {
     const useAI = aiModel !== 'local';
     const deadline = c => c.startCtx - MixBlocks.preSec(c) - 1.5;   // last moment to commit to c
     const rescore = () => cands.forEach(c => { if (c.measured) c.conf = TransitionLab.confidence(c, tastePrefs); });
+    const liveAt = now => cands.filter(c => c.measured && deadline(c) > now);
+    const bestOf = live => (live.length ? Math.max(...live.map(c => c.conf + TransitionLab.likesBonus(c, tastePrefs))) : -1);
+    // The cleanest sound measured in each family of blends: its unmeasured members can't sound much cleaner
+    const families = new Map();
+    const familyOf = c => {
+      const s = Object.assign({}, c.style);
+      delete s.tail;
+      return `${c.rank}|${JSON.stringify(s)}`;
+    };
+    const bestCase = c => {
+      const f = c.technique === 'blend' && families.get(familyOf(c));
+      return f ? { penalty: Math.max(0, f.penalty - FAMILY_MARGIN.penalty),
+                   tonal_overlap_s: Math.max(0, f.tonal - FAMILY_MARGIN.tonal) } : { penalty: 0 };
+    };
     let next = 0;
     let jev = null;         // the Jev round in flight
     let jevRounds = 0;
     let shown = 0;
     while (activeTransition === t) {
+      // Past its moment, or unable to beat the best found even at its best case: not worth measuring
+      const floor = bestOf(liveAt(engine.ctx.currentTime));
       const batch = [];
-      while (next < cands.length && batch.length < 3) {
+      while (next < cands.length && batch.length < Math.max(3, RENDERS_AT_ONCE)) {
         const c = cands[next++];
-        if (deadline(c) > engine.ctx.currentTime + 1) batch.push(c);
+        if (deadline(c) > engine.ctx.currentTime + 1 && ceiling(c, useAI, aiModel, bestCase(c)) > floor) batch.push(c);
       }
       if (batch.length) await measureCandidates(t, batch);
       if (activeTransition !== t) return;
       rescore();
+      batch.filter(c => c.measured && c.technique === 'blend').forEach(c => {
+        const k = familyOf(c);
+        const f = families.get(k) || { penalty: Infinity, tonal: Infinity };
+        families.set(k, { penalty: Math.min(f.penalty, c.measured.penalty),
+                          tonal: Math.min(f.tonal, c.measured.tonal_overlap_s || 0) });
+      });
       const now = engine.ctx.currentTime;
-      const live = cands.filter(c => c.measured && deadline(c) > now);
+      const live = liveAt(now);
       const checked = cands.filter(c => c.measured).length;
       // Done when every candidate has been tried, or when none left could beat the best found even
-      // with a flawless sound check and Jev's top rating (a high bar shouldn't mean a long wait)
-      const bestScore = live.length ? Math.max(...live.map(c => c.conf + TransitionLab.likesBonus(c, tastePrefs))) : -1;
+      // at its best case (a flawless sound check, or its family's; Jev's top rating): a high bar
+      // shouldn't mean a long wait
+      const bestScore = bestOf(live);
       const done = next >= cands.length ||
-        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, useAI, aiModel) > bestScore);
+        !cands.slice(next).some(c => deadline(c) > now + 1 && ceiling(c, useAI, aiModel, bestCase(c)) > bestScore);
       const quickDone = checked >= QUICK_LOOK || done;
       // Once the quick look is in, Jev rates every measured candidate (free; 48 a request, five answers
       // each, within its 255), and the ones measured later in further rounds: all compared alike
@@ -2180,11 +2211,12 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }
 
-  /** The most confidence a candidate could get before it is measured: a flawless sound check, Jev's
-   *  top rating (when Jev rates) and Gemini's tie-break, plus what the DJ's likes add when choosing. */
-  function ceiling(c, useAI, aiModel) {
+  /** The most confidence a candidate could get before it is measured: a flawless sound check (or the
+   *  best case `measured` allows), Jev's top rating (when Jev rates) and Gemini's tie-break, plus what
+   *  the DJ's likes add when choosing. */
+  function ceiling(c, useAI, aiModel, measured = { penalty: 0 }) {
     const best = Object.assign({}, c, {
-      measured: { penalty: 0 }, jev: useAI ? 4 : undefined, geminiPick: aiModel.startsWith('gemini'),
+      measured, jev: useAI ? 4 : undefined, geminiPick: aiModel.startsWith('gemini'),
     });
     return TransitionLab.confidence(best, tastePrefs) + TransitionLab.likesBonus(best, tastePrefs);
   }
@@ -2291,7 +2323,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const out = { buffer: t.outDeck.audio.buffer, tempoRatio: t.outDeck.audio.tempoRatio,
                   rate: t.outDeck.audio.playbackRate, trimDb: t.outDeck.trimDb || 0 };
     const native = { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: 1 };
-    await TransitionLab.measureAll(cands, out, inc, native);
+    await TransitionLab.measureAll(cands, out, inc, native, RENDERS_AT_ONCE);
   }
 
   /** Lock in a plan and schedule everything from it. */
