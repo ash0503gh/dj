@@ -14,7 +14,7 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Sub-millisecond quantized beat phase snapping on play/sync.
 
 - **Pro Multi-Technique Layered Transitions**:
-  - **Quintic Smootherstep ($6t^5 - 15t^4 + 10t^3$)**: Faders and rotary EQ knobs start and stop with zero jerk and zero audible clicks.
+  - **Quintic Smootherstep ($6t^5 - 15t^4 + 10t^3$)**: Faders and EQ sliders start and stop with zero jerk and zero audible clicks.
   - **Highs-First-In / Highs-Last-Out**: 16th-note hi-hats lead the mix (Bars 1–8) to seed the groove; outgoing highs stay active through 92% of the transition to maintain tempo momentum.
   - **Linkwitz-Riley 40% Equal-Power Bass Crossover**: Smooth $\cos/\sin$ power curve handoff over 6–8 bars eliminating double-kick mud and energy dips.
   - **Gradual HPF Washout & 3/4-Beat Echo Tail**: Thins low-mids on outgoing track before catching the exit in a spacious delay wash.
