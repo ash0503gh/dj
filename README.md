@@ -181,8 +181,15 @@ prepared tracks, and uploads are off.
 - `python -m backend.library prepare` analyzes every track once, several at a time. It can be stopped
   and run again: finished tracks are kept, and only new, changed or outdated ones are prepared.
   `python -m backend.library status` lists what is ready, failed or worth a check.
-- The library index (`~/.pulsepro/library.db`, or `$PULSE_DATA`) holds one track per audio content.
-  Renamed, moved or duplicated files stay one track, with their grid fixes and vocal labels.
+- Each song is processed once in its life. The library index (`~/.pulsepro/library.db`, or
+  `$PULSE_DATA`) holds one track per audio content, fingerprinted on the audio alone: renamed, moved,
+  duplicated or re-tagged files (Serato, Mixed In Key and tag editors write into MP3 tags) stay one
+  track with all their work. A track whose file is removed is kept, so adding it back costs nothing.
+  Only a stage this code improves runs again, on your Mac, for free.
+- Gemini (paid) never listens during a set. `python -m backend.library listen` has it listen once to
+  every prepared song it hasn't heard: it shows the estimated cost in rupees, asks first, keeps to
+  `--max-inr`, prints what each song really cost, and saves as it goes. Prepare reminds you how many
+  songs are left and roughly what they'd cost.
 - Stages, in order: a neural beat tracker's opinion (Beat This!, `backend/beats_nn.py`, on the Mac's GPU),
   which chooses the downbeat and catches a tempo read at an odd ratio; the full analysis; the key over
   the whole track (Essentia's EDM profile, `backend/key_detect.py`; the analyzer's own estimate is kept

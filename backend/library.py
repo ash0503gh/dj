@@ -8,11 +8,16 @@ are off. Without PULSE_LIBRARY nothing here runs and the server works as before 
 
 Index (SQLite, PULSE_DATA/library.db, ~/.pulsepro by default):
   files   every audio file seen: path, size, mtime and SHA-1 (hashed again only when size or mtime change)
-  tracks  one row per audio content (SHA-1): renamed, moved or duplicated files are one track, so its
-          analysis, grid fixes and labels survive. Each stage keeps the version it ran at: a newer
-          analyzer re-runs only the stages that changed.
+  tracks  one row per audio content (SHA-1 of the audio alone, tags left out): renamed, moved,
+          duplicated or re-tagged files are one track, so its analysis, grid fixes and labels survive.
+          Each stage keeps the version it ran at: a newer analyzer re-runs only the stages that changed.
+          A track whose file is gone is kept (missing): the same audio added again is ready at once.
+
+Gemini (paid) listens to a song once in its life, never during a set: `listen` estimates the cost in
+rupees, asks, keeps to a budget and saves each song's labels as it goes.
 
     python -m backend.library prepare [--library DIR] [--workers N] [--retry-failed]
+    python -m backend.library listen [--yes] [--max-inr N]
     python -m backend.library status
 """
 
@@ -106,6 +111,69 @@ def _sha1_file(path: str) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+HASH_VERSION = 1   # what files.sha1 / tracks.sha1 hash: 0 the whole file, 1 its audio alone (audio_sha1)
+
+# MPEG audio Layer III frame sizes: kbps by bitrate index (MPEG-1; MPEG-2 and 2.5), Hz by version bits
+_KBPS = ((0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320),
+         (0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160))
+_HZ = {3: (44100, 48000, 32000), 2: (22050, 24000, 16000), 0: (11025, 12000, 8000)}
+
+
+def _info_frame_len(data: bytes, i: int) -> int:
+    """Length of the MP3 frame at `i` when it is the encoder's Xing / Info / VBRI header (no music: a
+    re-mux or tag tool may rewrite it), else 0."""
+    if len(data) < i + 4:
+        return 0
+    h = int.from_bytes(data[i:i + 4], "big")
+    version, layer, rate, hz, pad = (h >> 19) & 3, (h >> 17) & 3, (h >> 12) & 15, (h >> 10) & 3, (h >> 9) & 1
+    if h >> 21 != 0x7FF or layer != 1 or version == 1 or rate in (0, 15) or hz == 3:
+        return 0
+    n = (144 if version == 3 else 72) * _KBPS[version != 3][rate] * 1000 // _HZ[version][hz] + pad
+    frame = data[i:i + n]
+    return n if any(tag in frame for tag in (b"Xing", b"Info", b"VBRI")) else 0
+
+
+def audio_sha1(path: str) -> str:
+    """SHA-1 of an MP3's audio alone: its ID3v2, APEv2 and ID3v1 tags and the encoder's Xing/Info header
+    frame are left out, so editing tags (a title, cover art, a key from Mixed In Key, the analysis Serato
+    writes into the file) or re-muxing it never makes it another track. Other formats: the whole file."""
+    if not path.lower().endswith(".mp3"):
+        return _sha1_file(path)
+    with open(path, "rb") as f:
+        data = f.read()
+    start, end = 0, len(data)
+    while data[start:start + 3] == b"ID3" and end - start >= 10:          # ID3v2 (possibly more than one)
+        size = sum((data[start + 6 + i] & 0x7F) << (7 * (3 - i)) for i in range(4))
+        start += 10 + size + (10 if data[start + 5] & 0x10 else 0)        # + footer
+    start += _info_frame_len(data, start)
+    if end - start >= 128 and data[end - 128:end - 125] == b"TAG":         # ID3v1
+        end -= 128
+    if end - start >= 32 and data[end - 32:end - 24] == b"APETAGEX":       # APEv2, with its header
+        size = int.from_bytes(data[end - 20:end - 16], "little")
+        end -= size + (32 if int.from_bytes(data[end - 12:end - 8], "little") & 0x80000000 else 0)
+    return hashlib.sha1(data[start:end]).hexdigest()
+
+
+def _migrate_hashes(con: sqlite3.Connection, log=print) -> None:
+    """Tracks found by their whole file's hash are found by their audio's from now on. They keep their
+    id, analysis, grid fixes and labels; two files that differed only in their tags become one track."""
+    if con.execute("PRAGMA user_version").fetchone()[0] >= HASH_VERSION:
+        return
+    moved = 0
+    for t in con.execute("SELECT file_id, path FROM tracks").fetchall():
+        if t["path"] and os.path.exists(t["path"]):
+            try:
+                con.execute("UPDATE tracks SET sha1 = ? WHERE file_id = ?", (audio_sha1(t["path"]), t["file_id"]))
+                moved += 1
+            except sqlite3.IntegrityError:
+                con.execute("UPDATE tracks SET status = 'missing' WHERE file_id = ?", (t["file_id"],))
+    con.execute("DELETE FROM files")       # hashed again, by their audio, at this index
+    con.execute(f"PRAGMA user_version = {HASH_VERSION}")
+    con.commit()
+    if moved:
+        log(f"Fingerprints now cover the audio alone (tag edits don't make a new track): {moved} tracks kept")
 
 
 def scan(root: str) -> List[str]:
@@ -242,6 +310,7 @@ def _status(stages: Dict[str, int], error: Optional[str]) -> str:
 def index(con: sqlite3.Connection, root: str, log=print) -> None:
     """Bring the index in line with the folder: hash new or changed files, one track per audio,
     follow renames and moves, and mark tracks whose files are all gone as missing."""
+    _migrate_hashes(con, log)
     paths = scan(root)
     known = {r["path"]: r for r in con.execute("SELECT * FROM files")}
     hashed = 0
@@ -250,7 +319,7 @@ def index(con: sqlite3.Connection, root: str, log=print) -> None:
         r = known.get(p)
         if r and r["size"] == st.st_size and r["mtime"] == st.st_mtime:
             continue
-        con.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?)", (p, st.st_size, st.st_mtime, _sha1_file(p)))
+        con.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?)", (p, st.st_size, st.st_mtime, audio_sha1(p)))
         hashed += 1
     gone = set(known) - set(paths)
     con.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in gone])
@@ -321,7 +390,10 @@ def prepare(root: Optional[str] = None, workers: Optional[int] = None, retry_fai
             stages = json.loads(t["stages"] or "{}")
             todo = [s for s, v in STAGES.items() if stages.get(s) != v]
             if todo:
-                prior = json.loads(t["analysis"]) if t["analysis"] else labelled.get(t["sha1"])
+                # A new track uploaded to the console before (found by its whole file's hash there)
+                # brings Gemini's labels along
+                prior = json.loads(t["analysis"]) if t["analysis"] else (
+                    labelled.get(t["sha1"]) or (labelled.get(_sha1_file(t["path"])) if labelled else None))
                 jobs.append((t["file_id"], t["path"], todo, prior, stages, t["sha1"], t["title"]))
         # The neural tracker's weights download once, here, rather than in every worker at once; without
         # them (offline, say) this prepare runs without it
@@ -443,6 +515,72 @@ def features_all() -> List[Dict[str, Any]]:
     return [f for _, f in _FEATURES.values() if f]
 
 
+# What Gemini charges for the model that listens (USD per million tokens: input with the audio, output
+# with its thinking), in rupees: what `listen` estimates and reports. Introductory prices until
+# 2026-12-31, doubling on 2027-01-01: update them then, and the rupee rate as it moves.
+GEMINI_USD_PER_M = (0.75, 3.75)
+INR_PER_USD = 96.0
+AUDIO_TOKENS_PER_SEC = 32    # Gemini's audio tokens per second of audio (documented for earlier models)
+EST_TOKENS_OUT = 3000        # labels and thinking per song: a guess, `listen` reports the real counts
+
+
+def inr(tokens_in: float, tokens_out: float) -> float:
+    return (tokens_in * GEMINI_USD_PER_M[0] + tokens_out * GEMINI_USD_PER_M[1]) / 1e6 * INR_PER_USD
+
+
+def unlistened() -> List[Dict[str, Any]]:
+    """Prepared songs Gemini hasn't listened to yet, with the estimated cost (₹) of each."""
+    with closing(_connect()) as con:
+        rows = con.execute("SELECT file_id, title, path, duration FROM tracks WHERE status = 'ready' "
+                           "AND json_extract(analysis, '$.vocal_source') IS NULL").fetchall()
+    return [dict(r, est_inr=inr(AUDIO_TOKENS_PER_SEC * (r["duration"] or 240) + 1000, EST_TOKENS_OUT)) for r in rows]
+
+
+def listen(yes: bool = False, max_inr: Optional[float] = None, log=print, ask=input) -> Dict[str, Any]:
+    """Gemini listens once to every prepared song it hasn't heard and marks where its lead vocal sings.
+    Shows the estimated cost first and asks (unless `yes`), stops before going past `max_inr`, and saves
+    each song as it's done: an interrupted run loses nothing, and no song is ever paid for twice."""
+    from .ai_advisor import get_gemini_api_key, DEFAULT_GEMINI_MODEL
+    from .vocal_listen import listen_for_vocals, apply_vocal_labels
+    todo = unlistened()
+    if not todo:
+        log("Gemini has listened to every prepared song.")
+        return {"listened": 0, "inr": 0.0}
+    key = get_gemini_api_key()
+    if not key:
+        log("No Gemini key (GEMINI_API_KEY in .env): nothing listened to.")
+        return {"listened": 0, "inr": 0.0}
+    estimate = sum(t["est_inr"] for t in todo)
+    log(f"{len(todo)} songs Gemini hasn't listened to: about ₹{estimate:.0f}, once (never again for these songs)"
+        + (f"; budget ₹{max_inr:.0f}" if max_inr is not None else ""))
+    if not yes and ask("Go ahead? [y/N] ").strip().lower() != "y":
+        log("Nothing listened to.")
+        return {"listened": 0, "inr": 0.0}
+    spent, done = 0.0, 0
+    for n, t in enumerate(todo, 1):
+        if max_inr is not None and spent + t["est_inr"] > max_inr:
+            log(f"Stopped at the ₹{max_inr:.0f} budget: {len(todo) - n + 1} songs left for next time")
+            break
+        row = get(t["file_id"])
+        an = row["analysis"] if row else None
+        if not an or not an.get("section_map"):
+            continue
+        usage: Dict[str, Any] = {}
+        labels, err = listen_for_vocals(t["path"], an["section_map"], key, DEFAULT_GEMINI_MODEL, usage=usage)
+        cost = inr(usage.get("promptTokenCount") or 0,
+                   (usage.get("candidatesTokenCount") or 0) + (usage.get("thoughtsTokenCount") or 0))
+        spent += cost
+        if labels is None:
+            log(f"[{n}/{len(todo)}] {t['title']} · not labelled ({err}) · ₹{cost:.2f}")
+            continue
+        apply_vocal_labels(an, labels, DEFAULT_GEMINI_MODEL)
+        save_analysis(t["file_id"], an)
+        done += 1
+        log(f"[{n}/{len(todo)}] {t['title']} · lead vocal in {sum(labels)}/{len(labels)} sections · ₹{cost:.2f}")
+    log(f"Gemini listened to {done} songs for ₹{spent:.2f}")
+    return {"listened": done, "inr": round(spent, 2)}
+
+
 def main(argv=None) -> None:
     ap = argparse.ArgumentParser(prog="python -m backend.library", description=__doc__.split("\n\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -450,8 +588,14 @@ def main(argv=None) -> None:
     p.add_argument("--library", help="the music folder (default: $PULSE_LIBRARY)")
     p.add_argument("--workers", type=int, help="tracks at a time (0: in this process)")
     p.add_argument("--retry-failed", action="store_true", help="try tracks that failed before again")
+    li = sub.add_parser("listen", help="Gemini (paid) listens once to each prepared song it hasn't heard")
+    li.add_argument("--yes", action="store_true", help="don't ask before spending")
+    li.add_argument("--max-inr", type=float, help="stop before spending more than this many rupees")
     sub.add_parser("status", help="track counts, and tracks to check")
     args = ap.parse_args(argv)
+    if args.cmd == "listen":
+        listen(args.yes, args.max_inr, log=lambda m: print(m, flush=True))
+        return
     if args.cmd == "prepare":
         if not (args.library or enabled()):
             ap.error("give --library DIR or set PULSE_LIBRARY")
@@ -464,6 +608,11 @@ def main(argv=None) -> None:
         print(f"  check {t['title']}: {', '.join(t['flags'])}")
     for t in res["failed"]:
         print(f"  failed {t['title']}: {t['error']}")
+    from .ai_advisor import get_gemini_api_key
+    todo = unlistened() if get_gemini_api_key() else []
+    if todo:
+        print(f"  {len(todo)} songs Gemini hasn't listened to (about ₹{sum(t['est_inr'] for t in todo):.0f}, once): "
+              "python -m backend.library listen")
 
 
 if __name__ == "__main__":

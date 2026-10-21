@@ -16,9 +16,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from .ai_advisor import DEFAULT_GEMINI_MODEL, call_gemini_api
 
 
-def listen_for_vocals(path: str, sections: List[Dict[str, Any]], api_key: str,
-                      model: str = DEFAULT_GEMINI_MODEL) -> Tuple[Optional[List[bool]], Optional[str]]:
-    """One bool per section (True: lead vocal audible for a good part of it), or (None, error)."""
+def listen_for_vocals(path: str, sections: List[Dict[str, Any]], api_key: str, model: str = DEFAULT_GEMINI_MODEL,
+                      usage: Optional[Dict[str, Any]] = None) -> Tuple[Optional[List[bool]], Optional[str]]:
+    """One bool per section (True: lead vocal audible for a good part of it), or (None, error).
+    `usage` (a dict) receives Gemini's token counts: what the listen cost."""
     if not sections:
         return None, "no sections"
     # Small mono MP3 (a 5 min track is ~1 MB); -vn drops embedded cover art
@@ -27,7 +28,7 @@ def listen_for_vocals(path: str, sections: List[Dict[str, Any]], api_key: str,
     if not mp3:
         return None, "could not decode audio"
     listing = "\n".join(f"{i}: {s['time']:.1f}s - {s['time'] + s['duration']:.1f}s" for i, s in enumerate(sections))
-    usage: Dict[str, Any] = {}
+    usage = {} if usage is None else usage
     res, err = call_gemini_api(
         "Listen to this whole dance track. For EACH numbered section below, say whether a human LEAD VOCAL "
         "(sung or rapped words, not instrumental, pads or one short vocal chop) is audible for a good part "

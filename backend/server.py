@@ -579,6 +579,10 @@ async def listen_vocals(request: Request):
             carry_vocal_labels(an, other)
             if an.get("vocal_source"):
                 await persist_analysis(file_id, an)
+    if not an.get("vocal_source") and library.enabled() and await run_in_threadpool(library.get, file_id):
+        # Local mode: Gemini (paid) listens once per song before the set, never during it
+        return JSONResponse(content={"status": "skipped",
+                                     "reason": "local mode: run python -m backend.library listen before the set"})
     if not an.get("vocal_source"):
         key = get_gemini_api_key()
         path = await local_track(file_id)

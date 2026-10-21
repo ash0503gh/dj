@@ -54,7 +54,9 @@ def lib(tmp_path, monkeypatch):
                 "grid": {"bpm": 124.0, "period": 60 / 124.0, "first_beat": 0.1, "downbeat_offset": 0,
                          "phrase_offset_bars": 0, "confidence": 0.9, "tempo_stable": not drift,
                          "drift_ms": 40.0 if drift else 2.0, "downbeat_source": "neural" if nn else "grid"},
-                "section_map": [], "suggested_cue_intro": 0.1, "suggested_cue_outro": 150.0,
+                "section_map": [{"time": 0.1, "duration": 7.74, "has_vocals": True, "vocal_score": 0.6},
+                                {"time": 7.84, "duration": 7.74, "has_vocals": True, "vocal_score": 0.6}],
+                "suggested_cue_intro": 0.1, "suggested_cue_outro": 150.0,
                 "analysis_version": library.ANALYSIS_VERSION}
 
     def fake_loudness(path):
@@ -256,3 +258,90 @@ def test_grid_fix_survives_reanalysis_and_grid_ok_clears_flags(lib, monkeypatch)
     prep()
     an = library.get(fid)["analysis"]
     assert an["grid"]["downbeat_offset"] == 1 and an["grid_confirmed"] and library.ready_tracks()[0]["flags"] == []
+
+
+def id3(tags: bytes) -> bytes:
+    """An ID3v2.3 tag block holding `tags` (as the frame data: enough to test skipping it)."""
+    n = len(tags)
+    return b"ID3\x03\x00\x00" + bytes([(n >> 21) & 0x7F, (n >> 14) & 0x7F, (n >> 7) & 0x7F, n & 0x7F]) + tags
+
+
+def test_audio_fingerprint_ignores_tags(tmp_path):
+    audio = b"\xff\xfb" + bytes(range(256)) * 40
+    plain, tagged, retagged, other = (tmp_path / f"{n}.mp3" for n in ("p", "t", "r", "o"))
+    plain.write_bytes(audio)
+    tagged.write_bytes(id3(b"TIT2 My Song" * 50) + audio + b"TAG" + bytes(125))
+    # APEv2 footer: its size counts the items and the footer (no header here)
+    ape = b"APETAGEX" + (2000).to_bytes(4, "little") + (8 + 32).to_bytes(4, "little") + bytes(16)
+    retagged.write_bytes(id3(b"GEOB Serato Markers" * 300) + audio + b"x" * 8 + ape)
+    other.write_bytes(id3(b"TIT2 My Song" * 50) + audio[:-1] + b"\x00")
+    h = library.audio_sha1
+    assert h(str(plain)) == h(str(tagged)) == h(str(retagged)) != h(str(other))
+
+
+def test_retagged_file_stays_the_same_track_for_free(lib):
+    music, calls = lib
+    path = music / "song.mp3"
+    path.write_bytes(b"\xff\xfb audio frames")
+    prep()
+    fid = library.ready_tracks()[0]["file_id"]
+    calls.clear()
+    path.write_bytes(id3(b"TKEY 8A, written by Mixed In Key") + b"\xff\xfb audio frames")
+    prep()
+    assert calls == [] and [t["file_id"] for t in library.ready_tracks()] == [fid]
+
+
+def test_old_whole_file_fingerprints_migrate_keeping_everything(lib):
+    music, calls = lib
+    path = music / "song.mp3"
+    path.write_bytes(id3(b"TIT2 Song") + b"\xff\xfb audio frames")
+    prep()
+    fid = library.ready_tracks()[0]["file_id"]
+    # As an index from before audio fingerprints left it: whole-file hashes, version 0
+    con = library._connect()
+    whole = library._sha1_file(str(path))
+    con.execute("UPDATE tracks SET sha1 = ?", (whole,))
+    con.execute("UPDATE files SET sha1 = ?", (whole,))
+    con.execute("PRAGMA user_version = 0")
+    con.commit()
+    calls.clear()
+    prep()
+    assert calls == [] and [t["file_id"] for t in library.ready_tracks()] == [fid]
+    assert library.get(fid)["sha1"] == library.audio_sha1(str(path))
+
+
+def test_listen_once_with_estimate_budget_and_no_repeat(lib, monkeypatch):
+    music, _ = lib
+    for n in ("a", "b", "c"):
+        (music / f"{n}.mp3").write_bytes(f"audio {n}".encode())
+    prep()
+    heard = []
+
+    def fake_listen(path, sections, key, model, usage=None):
+        heard.append(os.path.basename(path))
+        usage.update(promptTokenCount=8000, candidatesTokenCount=500, thoughtsTokenCount=1500)
+        return [True, False], None
+
+    monkeypatch.setattr("backend.vocal_listen.listen_for_vocals", fake_listen)
+    monkeypatch.setattr("backend.ai_advisor.get_gemini_api_key", lambda *a: "key")
+    assert len(library.unlistened()) == 3 and all(t["est_inr"] > 0 for t in library.unlistened())
+
+    assert library.listen(log=lambda m: None, ask=lambda q: "n")["listened"] == 0 and heard == []
+    one = library.inr(8000, 2000)
+    res = library.listen(log=lambda m: None, ask=lambda q: "y", max_inr=1.5 * library.unlistened()[0]["est_inr"])
+    assert res["listened"] == 1 and res["inr"] == round(one, 2)            # stopped at the budget
+    res = library.listen(yes=True, log=lambda m: None)
+    assert res["listened"] == 2 and len(heard) == 3 and library.unlistened() == []
+    assert library.listen(yes=True, log=lambda m: None)["listened"] == 0 and len(heard) == 3   # never twice
+    an = library.get(library.ready_tracks()[0]["file_id"])["analysis"]
+    assert an["vocal_source"].startswith("gemini:") and [s["has_vocals"] for s in an["section_map"]] == [True, False]
+
+
+def test_console_never_pays_for_listening_in_local_mode(lib, monkeypatch):
+    music, _ = lib
+    (music / "a.mp3").write_bytes(b"audio a")
+    prep()
+    monkeypatch.setattr("backend.vocal_listen.listen_for_vocals", lambda *a, **k: pytest.fail("Gemini called"))
+    from backend import server
+    fid = library.ready_tracks()[0]["file_id"]
+    assert TestClient(server.app).post("/api/listen-vocals", json={"file_id": fid}).json()["status"] == "skipped"

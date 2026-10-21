@@ -11,6 +11,9 @@ gig, Serato/rekordbox style. Take it online afterwards on the same code.
 - **One codebase.** Local and online are two settings of the same server and page, not two products.
 - **Prepared, not improvised.** Every track is fully analyzed (later: stems, neural grid, key) before it
   can go on a deck. Slow, accurate analysis is affordable because it happens before the gig.
+- **Once per song, and nothing paid without asking.** Songs are fingerprinted on their audio, so tag
+  edits and renames never re-process them; anything paid (Gemini listening) runs only on request, with
+  its cost shown first and a budget.
 - **What is measured is what plays.** Mixes are rendered and measured offline from the exact buffers and
   automation the live console plays. Every change below keeps that true.
 - **Every change is measured.** A benchmark of real track pairs from the library is the yardstick
