@@ -756,6 +756,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function loadTrackIntoDeck(deckNum, track) {
     resetDeckEQs(deckNum);
+    showGridFlags(deckNum, track);
     if (trackPickers[deckNum]) trackPickers[deckNum].showTrack(track.title || track.filename);
     track.hot_cues = computeTrackHotCues(track);
 
@@ -895,7 +896,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const data = await res.json();
       if (data.status === 'success' && data.track) {
         loadTrackIntoDeck(isDeck1 ? 1 : 2, data.track);
-        transitionStatusBanner.textContent = `${deckName}: ${TrackPicker.cleanTitle(data.track.title || fileId).toUpperCase()} LOADED & READY`;
+        transitionStatusBanner.textContent = `${deckName}: ${TrackPicker.cleanTitle(data.track.title || fileId).toUpperCase()} LOADED & READY` +
+          ((data.track.flags || []).length ? ' · CHECK ITS GRID (GRID MENU)' : '');
       } else {
         transitionStatusBanner.textContent = `FAILED TO LOAD: ${data.detail || 'Unknown error'}`;
       }
@@ -1756,10 +1758,57 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   });
 
+  // ─── Grid check: a prepared track whose grid is worth a look (CHECK GRID, library.flags_for) ───
+  const GRID_FLAG_TEXT = {
+    grid_drift: 'the kicks wander off the grid',
+    grid_fit: 'few beats land on the grid',
+    beats_disagree: 'the neural beat tracker hears other beats',
+  };
+  /** The deck's GRID chip reads CHECK GRID for a flagged track, and its menu says why. */
+  function showGridFlags(deckNum, track) {
+    const strip = document.querySelector(`.grid-nudge-strip[data-deck="${deckNum}"]`);
+    if (!strip) return;
+    const flags = (track && track.flags) || [];
+    const menu = strip.closest('.grid-menu');
+    const note = strip.querySelector('.grid-check-note');
+    if (menu) {
+      menu.classList.toggle('flagged', flags.length > 0);
+      menu.querySelector('summary').textContent = flags.length ? 'CHECK GRID' : 'GRID';
+    }
+    if (note) {
+      note.hidden = !flags.length;
+      note.textContent = flags.length ? `Check: ${flags.map(f => GRID_FLAG_TEXT[f] || f).join('; ')}. ` +
+        'Listen against the grid, move it if needed, then GRID OK.' : '';
+    }
+  }
+
   // ─── Manual beat-grid correction (persisted in the server's analysis cache) ───
   document.querySelectorAll('.grid-nudge-strip').forEach(strip => {
     const deckNum = parseInt(strip.dataset.deck, 10);
-    strip.querySelectorAll('.btn-grid').forEach(btn => {
+    const ok = strip.querySelector('.btn-grid-ok');
+    if (ok) {
+      ok.addEventListener('click', async () => {
+        const track = (deckNum === 1) ? track1Data : track2Data;
+        if (!track || !track.grid) {
+          transitionStatusBanner.textContent = `DECK ${deckNum}: NO ANALYZED GRID YET`;
+          return;
+        }
+        try {
+          const res = await fetch('/api/grid-confirm', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ file_id: track.file_id }),
+          });
+          if (!res.ok) throw new Error(`Server returned ${res.status}`);
+          track.flags = (await res.json()).flags;
+          showGridFlags(deckNum, track);
+          loadAvailableTracksDropdown();   // the browser drops its CHECK GRID tag
+          transitionStatusBanner.textContent = `DECK ${deckNum} GRID CONFIRMED`;
+        } catch (e) {
+          transitionStatusBanner.textContent = `DECK ${deckNum} GRID CONFIRM FAILED: ${e.message}`;
+        }
+      });
+    }
+    strip.querySelectorAll('.btn-grid:not([data-confirm])').forEach(btn => {
       btn.addEventListener('click', async (ev) => {
         const dir = ev.shiftKey ? -1 : 1;  // Shift-click moves the downbeat / phrase backwards
         const track = (deckNum === 1) ? track1Data : track2Data;
@@ -1783,6 +1832,7 @@ document.addEventListener('DOMContentLoaded', () => {
           Object.assign(track, data.track);
           track.hot_cues = computeTrackHotCues(track);
           (deckNum === 1 ? wave1 : wave2).loadTrack(track);
+          showGridFlags(deckNum, track);
           const g = track.grid;
           transitionStatusBanner.textContent = `DECK ${deckNum} GRID: first beat ${(g.first_beat * 1000).toFixed(1)} ms, ` +
             `downbeat on beat ${g.downbeat_offset + 1}, phrases from bar ${g.phrase_offset_bars + 1}`;

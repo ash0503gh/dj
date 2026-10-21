@@ -4,6 +4,10 @@ change and compare.
 
   Library      prepared tracks; whose kicks wander off their grid (grid check) and how far; how far
                apart the tracks' loudness sits (what the trim has to make up)
+  Tags         against the BPM and key the files' own tags give (DJ software and stores write them):
+               the grid's BPM, the key used for mixing and the analyzer's old key estimate
+  Neural       what the neural beat tracker decided: downbeats it moved, tempos it refitted or disputed,
+               how much of each track the grid and its beats agree on
   Pairs        every pair of prepared tracks: share that can blend (tempos within 12%, at their own,
                half or double tempo), share 12-20% apart (tempo ramps, Phase 5, would let them blend),
                share only a switch can join; keys that sit together among the blends; tracks with no
@@ -48,6 +52,43 @@ def library_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
         "body_lufs": {"p10": _pct(body, 10), "median": _pct(body, 50), "p90": _pct(body, 90)},
         # The trim reaches 6 dB: a track further than that from the library's middle can't be matched to it
         "past_trim_reach": sum(1 for v in body if mid is not None and abs(v - mid) > 6),
+    }
+
+
+def tags_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+    keyed = [a for a in analyses if (a.get("tags") or {}).get("camelot")]
+    timed = [a for a in analyses if (a.get("tags") or {}).get("bpm") and a.get("bpm")]
+
+    def keys(field):
+        hits = [a for a in keyed if a.get(field)]
+        if not hits:
+            return None
+        same = sum(a[field] == a["tags"]["camelot"] for a in hits)
+        mixes = sum(next_track.key_severity(a[field], a["tags"]["camelot"]) == 0 for a in hits)
+        return {"tracks": len(hits), "same": round(same / len(hits), 3), "compatible": round(mixes / len(hits), 3)}
+
+    bpm_ok = [any(abs(a["bpm"] * m / a["tags"]["bpm"] - 1) <= 0.01 for m in (1, 2, 0.5)) for a in timed]
+    return {
+        "key_tagged": len(keyed),
+        "key_now": keys("camelot"),         # the key mixes use (Essentia's when it ran)
+        "key_old": keys("key_ks"),          # the analyzer's own estimate
+        "bpm_tagged": len(timed),
+        "bpm_agree": round(sum(bpm_ok) / len(timed), 3) if timed else None,   # within 1%, or at half/double
+        "bpm_disagree_titles": [a.get("title") for a, ok in zip(timed, bpm_ok) if not ok][:10],
+    }
+
+
+def neural_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+    run = [a for a in analyses if a.get("nn_beats")]
+    grids = [a.get("grid") or {} for a in run]
+    agree = [g["nn_agree"] for g in grids if g.get("nn_agree") is not None]
+    return {
+        "tracks": len(run),
+        "downbeat_by_neural": sum(g.get("downbeat_source") == "neural" for g in grids),
+        "tempo_refitted": sum(g.get("tempo_source") == "neural" for g in grids),
+        "tempo_conflict": sum(bool(g.get("tempo_conflict")) for g in grids),
+        "agree": {"median": round(float(np.median(agree)), 3) if agree else None,
+                  "p10": round(float(np.percentile(agree, 10)), 3) if agree else None},
     }
 
 
@@ -115,11 +156,12 @@ def report() -> Dict[str, Any]:
     with closing(library._connect()) as con:
         rows = con.execute("SELECT analysis FROM tracks WHERE status = 'ready' AND analysis IS NOT NULL").fetchall()
     analyses = [json.loads(r["analysis"]) for r in rows]
-    return {"library": library_report(analyses), "pairs": pairs_report(analyses), "played": played_report(load_ratings())}
+    return {"library": library_report(analyses), "tags": tags_report(analyses), "neural": neural_report(analyses),
+            "pairs": pairs_report(analyses), "played": played_report(load_ratings())}
 
 
 def _fmt(rep: Dict[str, Any]) -> str:
-    L, P, R = rep["library"], rep["pairs"], rep["played"]
+    L, T, N, P, R = rep["library"], rep["tags"], rep["neural"], rep["pairs"], rep["played"]
     pc = lambda v: "-" if v is None else f"{100 * v:.0f}%"  # noqa: E731
     lines = [
         f"LIBRARY  {L['tracks']} tracks, {L['grid_checked']} grid-checked",
@@ -129,6 +171,16 @@ def _fmt(rep: Dict[str, Any]) -> str:
     ] + [f"    {w['title']}: {w['spread_ms']} ms" for w in L["worst_grids"]] + [
         f"  body loudness: p10 {L['body_lufs']['p10']} / median {L['body_lufs']['median']} / "
         f"p90 {L['body_lufs']['p90']} LUFS; {L['past_trim_reach']} tracks past the trim's 6 dB",
+        (f"TAGS  key tags on {T['key_tagged']} tracks: key now "
+         + (f"{pc(T['key_now']['same'])} same, {pc(T['key_now']['compatible'])} mix together" if T["key_now"] else "-")
+         + "; old estimate "
+         + (f"{pc(T['key_old']['same'])} same, {pc(T['key_old']['compatible'])} mix together" if T["key_old"] else "-")),
+        f"  BPM tags on {T['bpm_tagged']} tracks: grid agrees on {pc(T['bpm_agree'])}"
+        + (f" (not: {', '.join(T['bpm_disagree_titles'])})" if T["bpm_disagree_titles"] else ""),
+        (f"NEURAL  {N['tracks']} tracks: downbeat set by it on {N['downbeat_by_neural']}, tempo refitted on "
+         f"{N['tempo_refitted']}, disputed on {N['tempo_conflict']}; its beats on the grid: median "
+         f"{pc(N['agree']['median'])}, p10 {pc(N['agree']['p10'])}")
+        if N["tracks"] else "NEURAL  not run (install requirements-local.txt: ./setup_mac.sh)",
         f"PAIRS  {P['pairs']} ordered pairs: blend {pc(P['blend'])}, 12-20% apart {pc(P['ramp_12_20'])}, "
         f"switch only {pc(P['switch_only'])}; keys together in {pc(P['blend_keys_together'])} of blends",
         f"  {P['no_blend_partner']} tracks with no track to blend with"

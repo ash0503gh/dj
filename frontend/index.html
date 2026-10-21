@@ -6,7 +6,7 @@
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=15.21">
+  <link rel="stylesheet" href="/css/style.css?v=15.22">
 </head>
 <body>
   <div class="dj-console">
@@ -113,10 +113,12 @@
             <summary title="Beat grid correction">GRID</summary>
             <div class="grid-nudge-strip" data-deck="1">
               <span class="grid-nudge-label">MOVE BEAT GRID</span>
+              <span class="grid-check-note" hidden></span>
               <button type="button" class="btn-grid" data-shift-ms="-5" title="Move beat grid 5 ms earlier">−5 ms</button>
               <button type="button" class="btn-grid" data-shift-ms="5" title="Move beat grid 5 ms later">+5 ms</button>
               <button type="button" class="btn-grid" data-shift-beats="1" title="Downbeat on the wrong beat: move the 1 one beat later (Shift-click: earlier)">1 → BEAT</button>
               <button type="button" class="btn-grid" data-shift-bars="1" title="Phrases start on the wrong bar: move phrase start one bar later (Shift-click: earlier)">PHRASE → BAR</button>
+              <button type="button" class="btn-grid btn-grid-ok" data-confirm="1" title="The grid is right (beats, the 1, phrases): clear CHECK GRID">GRID OK</button>
             </div>
           </details>
           <span id="d1-state" class="deck-state">EMPTY</span>
@@ -277,10 +279,12 @@
             <summary title="Beat grid correction">GRID</summary>
             <div class="grid-nudge-strip" data-deck="2">
               <span class="grid-nudge-label">MOVE BEAT GRID</span>
+              <span class="grid-check-note" hidden></span>
               <button type="button" class="btn-grid" data-shift-ms="-5" title="Move beat grid 5 ms earlier">−5 ms</button>
               <button type="button" class="btn-grid" data-shift-ms="5" title="Move beat grid 5 ms later">+5 ms</button>
               <button type="button" class="btn-grid" data-shift-beats="1" title="Downbeat on the wrong beat: move the 1 one beat later (Shift-click: earlier)">1 → BEAT</button>
               <button type="button" class="btn-grid" data-shift-bars="1" title="Phrases start on the wrong bar: move phrase start one bar later (Shift-click: earlier)">PHRASE → BAR</button>
+              <button type="button" class="btn-grid btn-grid-ok" data-confirm="1" title="The grid is right (beats, the 1, phrases): clear CHECK GRID">GRID OK</button>
             </div>
           </details>
           <span id="d2-state" class="deck-state">EMPTY</span>
@@ -622,16 +626,16 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=15.21"></script>
-  <script src="/js/mix_planner.js?v=15.21"></script>
-  <script src="/js/mix_blocks.js?v=15.21"></script>
-  <script src="/js/transition_lab.js?v=15.21"></script>
-  <script src="/js/mobile.js?v=15.21"></script>
-  <script src="/js/jog_wheel.js?v=15.21"></script>
-  <script src="/js/waveform.js?v=15.21"></script>
-  <script src="/js/knobs.js?v=15.21"></script>
-  <script src="/js/track_picker.js?v=15.21"></script>
-  <script src="/js/controller.js?v=15.21"></script>
-  <script src="/js/app.js?v=15.21"></script>
+  <script src="/js/audio_engine.js?v=15.22"></script>
+  <script src="/js/mix_planner.js?v=15.22"></script>
+  <script src="/js/mix_blocks.js?v=15.22"></script>
+  <script src="/js/transition_lab.js?v=15.22"></script>
+  <script src="/js/mobile.js?v=15.22"></script>
+  <script src="/js/jog_wheel.js?v=15.22"></script>
+  <script src="/js/waveform.js?v=15.22"></script>
+  <script src="/js/knobs.js?v=15.22"></script>
+  <script src="/js/track_picker.js?v=15.22"></script>
+  <script src="/js/controller.js?v=15.22"></script>
+  <script src="/js/app.js?v=15.22"></script>
 </body>
 </html>

@@ -80,16 +80,27 @@ Learned: an incoming that drifts in its intro can't blend even for 8 bars (its k
 Done when: no benchmark blend has a flam over 10 ms, loudness steps stay within ~1 LU, and a pitched
 incoming never plays.
 
-### Phase 3: Better analysis models, Tier 3a (M)
+### Phase 3: Better analysis models, Tier 3a (M) · built, the neural model to verify on the Mac
 
-- Neural beat and downbeat tracker (e.g. Beat This!, ISMIR 2024) as a prepare stage, on the Mac's GPU
-  (PyTorch MPS). The constant-grid fit stays for quantized tracks, where it is more precise; the neural
-  tempo map takes over when drift is high. The main win is correct downbeats.
-- Neural key detection over the whole track, later on the harmonic stem.
-- A grid check view for flagged tracks: listen, nudge, confirm (builds on `/api/grid-adjust`).
+- **Neural beats** (Beat This!, ISMIR 2024) as an optional prepare stage on the Mac's GPU (PyTorch MPS,
+  CPU fallback). The constant grid stays the grid; the neural beats choose its downbeat when they agree
+  on one phase, refit it when they hear the tempo at an odd ratio and the kicks fit that grid at least
+  80% as well (otherwise the track is flagged), and measure how much of the track the grid follows.
+  Tested with given beats (true and deliberately wrong) on synthetic tracks; the model itself couldn't
+  run in the build environment (its weights host is blocked there), so its first real run is the Mac's.
+- **Key** over the whole track with Essentia's EDM profile, the old estimate kept as `key_ks`. On
+  synthetic tracks it named the right Camelot number every time (as the relative major of a minor
+  progression: 8B for 8A), the old one 4 of 5. Real tracks are judged against their files' key tags.
+- **File tags**: BPM and key from ID3 (Mixed In Key, rekordbox, Beatport), in every common notation
+  including Open Key, compared in the benchmark.
+- **Grid review**: CHECK GRID on the deck's GRID chip with the reason, GRID OK to confirm; fixed or
+  confirmed grids survive re-analysis at the same tempo. Drift can only be confirmed for now: Phase 5's
+  time maps straighten it.
+- Not done: the neural tempo map isn't used to follow drift yet (Phase 5 uses it); a neural key model
+  (added only if the TAGS line shows Essentia's falls short); key on the harmonic stem (after Phase 4).
 
 Done when: downbeat errors on a hand-checked set of library tracks are near zero, and key agreement
-with a reference (Mixed In Key, rekordbox) is clearly above today's.
+with the files' tags is clearly above the old estimate's (the benchmark's TAGS line).
 
 ### Phase 4: Stems, Tier 3b (M-L)
 

@@ -42,9 +42,11 @@ def _noise_hit(rng, dur, decay, lo, hi):
     return sosfilt(sos, n) * np.exp(-np.arange(len(n)) / SR / decay)
 
 
-def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0.9, seed=0, drift_bpm=0.0):
+def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0.9, seed=0, drift_bpm=0.0,
+               transpose=0):
     """Returns (audio, truth) where truth has beat_times, downbeat_times, phrase_16_times.
-    drift_bpm: the tempo moves linearly from `bpm` to `bpm + drift_bpm` over the track (a live drummer)."""
+    drift_bpm: the tempo moves linearly from `bpm` to `bpm + drift_bpm` over the track (a live drummer).
+    transpose: semitones up from the A minor progression (Am F C G); truth["key_pc"] is the tonic's pitch class."""
     rng = np.random.default_rng(seed)
     P = 60.0 / bpm
     sections = [('intro', 16), ('verse', 16), ('breakdown', 16), ('drop', 32), ('outro', 16)]
@@ -79,7 +81,7 @@ def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0
         if full and beat_in_bar in (1, 3):
             _add(buf, t, clap)
         if full or sec == 'breakdown' or sec == 'pre':
-            chord = CHORDS[bar % 4] if bar >= 0 else CHORDS[3]
+            chord = [m + transpose for m in (CHORDS[bar % 4] if bar >= 0 else CHORDS[3])]
             if beat_in_bar == 0 or k == 0:
                 ln = int(4 * P * SR)
                 tt = np.arange(ln) / SR
@@ -98,5 +100,5 @@ def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0
     bar_idx = np.arange(len(downbeats))
     phrase16 = downbeats[(bar_idx - pre_bars) % 16 == 0]
     truth = {"bpm": bpm, "beat_times": beats, "downbeat_times": downbeats,
-             "phrase_16_times": phrase16, "drop_time": downbeats[pre_bars + 48]}
+             "phrase_16_times": phrase16, "drop_time": downbeats[pre_bars + 48], "key_pc": (9 + transpose) % 12}
     return (buf * 0.8).astype(np.float32), truth

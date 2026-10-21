@@ -9,7 +9,7 @@ librosa = LazyModule("librosa")
 import soundfile as sf
 import os
 import gc
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 CAMELOT_MAP = {
     # Minor keys (A)
@@ -603,6 +603,43 @@ def _odd_ratio_check(env: np.ndarray, fps: float, coarse: float, fit: Dict[str, 
     return best
 
 
+def _tempo_relation(bpm: float, nn_bpm: float, tol: float = 0.03):
+    """How the grid's tempo sits against the neural tracker's: ("same", m) when equal or a power-of-two
+    multiple (the same beat counted at another metrical level), ("odd", m) at 3/4, 4/3, 2/3, 3/2, 3 or
+    1/3 (one of them counts triplet or dotted hits as beats), (None, None) when unrelated."""
+    r = bpm / nn_bpm
+    for kind, ms in (("same", (1, 2, 0.5, 4, 0.25)), ("odd", (0.75, 4 / 3, 2 / 3, 1.5, 3, 1 / 3))):
+        for m in ms:
+            if abs(r / m - 1) <= tol:
+                return kind, m
+    return None, None
+
+
+def _vote_downbeat(first_beat: float, period: float, downbeats, tol: float = 0.07):
+    """Which of the grid's four beat phases the neural downbeats land on: (offset, share of them on it),
+    or (None, share) when no phase wins clearly (half of them, twice the runner-up)."""
+    votes = np.zeros(4)
+    for d in downbeats:
+        k = int(round((d - first_beat) / period))
+        if abs(d - (first_beat + k * period)) <= tol:
+            votes[k % 4] += 1
+    if not len(downbeats):
+        return None, 0.0
+    order = np.argsort(votes)
+    best, second = int(order[-1]), float(votes[order[-2]])
+    share = float(votes[best] / len(downbeats))
+    return (best if share >= 0.5 and votes[best] >= 2 * second else None), round(share, 3)
+
+
+def _beat_agreement(first_beat: float, period: float, beats, tol: float = 0.05) -> float:
+    """Share of the neural beats within `tol` s of one of the grid's beats (`period` apart)."""
+    b = np.asarray(beats, float)
+    if not len(b):
+        return 0.0
+    k = np.round((b - first_beat) / period)
+    return round(float(np.mean(np.abs(b - (first_beat + k * period)) <= tol)), 3)
+
+
 def _refine_beat_offset(y: np.ndarray, sr: int, beat_times: np.ndarray, period_sec: float, unclear=0.0):
     """Place the grid on the kick TRANSIENT rather than the spectral-flux frame.
     Averages the low-band (< 200 Hz) Hilbert envelope around every kick beat and returns
@@ -732,9 +769,10 @@ def build_grid_times(grid: Dict[str, Any], duration: float) -> Dict[str, List[fl
     }
 
 
-def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
+def estimate_grid(y: np.ndarray, sr: int, duration: float, nn: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Full-track grid: BPM (0.01), kick-aligned anchor, downbeat phase, phrase phase,
-    structural boundaries and drops."""
+    structural boundaries and drops. `nn`: a neural beat tracker's beats (beats_nn.py) as a second
+    opinion on an odd-ratio tempo and on which beat is the 1."""
     fps = sr / ONSET_HOP
     logS, freqs, env_low, env_lowmid, env_full = _onset_envelopes(y, sr)
 
@@ -750,6 +788,18 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
             coarse *= 2
     # Kick + snare envelope (no hats), so the grid locks to the beat, not the off-beat hat.
     fit = _odd_ratio_check(env_lowmid, fps, coarse, _fit_constant_grid(env_lowmid, fps, coarse))
+    # A neural tracker hearing the beat at an odd ratio of this one (3/4, 4/3...): triplet or dotted hits
+    # may have misled the onset envelope (the tracker hears the meter). The grid is fitted at its tempo
+    # instead when the kicks land on that grid nearly as well; otherwise the two disagree, to be checked
+    nn = nn or {}
+    tempo_source, grid_bpm_before, tempo_conflict = "grid", None, False
+    if nn.get("nn_bpm") and _tempo_relation(fps * 60.0 / fit["period_frames"], nn["nn_bpm"])[0] == "odd":
+        alt = _fit_constant_grid(env_lowmid, fps, _fold_bpm(nn["nn_bpm"]))
+        if alt["confidence"] >= 0.8 * fit["confidence"]:
+            grid_bpm_before = round(fps * 60.0 / fit["period_frames"], 2)
+            fit, tempo_source = alt, "neural"
+        else:
+            tempo_conflict = True
     period = fit["period_frames"] / fps
     # Flux frame i measures the change from frame i-1 to i: centre it half a hop earlier.
     anchor = (fit["anchor_frames"] - 0.5) / fps
@@ -772,6 +822,19 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
                 + _z(_boundary_novelty(beat_chroma, 2, cosine=True))
                 + _z(_boundary_novelty(beat_mel, 4)))
     downbeat_offset = _best_offset(nov_beat, 4, range(4)) if n_beats >= 16 else 0
+    # Which beat is the 1: the neural downbeats decide when they agree on one of the grid's phases
+    downbeat_source, nn_downbeat_share = "grid", None
+    if nn.get("nn_downbeats"):
+        voted, nn_downbeat_share = _vote_downbeat(first_beat, period, nn["nn_downbeats"])
+        if voted is not None:
+            downbeat_offset, downbeat_source = voted, "neural"
+    # How much of the track the grid follows, by the neural beats (at the grid's level, or its half beats
+    # when the tracker counts twice as fast)
+    nn_agree = None
+    if nn.get("nn_beats") and nn.get("nn_bpm"):
+        level = _tempo_relation(bpm, nn["nn_bpm"])
+        step = period / 2 if level == ("same", 0.5) else period
+        nn_agree = _beat_agreement(first_beat, step, nn["nn_beats"])
 
     # ── Phrases: sections change on 8/16/32-bar boundaries ──
     bar_t = beat_t[downbeat_offset::4]
@@ -825,6 +888,12 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
             "confidence": round(fit["confidence"], 3),
             "drift_ms": round(fit["drift_ms"], 1),
             "tempo_stable": fit["drift_ms"] < 25.0,
+            "tempo_source": tempo_source,          # "neural": fitted at the neural tracker's tempo
+            "tempo_before_bpm": grid_bpm_before,   # the odd-ratio tempo it replaced
+            "downbeat_source": downbeat_source,    # "neural": the neural downbeats chose the 1
+            "nn_downbeat_share": nn_downbeat_share,
+            "nn_agree": nn_agree,                  # share of neural beats on the grid (None: no neural run)
+            "tempo_conflict": tempo_conflict,      # the neural tempo is at an odd ratio and the kicks say no
         },
         "section_boundaries": boundaries,
         "drop_times": drops,
@@ -834,16 +903,17 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
     }
 
 
-def analyze_track(file_path: str) -> Dict[str, Any]:
+def analyze_track(file_path: str, nn: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """
     Full professional track analysis over the WHOLE track (16 kHz mono, ~23 MB for 6 min).
+    `nn`: a neural beat tracker's beats, as a second opinion on the grid (estimate_grid).
     """
     sr = ANALYSIS_SR
     y = load_mono(file_path, sr)
     mono = y
     duration = len(y) / sr
 
-    est = estimate_grid(mono, sr, duration)
+    est = estimate_grid(mono, sr, duration, nn)
     grid = est["grid"]
     bpm = grid["bpm"]
     times = build_grid_times(grid, duration)

@@ -1173,12 +1173,29 @@ async def grid_adjust(request: Request):
         ge["start"] = round(ge["start"] + shift_s, 4)
         ge["ms"] = [None if v is None else round(v - shift_s * 1000.0, 1) for v in ge["ms"]]
         an["grid_err"] = ge
+    an["grid_manual"] = True   # the DJ's grid: a re-analysis at the same tempo keeps it (library.py)
     for key in ("suggested_cue_intro", "suggested_cue_outro"):
         an[key] = round(an[key] + shift_s, 3)
     await persist_analysis(file_id, an)
     fields = ("grid", "beat_times", "downbeat_times", "phrase_8_times", "phrase_16_times",
               "phrase_32_times", "suggested_cue_intro", "suggested_cue_outro")
-    return JSONResponse(content={"status": "success", "track": {k: an[k] for k in fields}})
+    track = dict({k: an[k] for k in fields}, flags=library.flags_for(an))
+    return JSONResponse(content={"status": "success", "track": track})
+
+
+@app.post("/api/grid-confirm")
+async def grid_confirm(request: Request):
+    """The DJ checked this track's grid (GRID OK): its CHECK GRID flags clear, and a re-analysis at the
+    same tempo keeps the grid. Body: {file_id}. Returns the track's flags."""
+    import urllib.parse
+    body = await request.json()
+    file_id = urllib.parse.unquote(body.get("file_id", ""))
+    an = await get_cached_analysis(file_id)
+    if not an or "grid" not in an:
+        raise HTTPException(status_code=404, detail="No analyzed grid for this track")
+    an.update(grid_manual=True, grid_confirmed=True)
+    await persist_analysis(file_id, an)
+    return JSONResponse(content={"status": "success", "flags": library.flags_for(an)})
 
 
 @app.get("/api/outputs/{filename:path}")

@@ -43,3 +43,23 @@ def test_played():
     assert rep["kick_flam_ms"]["over_10"] == 1
     assert rep["reasons"] == {"clash": 1}
     assert benchmark.played_report([]) == {"rated": 0}
+
+
+def test_tags_and_neural():
+    lib = [
+        dict(track("a", 124.0), camelot="8A", key_ks="8A", tags={"bpm": 124.0, "camelot": "8A"}),
+        dict(track("b", 126.0), camelot="9A", key_ks="3B", tags={"bpm": 63.0, "camelot": "8A"}),   # half-time tag
+        dict(track("c", 100.0), camelot="5A", key_ks="5A", tags={"bpm": 133.0, "camelot": "1B"}),
+        dict(track("d", 120.0), camelot="8A", tags={}),
+    ]
+    rep = benchmark.tags_report(lib)
+    assert rep["key_tagged"] == 3 and rep["key_now"] == {"tracks": 3, "same": 0.333, "compatible": 0.667}
+    assert rep["key_old"] == {"tracks": 3, "same": 0.333, "compatible": 0.333}
+    assert rep["bpm_tagged"] == 3 and rep["bpm_agree"] == 0.667 and rep["bpm_disagree_titles"] == ["c"]
+
+    nn = [dict(track("a", 124.0), nn_beats=[0.1], grid={"downbeat_source": "neural", "tempo_source": "grid", "nn_agree": 0.95}),
+          dict(track("b", 126.0), nn_beats=[0.1], grid={"downbeat_source": "grid", "tempo_conflict": True, "nn_agree": 0.4}),
+          track("c", 100.0)]
+    rep = benchmark.neural_report(nn)
+    assert rep["tracks"] == 2 and rep["downbeat_by_neural"] == 1 and rep["tempo_conflict"] == 1
+    assert rep["agree"]["median"] == 0.675

@@ -31,21 +31,37 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import closing
 from typing import Any, Dict, List, Optional
 
-from .audio_analyzer import analyze_track, ANALYSIS_VERSION
+from .audio_analyzer import analyze_track, build_grid_times, ANALYSIS_VERSION
 from .vocal_listen import carry_vocal_labels
 from .grid_check import check_track, DRIFT_FLAG_MS
-from . import next_track
+from . import beats_nn, key_detect, next_track
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
 
-# Stage -> version, in the order they run. Bump a version to re-run that stage on the whole library at
-# the next prepare. A stage re-runs too when one it builds on does (AFTER).
-STAGES = {"analysis": ANALYSIS_VERSION, "loudness": 2, "grid_check": 1}
-AFTER = {"grid_check": "analysis"}   # the grid check measures the analysis's grid
+def _stages() -> Dict[str, int]:
+    """Stage -> version, in the order they run. Bump a version to re-run that stage on the whole library
+    at the next prepare. The neural beat tracker and the key extractor run when installed."""
+    st = {"beats_nn": 1} if beats_nn.available() else {}
+    st["analysis"] = ANALYSIS_VERSION
+    if key_detect.available():
+        st["key"] = 1
+    st.update(loudness=2, grid_check=1)
+    return st
+
+
+STAGES = _stages()
+# A stage re-runs after one it builds on has run: the analysis takes the neural beats as a second
+# opinion, the key replaces the analysis's, the grid check measures the analysis's grid
+AFTER = {"analysis": ("beats_nn",), "key": ("analysis",), "grid_check": ("analysis",)}
+# Stages a track is ready without (it keeps the analyzer's own grid decisions and key): tried again
+# at the next prepare when they fail
+OPTIONAL = {"beats_nn", "key"}
 
 # A grid that lands fewer of its strong beats within 20 ms than this is flagged for a check
 # (provisional: tuned on the Phase 2 benchmark)
 LOW_GRID_CONFIDENCE = 0.5
+# A grid that fewer of the neural tracker's beats land on than this is flagged (provisional)
+NN_AGREE_MIN = 0.6
 
 
 def library_dir() -> str:
@@ -138,26 +154,70 @@ def flags_for(an: Dict[str, Any]) -> List[str]:
         flags.append("grid_drift")       # the kicks wander off the grid: no single grid follows them
     if g.get("confidence") is not None and g["confidence"] < LOW_GRID_CONFIDENCE:
         flags.append("grid_fit")         # few beats land on the grid
-    return flags
+    if g.get("tempo_conflict") or (g.get("nn_agree") is not None and g["nn_agree"] < NN_AGREE_MIN):
+        flags.append("beats_disagree")   # the neural tracker hears other beats than the grid's
+    return [] if an.get("grid_confirmed") else flags   # the DJ checked it (GRID OK)
 
 
-def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Run the stages in `todo` on one file (in a worker process). Returns the new analysis."""
-    an = dict(prior or {})
-    if "analysis" in todo:
+# Fields of a previous key extraction: the analysis's own key replaces them until the key stage runs again
+KEY_FIELDS = ("key_strength", "key_source")
+
+
+def _keep_manual_grid(fresh: Dict[str, Any], prior: Optional[Dict[str, Any]]) -> None:
+    """A grid the DJ fixed or confirmed survives a re-analysis that finds the same tempo; one that finds
+    another tempo starts fresh, to be checked again."""
+    if not prior or not prior.get("grid_manual") or not prior.get("grid"):
+        return
+    pg, fg = prior["grid"], fresh["grid"]
+    if abs(pg["bpm"] - fg["bpm"]) <= 0.05:
+        fresh["grid"] = dict(fg, first_beat=pg["first_beat"], downbeat_offset=pg["downbeat_offset"],
+                             phrase_offset_bars=pg["phrase_offset_bars"])
+        fresh.update(build_grid_times(fresh["grid"], fresh["duration"]))
+        fresh.update(grid_manual=True, grid_confirmed=bool(prior.get("grid_confirmed")))
+    else:
+        fresh.update(grid_manual=False, grid_confirmed=False)
+
+
+def _run_stage(stage: str, path: str, an: Dict[str, Any], prior: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if stage == "beats_nn":
+        an.update(beats_nn.track_beats(path))
+    elif stage == "analysis":
+        nn = {k: an[k] for k in ("nn_beats", "nn_downbeats", "nn_bpm") if an.get(k)} or None
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)   # numpy empty-slice noise on short sections
-            fresh = analyze_track(path)
-        carry_vocal_labels(fresh, prior)   # Gemini's labels survive a re-analysis
-        for keep in ("loudness_lufs", "loudness_range_lu", "loudness_st"):
-            if keep in an:
-                fresh[keep] = an[keep]
+            fresh = analyze_track(path, nn)
+        fresh["key_ks"] = fresh.get("camelot")               # the analyzer's own key, for comparison
+        fresh["tags"] = key_detect.read_tags(path)           # the BPM and key the file's tags give
+        carry_vocal_labels(fresh, prior)                     # Gemini's labels survive a re-analysis
+        _keep_manual_grid(fresh, prior)
+        # what the other stages measured stays until they run again
+        fresh.update({k: v for k, v in an.items() if k not in fresh and k not in KEY_FIELDS})
         an = fresh
-    if "loudness" in todo:
+    elif stage == "key":
+        an.update(key_detect.detect_key(path))
+    elif stage == "loudness":
         an.update(measure_loudness(path))
-    if "grid_check" in todo:
+    elif stage == "grid_check":
         an.update(check_track(path, an["grid"], an["duration"]))
     return an
+
+
+def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]]):
+    """Run one file's outdated stages (in a worker process), and every stage after one that ran and that
+    it builds on. Returns (the new analysis, the stages that ran, {optional stage: why it failed})."""
+    an = dict(prior or {})
+    ran, failed = [], {}
+    for stage in STAGES:
+        if stage not in todo and not any(d in ran for d in AFTER.get(stage, ())):
+            continue
+        try:
+            an = _run_stage(stage, path, an, prior)
+            ran.append(stage)
+        except Exception as e:
+            if stage not in OPTIONAL:
+                raise
+            failed[stage] = str(e) or type(e).__name__
+    return an, ran, failed
 
 
 def _uploaded_labels() -> Dict[str, Dict[str, Any]]:
@@ -174,7 +234,7 @@ def _uploaded_labels() -> Dict[str, Dict[str, Any]]:
 
 
 def _status(stages: Dict[str, int], error: Optional[str]) -> str:
-    if all(stages.get(s) == v for s, v in STAGES.items()):
+    if all(stages.get(s) == v for s, v in STAGES.items() if s not in OPTIONAL):
         return "ready"
     return "failed" if error else "pending"
 
@@ -249,7 +309,8 @@ def prepare(root: Optional[str] = None, workers: Optional[int] = None, retry_fai
     if not os.path.isdir(root):
         raise SystemExit(f"Library folder not found: {root}")
     if workers is None:
-        workers = max(1, min(6, (os.cpu_count() or 2) - 2))   # ~300 MB each while analyzing
+        # ~300 MB each while analyzing; the neural tracker adds PyTorch's
+        workers = max(1, min(4 if "beats_nn" in STAGES else 6, (os.cpu_count() or 2) - 2))
     with closing(_connect()) as con:
         index(con, root, log)
         labelled = _uploaded_labels()
@@ -259,25 +320,37 @@ def prepare(root: Optional[str] = None, workers: Optional[int] = None, retry_fai
                 continue
             stages = json.loads(t["stages"] or "{}")
             todo = [s for s, v in STAGES.items() if stages.get(s) != v]
-            todo = [s for s in STAGES if s in todo or AFTER.get(s) in todo]
             if todo:
                 prior = json.loads(t["analysis"]) if t["analysis"] else labelled.get(t["sha1"])
                 jobs.append((t["file_id"], t["path"], todo, prior, stages, t["sha1"], t["title"]))
+        # The neural tracker's weights download once, here, rather than in every worker at once; without
+        # them (offline, say) this prepare runs without it
+        if any("beats_nn" in j[2] for j in jobs):
+            try:
+                beats_nn.load()
+                log(f"Neural beat tracker ready (Beat This! on {beats_nn._device_used})")
+            except Exception as e:
+                log(f"Neural beat tracker unavailable ({e}): preparing without it this time")
+                jobs = [(j[0], j[1], [s for s in j[2] if s != "beats_nn"]) + j[3:] for j in jobs]
+                jobs = [j for j in jobs if j[2]]
         if not jobs:
             log("Everything is prepared.")
             return summary(con)
         log(f"Preparing {len(jobs)} tracks with {workers or 1} worker(s)...")
 
-        def finish(job, an, err, n):
+        def finish(job, result, err, n):
             file_id, _, todo, prior, stages, sha, title = job
+            failed = {}
             if err is None:
-                stages = dict(stages, **{s: STAGES[s] for s in todo})
+                an, ran, failed = result
+                stages = dict(stages, **{s: STAGES[s] for s in ran})
                 an.update(file_id=file_id, title=title, content_sha1=sha)
             else:
                 an = prior if prior and prior.get("file_id") == file_id else {}   # not an upload's labels
             _store(con, file_id, an, stages, err)
             what = (f"{float(an.get('bpm') or 0):.2f} BPM, {an.get('camelot', '--')}, {an.get('loudness_lufs', '?')} LUFS"
-                    + (f", check: {', '.join(flags_for(an))}" if flags_for(an) else "")) if err is None else f"FAILED: {err}"
+                    + (f", check: {', '.join(flags_for(an))}" if flags_for(an) else "")
+                    + "".join(f", {s} skipped: {why}" for s, why in failed.items())) if err is None else f"FAILED: {err}"
             log(f"[{n}/{len(jobs)}] {title} · {what}")
 
         if workers == 0:

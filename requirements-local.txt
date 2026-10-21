@@ -1,0 +1,11 @@
+# Local mode (Mac) extras on top of requirements.txt: the prepare stages that need models.
+# Installed by ./setup_mac.sh; prepare runs without them (and says so) when they're missing.
+
+# Neural beat and downbeat tracker (Beat This!, ISMIR 2024), on the GPU through PyTorch MPS.
+# Its weights download once, on the first prepare that uses it.
+torch>=2.2
+torchaudio>=2.2
+beat-this==1.1.0
+
+# Key extraction over the whole track with the EDM profile ('edma').
+essentia>=2.1b6.dev1177

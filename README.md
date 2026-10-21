@@ -173,7 +173,7 @@ prepared before the set, the way Serato and rekordbox prepare a collection. The 
 prepared tracks, and uploads are off.
 
 ```bash
-./setup_mac.sh                 # once: ffmpeg + Rubber Band, Python 3.12, packages in .venv
+./setup_mac.sh                 # once, and after pulling changes: ffmpeg + Rubber Band, Python 3.12, packages and models
 ./run_local.sh ~/Music/DJ      # prepares new or changed tracks, starts the console, opens Chrome
 ./run_local.sh                 # later runs: the folder is remembered
 ```
@@ -183,16 +183,25 @@ prepared tracks, and uploads are off.
   `python -m backend.library status` lists what is ready, failed or worth a check.
 - The library index (`~/.pulsepro/library.db`, or `$PULSE_DATA`) holds one track per audio content.
   Renamed, moved or duplicated files stay one track, with their grid fixes and vocal labels.
-- Stages: the full analysis; loudness (EBU R128: integrated, range, short-term every second, and the
-  body's loudness the trim matches); and a grid check, where each beat's kick really lands against the
-  grid, per 4 bars (`backend/grid_check.py`). A track loads only once every stage has passed. A grid
-  whose kicks wander more than 20 ms across the track shows CHECK GRID in the browser.
+- Stages, in order: a neural beat tracker's opinion (Beat This!, `backend/beats_nn.py`, on the Mac's GPU),
+  which chooses the downbeat and catches a tempo read at an odd ratio; the full analysis; the key over
+  the whole track (Essentia's EDM profile, `backend/key_detect.py`; the analyzer's own estimate is kept
+  as `key_ks`, and the file's BPM and key tags are read for comparison); loudness (EBU R128: integrated,
+  range, short-term every second, and the body's loudness the trim matches); and a grid check, where
+  each beat's kick really lands against the grid, per 4 bars (`backend/grid_check.py`). The neural and
+  key stages need `requirements-local.txt` (setup_mac.sh installs it); a track is ready without them
+  and they're tried again at the next prepare. Every other stage must pass before a track loads.
+- CHECK GRID (in the browser, on the deck's GRID chip) marks a grid to look at: kicks that wander more
+  than 20 ms, or a neural tracker that hears other beats. Fix it with the GRID menu's buttons, then
+  GRID OK; a fixed or confirmed grid survives a re-analysis that finds the same tempo.
 - Auto mixes use the grid check: the incoming starts a few ms earlier or later so both tracks' kicks
   land together, a blend whose kicks would still drift more than 10 ms apart is shortened (or becomes a
   switch), and the sound check counts what's left as flam. Past a 2% tempo change the incoming never
   plays pitched: the mix waits for the keylocked copy and moves to a later phrase.
-- `python -m backend.benchmark` is the yardstick for every change: grids that wander, how the library's
-  pairs split into blends, 12-20% near misses and switches, and how the rated Auto mixes went.
+- `python -m backend.benchmark` is the yardstick for every change: grids that wander; the key and BPM
+  against the files' own tags (old and new key estimate side by side); what the neural tracker changed;
+  how the library's pairs split into blends, 12-20% near misses and switches; how the rated Auto mixes
+  went.
 - Use Chrome or Edge: the DJ controller needs Web MIDI, which Safari lacks.
 
 ---
