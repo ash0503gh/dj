@@ -230,6 +230,15 @@ prepared tracks, and uploads are off.
   stepped every 23 ms (kicks within ~2 ms of where they should be all along it), and the deck switches to
   it and off it seamlessly; the countdown shows TEMPO GLIDE TO ... BPM meanwhile. Pressing MIX while a
   deck still glides back waits for it.
+- The track browser has crates down its left: every track; FITS NOW (blends with the other deck's tempo
+  and key), new in the last 30 days, never played (remembered in this browser), played tonight; the
+  music folder's sub-folders (organise in Finder: each sub-folder is a crate); tempo bands; sung and
+  instrumental tracks (once stems or Gemini have labelled them). Chips over the list (BLENDS, KEY MATCH,
+  UNPLAYED, VOCAL, INSTRUMENTAL) narrow any crate; search looks through every track. The crate and
+  chips are remembered per deck.
+- When an Auto mix starts: waiting costs from the first second, so a later moment wins only when it is
+  clearly better. MIX SOON (in the Auto mix header) only takes mixes that start within 30 s of pressing
+  MIX, with no tempo glide first (the incoming takes the whole tempo gap, up to 12%).
 - `python -m backend.benchmark` is the yardstick for every change: grids that wander; the key and BPM
   against the files' own tags (old and new key estimate side by side); what the neural tracker changed;
   how the library's pairs split into blends (and those 12-20% apart that blend by gliding) and switches; how the rated Auto mixes

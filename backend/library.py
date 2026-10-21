@@ -630,14 +630,52 @@ def path_of(file_id: str) -> Optional[str]:
     return r["path"] if r and os.path.exists(r["path"]) else None
 
 
+_SUNG: Dict[str, Any] = {}       # file_id -> (updated, share of the track sung, or None): parsed once per change
+
+
+def _sung_share(con: sqlite3.Connection, file_id: str, updated) -> Optional[float]:
+    """How much of the track the lead vocal sings (0-1, by its labelled sections), None when unlabelled."""
+    if _SUNG.get(file_id, (None,))[0] != updated:
+        r = con.execute("SELECT analysis FROM tracks WHERE file_id = ?", (file_id,)).fetchone()
+        an = json.loads(r["analysis"]) if r and r["analysis"] else {}
+        secs = an.get("section_map") or []
+        share = None
+        if an.get("vocal_source") and secs:
+            total = sum(s.get("duration", 0) for s in secs) or 1.0
+            share = round(sum(s.get("duration", 0) for s in secs
+                              if s.get("has_vocals") and s.get("vocal_score", 0) > 0.35) / total, 2)
+        _SUNG[file_id] = (updated, share)
+    return _SUNG[file_id][1]
+
+
+def _added(path: str) -> float:
+    """When the file came into the folder: its creation time where the system keeps one (macOS), else
+    its modification time; 0 when it's gone."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return 0.0
+    return float(getattr(st, "st_birthtime", 0) or st.st_mtime)
+
+
 def ready_tracks() -> List[Dict[str, Any]]:
-    """What the track browser lists: every prepared track, once."""
+    """What the track browser lists: every prepared track, once, with what its crates sort by: the
+    sub-folder of the music folder it is in ("" at the top), when it was added, how much is sung."""
+    root = library_dir()
     with closing(_connect()) as con:
-        rows = con.execute("SELECT file_id, title, bpm, camelot, key, duration, flags FROM tracks "
+        rows = con.execute("SELECT file_id, title, path, bpm, camelot, key, duration, flags, updated FROM tracks "
                            "WHERE status = 'ready' ORDER BY title").fetchall()
-    return [{"file_id": r["file_id"], "title": r["title"], "bpm": float(r["bpm"] or 128.0),
-             "camelot": r["camelot"] or "--", "key": r["key"] or "--", "duration": float(r["duration"] or 0),
-             "flags": json.loads(r["flags"] or "[]")} for r in rows]
+        sung = {r["file_id"]: _sung_share(con, r["file_id"], r["updated"]) for r in rows}
+    out = []
+    for r in rows:
+        path = r["path"] or ""
+        rel = os.path.relpath(os.path.dirname(path), root) if root and path.startswith(root + os.sep) else ""
+        out.append({"file_id": r["file_id"], "title": r["title"], "bpm": float(r["bpm"] or 128.0),
+                    "camelot": r["camelot"] or "--", "key": r["key"] or "--", "duration": float(r["duration"] or 0),
+                    "flags": json.loads(r["flags"] or "[]"),
+                    "folder": "" if rel in (".", "") else rel.replace(os.sep, "/"),
+                    "added": _added(path), "sung": sung[r["file_id"]]})
+    return out
 
 
 def save_analysis(file_id: str, an: Dict[str, Any]) -> None:

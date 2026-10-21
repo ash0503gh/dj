@@ -284,8 +284,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .track-pick-label { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .track-pick-panel {
-  position: absolute; z-index: 60; top: calc(100% + 6px); left: 0; width: min(440px, 92vw);
-  display: flex; flex-direction: column; max-height: min(420px, 62vh);
+  position: absolute; z-index: 60; top: calc(100% + 6px); left: 0; width: min(600px, 92vw);
+  display: flex; flex-direction: column; max-height: min(480px, 70vh);
   background: var(--panel); border: 1px solid var(--line-3); border-radius: 10px; box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
 }
 .track-pick-panel[hidden] { display: none; }
@@ -302,6 +302,26 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   font-size: 11px; font-weight: 600; letter-spacing: 0.06em;
 }
 .track-pick-sorts button[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+/* Filter chips over the list, crates down its left */
+.track-pick-chips { display: flex; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.track-pick-chips::-webkit-scrollbar { display: none; }
+.track-pick-chips button {
+  flex: none; height: 24px; padding: 0 9px; border-radius: 12px; border: 1px solid var(--line-2); background: transparent;
+  color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: 0.08em;
+}
+.track-pick-chips button[aria-pressed="true"] { color: #0b0b0c; background: var(--accent); border-color: var(--accent); }
+.track-pick-chips button:disabled { opacity: 0.35; }
+.track-pick-body { display: grid; grid-template-columns: 150px minmax(0, 1fr); min-height: 0; flex: 1 1 auto; }
+.track-pick-crates { overflow-y: auto; padding: 4px 4px 8px; border-right: 1px solid var(--line); display: flex; flex-direction: column; gap: 1px; }
+.tp-crate-group { padding: 10px 6px 3px; font-size: 9px; font-weight: 700; letter-spacing: 0.12em; color: var(--muted); }
+.tp-crate {
+  display: flex; align-items: center; gap: 6px; width: 100%; min-height: 28px; padding: 4px 6px; border: none;
+  border-radius: 5px; background: transparent; color: var(--text-2); font-size: 12px; text-align: left;
+}
+.tp-crate:hover { background: var(--raised); color: var(--text); }
+.tp-crate[aria-pressed="true"] { background: var(--raised); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+.tp-crate-name { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tp-crate-n { flex: none; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
 .track-pick-list { position: relative; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 2px 6px 8px; }
 .track-pick-section {
   padding: 10px 6px 4px; font-size: 10px; font-weight: 700; letter-spacing: 0.1em; color: var(--muted);
@@ -325,6 +345,11 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .track-pick-empty { padding: 14px 8px; font-size: 12px; color: var(--muted); }
 @media (max-width: 520px) {   /* phones upright: a sheet across the bottom of the screen */
   html:not(.landscape-ui) .track-pick-panel { position: fixed; top: auto; left: 8px; right: 8px; bottom: 8px; width: auto; max-height: 72vh; }
+  html:not(.landscape-ui) .track-pick-body { grid-template-columns: 1fr; grid-template-rows: auto minmax(0, 1fr); }
+  html:not(.landscape-ui) .track-pick-crates { flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: none;
+                                               border-bottom: 1px solid var(--line); }
+  html:not(.landscape-ui) .tp-crate { width: auto; flex: none; }
+  html:not(.landscape-ui) .tp-crate-group { display: none; }
 }
 
 .lcd-screen { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
@@ -805,7 +830,8 @@ html.landscape-ui .next-hint .next-why { display: none; }
 html.landscape-ui .deck-badge { width: 24px; height: 24px; font-size: 16px; border-radius: 5px; }
 html.landscape-ui .track-select-dropdown { height: 26px; font-size: 12px; padding: 0 6px; }
 html.landscape-ui .track-pick-button { height: 26px; font-size: 12px; padding: 0 22px 0 6px; }
-html.landscape-ui .track-pick-panel { width: 360px; }   /* vw is the upright width in the turned console */
+html.landscape-ui .track-pick-panel { width: 480px; }   /* vw is the upright width in the turned console */
+html.landscape-ui .track-pick-body { grid-template-columns: 120px minmax(0, 1fr); }
 html.landscape-ui .btn-upload { height: 26px; padding: 0 7px; font-size: 0; gap: 0; }
 html.landscape-ui .grid-menu > summary, html.landscape-ui .deck-state { font-size: 9px; padding: 2px 5px; }
 html.landscape-ui .lcd-screen { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }

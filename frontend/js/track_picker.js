@@ -1,12 +1,43 @@
 /**
  * track_picker.js - The decks' track browser. Every library track once (the server merges copies),
  * under a clean name, with search, A-Z or tempo order, the suggested next tracks on top, and how each
- * track's tempo sits with the other deck's: "BLENDS" within 12% (the console stretches it, keylocked),
- * "HALF-TIME" / "DOUBLE-TIME" when it blends at half or double its tempo, or how far apart. Tracks played
- * this session are dimmed.
+ * track's tempo sits with the other deck's: "BLENDS" within 20% (the console stretches it, keylocked,
+ * the tempos meeting halfway), "HALF-TIME" / "DOUBLE-TIME" when it blends at half or double its tempo,
+ * or how far apart. Tracks played this session are dimmed.
+ *
+ * Crates, down the left (across the top on a phone): every track; smart crates (FITS NOW: blends with
+ * the other deck's tempo and key; new in the last 30 days; never played; played tonight); the music
+ * folder's sub-folders; tempo bands; sung and instrumental tracks. Filter chips over the list narrow any
+ * crate (BLENDS, KEY MATCH, UNPLAYED, VOCAL, INSTRUMENTAL). Search looks through every track, chips
+ * still applied. The crate and chips are remembered per deck, plays across sessions in this browser.
  */
 const TrackPicker = (() => {
   const BLEND_GAP = 0.20;   // MixPlanner.GLIDE_MAX (tempos past 4% apart meet halfway, gliding)
+  const NEW_DAYS = 30;
+  const BANDS = [[0, 85], [85, 100], [100, 115], [115, 130], [130, 999]];
+  const SUNG = 0.25;        // a track sung over at least this share of it is "vocal"; under INSTRUMENTAL
+  const INSTRUMENTAL = 0.1;
+  const HISTORY = 'pp_play_history';
+
+  const store = {
+    get(k, fallback) { try { const v = localStorage.getItem(k); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* private window */ } },
+  };
+  let history = store.get(HISTORY, {});          // file_id -> last time it was mixed (ms)
+
+  /** Tracks mixed (in or out): remembered in this browser, for NEVER PLAYED. */
+  function markPlayed(ids) {
+    ids.filter(Boolean).forEach(id => { history[id] = Date.now(); });
+    store.set(HISTORY, history);
+  }
+
+  /** Keys that sit together on the Camelot wheel (same, one step around, or relative major/minor). */
+  function keysFit(a, b) {
+    if (!a || !b || a === '--' || b === '--') return false;
+    const na = parseInt(a, 10), nb = parseInt(b, 10);
+    const d = (nb - na + 12) % 12;
+    return na === nb || (a.slice(-1) === b.slice(-1) && (d === 1 || d === 11));
+  }
 
   /** "deck_1_07_-_Dj_Sanj_-_Das_Ja___(Mp3Hungama.com).mp3" -> "Dj Sanj - Das Ja" */
   function cleanTitle(raw) {
@@ -35,6 +66,8 @@ const TrackPicker = (() => {
     let order = 'az';
     let highlightId = null;     // the row a DJ controller's browse knob is on
     let emptyText = 'No tracks yet: upload one.';
+    let crate = store.get(`pp_crate_${deckNum}`, 'all');
+    let chips = new Set(store.get(`pp_chips_${deckNum}`, []));
     const coarse = window.matchMedia('(pointer: coarse)').matches;
 
     const trigger = document.createElement('button');
@@ -72,10 +105,107 @@ const TrackPicker = (() => {
     };
     sorts.append(sortBtn('az', 'A–Z'), sortBtn('bpm', 'BPM'));
     head.append(search, sorts);
+    const chipRow = document.createElement('div');
+    chipRow.className = 'track-pick-chips';
+    const CHIPS = [['blends', 'BLENDS'], ['key', 'KEY MATCH'], ['unplayed', 'UNPLAYED'], ['vocal', 'VOCAL'],
+                   ['instrumental', 'INSTRUMENTAL']];
+    CHIPS.forEach(([id, text]) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = text;
+      b.dataset.chip = id;
+      b.addEventListener('click', () => {
+        if (chips.has(id)) chips.delete(id);
+        else {
+          chips.add(id);
+          if (id === 'vocal') chips.delete('instrumental');
+          if (id === 'instrumental') chips.delete('vocal');
+        }
+        store.set(`pp_chips_${deckNum}`, [...chips]);
+        render();
+      });
+      chipRow.append(b);
+    });
+    const body = document.createElement('div');
+    body.className = 'track-pick-body';
+    const crates = document.createElement('nav');
+    crates.className = 'track-pick-crates';
+    crates.setAttribute('aria-label', 'Crates');
     const list = document.createElement('div');
     list.className = 'track-pick-list';
-    panel.append(head, list);
+    body.append(crates, list);
+    panel.append(head, chipRow, body);
     root.append(trigger, panel);
+
+    /** The crates there are, with their tracks: [{ id, name, group, tracks }] (empty ones left out). */
+    function crateList(ctx) {
+      const fits = t => { const h = tempoHint(t.bpm, ctx.otherBpm); return !!(h && h.ok); };
+      const out = [{ id: 'all', name: 'All tracks', tracks: library }];
+      if (ctx.otherBpm) {
+        out.push({ id: 'fits', name: 'Fits now', tracks: library.filter(t => t.file_id !== ctx.otherId && fits(t) && (!ctx.otherKey || keysFit(t.camelot, ctx.otherKey))) });
+      }
+      const since = Date.now() / 1000 - NEW_DAYS * 86400;
+      out.push({ id: 'new', name: `New · ${NEW_DAYS} days`, tracks: library.filter(t => (t.added || 0) >= since) });
+      out.push({ id: 'unplayed', name: 'Never played', tracks: library.filter(t => !history[t.file_id] && !(ctx.played && ctx.played.has(t.file_id))) });
+      out.push({ id: 'tonight', name: 'Played tonight', tracks: library.filter(t => ctx.played && ctx.played.has(t.file_id)) });
+      const folders = [...new Set(library.map(t => t.folder || ''))].sort((a, b) => a.localeCompare(b));
+      if (folders.length > 1) {
+        folders.forEach(f => out.push({ id: `folder:${f}`, name: f || '(top level)', group: 'FOLDERS',
+                                        tracks: library.filter(t => (t.folder || '') === f) }));
+      }
+      BANDS.forEach(([lo, hi]) => out.push({
+        id: `bpm:${lo}`, group: 'TEMPO', name: lo === 0 ? `Under ${hi}` : hi > 900 ? `${lo}+ BPM` : `${lo}–${hi} BPM`,
+        tracks: library.filter(t => t.bpm >= lo && t.bpm < hi) }));
+      if (library.some(t => t.sung !== null && t.sung !== undefined)) {
+        out.push({ id: 'sung', group: 'VOCALS', name: 'Sung', tracks: library.filter(t => t.sung >= SUNG) });
+        out.push({ id: 'instr', group: 'VOCALS', name: 'Instrumental', tracks: library.filter(t => t.sung !== null && t.sung !== undefined && t.sung < INSTRUMENTAL) });
+      }
+      return out.filter(c => c.id === 'all' || c.tracks.length || c.id === crate);
+    }
+
+    /** The chips' filter over a list of tracks. */
+    function chipFilter(ctx) {
+      return t => (!chips.has('blends') || (tempoHint(t.bpm, ctx.otherBpm) || {}).ok)
+        && (!chips.has('key') || keysFit(t.camelot, ctx.otherKey))
+        && (!chips.has('unplayed') || (!history[t.file_id] && !(ctx.played && ctx.played.has(t.file_id))))
+        && (!chips.has('vocal') || t.sung >= SUNG)
+        && (!chips.has('instrumental') || (t.sung !== null && t.sung !== undefined && t.sung < INSTRUMENTAL));
+    }
+
+    function renderCrates(all) {
+      const items = [];
+      let group = null;
+      all.forEach(c => {
+        if (c.group && c.group !== group) {
+          group = c.group;
+          const h = document.createElement('div');
+          h.className = 'tp-crate-group';
+          h.textContent = group;
+          items.push(h);
+        }
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'tp-crate';
+        b.setAttribute('aria-pressed', String(c.id === crate));
+        const name = document.createElement('span');
+        name.className = 'tp-crate-name';
+        name.textContent = c.name;
+        name.title = c.name;
+        const n = document.createElement('span');
+        n.className = 'tp-crate-n';
+        n.textContent = c.tracks.length;
+        b.append(name, n);
+        b.addEventListener('click', () => {
+          crate = c.id;
+          store.set(`pp_crate_${deckNum}`, crate);
+          search.value = '';
+          render();
+          list.scrollTop = 0;
+        });
+        items.push(b);
+      });
+      crates.replaceChildren(...items);
+    }
 
     function tempoHint(bpm, otherBpm) {
       if (!otherBpm || !bpm) return null;
@@ -135,21 +265,37 @@ const TrackPicker = (() => {
       const match = t => !q || cleanTitle(t.title || t.file_id).toLowerCase().includes(q)
         || (t.camelot || '').toLowerCase() === q || String(Math.round(t.bpm || 0)) === q;
       sorts.querySelectorAll('button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.order === order)));
+      chipRow.querySelectorAll('button').forEach(b => {
+        b.setAttribute('aria-pressed', String(chips.has(b.dataset.chip)));
+        // BLENDS and KEY MATCH need a track on the other deck;
+        // VOCAL and INSTRUMENTAL tracks with vocal labels (stems or Gemini)
+        b.disabled = (b.dataset.chip === 'blends' && !ctx.otherBpm) || (b.dataset.chip === 'key' && !ctx.otherKey)
+          || (['vocal', 'instrumental'].includes(b.dataset.chip) && !library.some(t => t.sung !== null && t.sung !== undefined));
+      });
+      const all0 = crateList(ctx);
+      const current = all0.find(c => c.id === crate) || all0[0];
+      crate = current.id;
+      renderCrates(all0);
+      const chipOk = chipFilter(ctx);
       const rows = [];
-      const sug = suggestions.filter(match);
-      if (sug.length && !q) {
+      const inCrate = new Set(current.tracks.map(t => t.file_id));
+      const sug = suggestions.filter(match).filter(chipOk).filter(t => crate === 'all' || inCrate.has(t.file_id));
+      if (sug.length && !q && (crate === 'all' || crate === 'fits')) {
         rows.push(section(`SUGGESTED NEXT${suggestedAfter ? ` · AFTER ${cleanTitle(suggestedAfter).toUpperCase()}` : ''}`));
         sug.forEach(s => rows.push(row(s, ctx, `★ ${s.score} · ${(s.reasons || []).slice(0, 2).join(', ')}`)));
       }
-      const all = library.filter(match).sort(order === 'bpm'
+      // Search looks through every track; otherwise the crate's
+      const all = (q ? library : current.tracks).filter(t => match(t) && chipOk(t)).sort(order === 'bpm'
         ? (a, b) => (a.bpm || 0) - (b.bpm || 0)
         : (a, b) => cleanTitle(a.title || a.file_id).localeCompare(cleanTitle(b.title || b.file_id)));
-      rows.push(section(q ? `${all.length} MATCHING` : `ALL TRACKS · ${all.length}`));
+      const filtered = chips.size ? ' · FILTERED' : '';
+      rows.push(section(q ? `${all.length} MATCHING IN ALL TRACKS${filtered}` : `${current.name.toUpperCase()} · ${all.length}${filtered}`));
       all.forEach(t => rows.push(row(t, ctx)));
       if (!all.length) {
         const empty = document.createElement('div');
         empty.className = 'track-pick-empty';
-        empty.textContent = library.length ? 'No track matches.' : emptyText;
+        empty.textContent = !library.length ? emptyText
+          : chips.size ? 'No track here passes the filters: turn a chip off.' : 'No track matches.';
         rows.push(empty);
       }
       list.replaceChildren(...rows);
@@ -257,7 +403,7 @@ const TrackPicker = (() => {
     };
   }
 
-  return { create, cleanTitle };
+  return { create, cleanTitle, markPlayed, keysFit };
 })();
 
 window.TrackPicker = TrackPicker;

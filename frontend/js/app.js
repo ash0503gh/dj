@@ -871,6 +871,8 @@ document.addEventListener('DOMContentLoaded', () => {
         const other = n === 1 ? track2Data : track1Data;
         const own = n === 1 ? track1Data : track2Data;
         return { otherBpm: other && other.bpm ? MixPlanner.deckBpm(other, n === 1 ? engine.deck2 : engine.deck1) : null,
+                 otherKey: other && other.camelot && other.camelot !== '--' ? other.camelot : null,
+                 otherId: other && other.file_id,
                  currentId: own && own.file_id, played: playedIds };
       },
       onPick: (fileId) => { unlockAudio(); loadPresetTrack(fileId, `deck_${n}`); },
@@ -2861,6 +2863,7 @@ document.addEventListener('DOMContentLoaded', () => {
       pruneStretchCache(t.outTrack.file_id);
       t.outDeck.layers = t.inDeck.layers = null;   // the windows were for this mix
       [t.outTrack.file_id, t.inTrack.file_id].forEach(id => { if (id) playedIds.add(id); });
+      TrackPicker.markPlayed([t.outTrack.file_id, t.inTrack.file_id]);
       refreshSuggestions();
       MixPlanner.neutral(t.inDeck, engine.ctx.currentTime, 1);
       ['btn-abort-transition', 'btn-manual-override'].forEach(id => {

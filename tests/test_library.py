@@ -106,6 +106,25 @@ def test_prepare_one_track_per_audio_and_flags(lib):
     assert row["analysis"]["content_sha1"] == row["sha1"]
 
 
+def test_listing_tells_folder_age_and_how_much_is_sung(lib):
+    """What the browser's crates sort by: the sub-folder, when the file came in, how much is sung."""
+    music, calls = lib
+    (music / "house" / "deep").mkdir()
+    (music / "top.mp3").write_bytes(b"audio top")
+    (music / "house" / "deep" / "low.mp3").write_bytes(b"audio low")
+    prep()
+    tracks = {t["title"]: t for t in library.ready_tracks()}
+    assert tracks["top.mp3"]["folder"] == "" and tracks["low.mp3"]["folder"] == "house/deep"
+    assert all(t["added"] > 0 for t in tracks.values())
+    assert tracks["top.mp3"]["sung"] is None                  # no vocal labels yet: unknown, not instrumental
+    fid = tracks["top.mp3"]["file_id"]
+    an = library.get(fid)["analysis"]
+    an["vocal_source"] = "stems:htdemucs"
+    an["section_map"][1]["has_vocals"] = False
+    library.save_analysis(fid, an)
+    assert {t["title"]: t for t in library.ready_tracks()}["top.mp3"]["sung"] == 0.5
+
+
 def test_rerun_only_touches_what_changed(lib, monkeypatch):
     music, calls = lib
     (music / "a.mp3").write_bytes(b"audio a")
