@@ -739,6 +739,58 @@ def _jev_agreement(ratings: list) -> list:
     return [agree, len(liked) * len(disliked)]
 
 
+MIX_LOG_KEEP = 2000
+
+
+def _mix_log_path() -> str:
+    """The mix log (frontend/js/mix_log.js): next to the library's index in local mode, else with uploads."""
+    folder = os.path.dirname(library.db_path()) if library.enabled() else UPLOAD_DIR
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, "mix_log.jsonl")
+
+
+@app.post("/api/mix-log")
+async def post_mix_log(request: Request):
+    """One mix as the console performed and metered it, kept as a line of JSON (the last MIX_LOG_KEEP)."""
+    entry = await request.json()
+    if not isinstance(entry, dict):
+        raise HTTPException(status_code=400, detail="a JSON object")
+    entry["logged"] = time.time()
+
+    def append():
+        path = _mix_log_path()
+        lines = open(path).read().splitlines() if os.path.exists(path) else []
+        lines = (lines + [json.dumps(entry)])[-MIX_LOG_KEEP:]
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("\n".join(lines) + "\n")
+        os.replace(tmp, path)
+        return len(lines)
+
+    count = await run_in_threadpool(append)
+    return JSONResponse(content={"status": "success", "count": count})
+
+
+@app.get("/api/mix-log")
+async def get_mix_log(limit: int = 100):
+    """The latest logged mixes, newest first."""
+    def read():
+        path = _mix_log_path()
+        if not os.path.exists(path):
+            return []
+        out = []
+        for line in reversed(open(path).read().splitlines()):
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+            if len(out) >= max(1, min(limit, MIX_LOG_KEEP)):
+                break
+        return out
+
+    return JSONResponse(content={"status": "success", "entries": await run_in_threadpool(read)})
+
+
 @app.get("/api/feedback/summary")
 async def feedback_summary():
     """Likes and ratings per feature key: {count, keys: {key: [likes, ratings]}}, and under "jev.agree"

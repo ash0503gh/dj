@@ -652,7 +652,17 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .sound-check { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sound-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .conf-pick { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
-.soon-pick { margin-left: auto; cursor: pointer; }
+.soon-pick { cursor: pointer; }
+.mixlog-btn { margin-left: auto; height: 22px; padding: 0 8px; font-size: 10px; }
+.mixlog-card { width: min(760px, 94vw); }
+.mixlog-note { margin: 0 0 10px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.mixlog-list { display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow-y: auto; }
+.mixlog-row { padding: 8px 10px; border: 1px solid var(--line-2); border-radius: 6px; display: flex; flex-direction: column; gap: 3px; }
+.mixlog-row.abrupt { border-color: var(--warn); }
+.mixlog-head { font-size: 13px; color: var(--text); }
+.mixlog-what { font-size: 11px; letter-spacing: 0.04em; color: var(--text-2); }
+.mixlog-row.abrupt .mixlog-what { color: var(--warn); }
+.mixlog-nums { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
 .soon-pick input { accent-color: var(--accent); margin: 0; }
 .conf-pick select { background: var(--raised); color: var(--text); border: 1px solid var(--line-3); border-radius: 4px;
   font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }

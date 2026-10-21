@@ -476,3 +476,13 @@ def test_a_prepared_copy_stays_the_one_listed(lib, monkeypatch):
     calls.clear()
     prep()
     assert [t["title"] for t in library.ready_tracks()] == ["Song.mp3"] and calls == []
+
+
+def test_mix_log_keeps_entries_newest_first(lib):
+    from backend import server
+    client = TestClient(server.app)
+    for i in range(3):
+        assert client.post("/api/mix-log", json={"label": f"mix {i}", "live": {"entry_rise_db": i}}).json()["count"] == i + 1
+    got = client.get("/api/mix-log", params={"limit": 2}).json()["entries"]
+    assert [e["label"] for e in got] == ["mix 2", "mix 1"]
+    assert os.path.exists(os.path.join(os.environ["PULSE_DATA"], "mix_log.jsonl"))    # next to the library index

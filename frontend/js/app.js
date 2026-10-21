@@ -938,6 +938,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   loadAvailableTracksDropdown();
 
+  // ── The mix log (mix_log.js): every mix and how it sounded live ──
+  if (window.MixLog) MixLog.init(engine);
+
   // ── Sound-effects pads (sfx_pads.js), on the beat of the deck on air: the playing deck with its fader
   // highest ──
   const sfxRoot = document.getElementById('sfx-pads');
@@ -2772,6 +2775,42 @@ document.addEventListener('DOMContentLoaded', () => {
     lastPerformed = recipe && !LOW_MEMORY && t.outDeck.audio.map.constant ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
                                               technique: t.tech } : null;
     if (recipe) runRecipe(t); else runCut(t);
+    logMix(t);
+  }
+
+  /** The mix log (mix_log.js): what this mix is, then how it sounds live, metered while it plays. */
+  function logMix(t) {
+    if (!window.MixLog) return;
+    const p = t.plan;
+    const bar = 4 * p.beatSec;
+    const marks = t.marks || {};
+    const start = marks.start !== undefined ? Math.min(marks.start, p.startCtx) : p.startCtx;
+    const blendLike = t.blend && !(p.style && p.style.kind === 'gap');
+    const name = tr => TrackPicker.cleanTitle(tr.title || tr.file_id);
+    MixLog.begin({
+      at: Date.now(),
+      out_title: name(t.outTrack), in_title: name(t.inTrack),
+      out_id: t.outTrack.file_id, in_id: t.inTrack.file_id,
+      label: p.style ? MixBlocks.label(p) : t.blend ? `${p.bars}-bar blend` : t.tech.replace(/_/g, ' '),
+      style: p.style || null, technique: t.tech, bars: p.bars,
+      confidence: typeof p.conf === 'number' ? p.conf : null,
+      mix_soon: !!t.soon,
+      out_bpm: t.outTrack.bpm, in_bpm: t.inTrack.bpm, in_ratio: +(p.tempoRatio || 1).toFixed(4),
+      glide: !!t.glide, glide_bpm: t.glide ? +(t.glide.s1 * t.outTrack.bpm).toFixed(1) : null,
+      in_trim_db: +(p.inTrimDb || 0).toFixed(1), out_trim_db: +((t.outDeck.trimDb || 0)).toFixed(1),
+      out_lufs: t.outTrack.loudness_body_lufs ?? null, in_lufs: t.inTrack.loudness_body_lufs ?? null,
+      stems: !!(p.style && ['vocalswap', 'drumsin'].includes(p.style.mids)),
+      check_bump_db: p.measured ? p.measured.loudness_bump_db ?? null : null,
+      check_dip_db: p.measured ? p.measured.loudness_dip_db ?? null : null,
+      check_flam_ms: p.measured ? p.measured.kick_flam_ms ?? null : null,
+    }, {
+      start,
+      swap: marks.swap !== undefined ? marks.swap : (blendLike ? MixPlanner.swapTime(p) : p.startCtx),
+      end: marks.end !== undefined ? marks.end : p.startCtx + bar,
+      // the incoming comes in over a quarter of a blend (at most 4 bars); a switch lands at once
+      entryEnd: blendLike ? p.startCtx + Math.min(4, Math.max(1, p.bars / 4)) * bar + 2 : p.startCtx + 2,
+      outNum: t.outDeckNum, inNum: t.inDeckNum,
+    });
   }
 
   /** A blend or a tempo-gap mix, in its style: the same automation the sound check measured. */

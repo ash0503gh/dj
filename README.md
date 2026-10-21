@@ -242,6 +242,13 @@ prepared tracks, and uploads are off.
 - When an Auto mix starts: waiting costs from the first second, so a later moment wins only when it is
   clearly better. MIX SOON (in the Auto mix header) only takes mixes that start within 30 s of pressing
   MIX, with no tempo glide first (the incoming takes the whole tempo gap, up to 12%).
+- MIX LOG (the LOG button in the Auto mix header): every mix the console plays, with what it was (style,
+  confidence, tempos and glide, how much the incoming was raised or lowered to match) and how it sounded,
+  metered live off the master and each deck: the level as the incoming comes in, the sharpest one-second
+  jump and when, the step at the bass swap. A jump of 3 dB or more is marked ABRUPT with the deck that made
+  it (the incoming, or the outgoing's own music, e.g. its drop landing as the mix starts). Kept in
+  `~/.pulsepro/mix_log.jsonl` (the last 2000); DOWNLOAD saves them as JSON.
+- The crossfader moves only when dragged or clicked (a click puts it there), never with a two-finger swipe.
 - `python -m backend.benchmark` is the yardstick for every change: grids that wander; the key and BPM
   against the files' own tags (old and new key estimate side by side); what the neural tracker changed;
   how the library's pairs split into blends (and those 12-20% apart that blend by gliding) and switches; how the rated Auto mixes

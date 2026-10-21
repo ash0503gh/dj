@@ -428,7 +428,7 @@ class BufferTransport {
 const LAYER_NAMES = ['vocals', 'drums', 'rest'];
 
 // The SFX pads' bus at LEVEL 0 dB (the LEVEL slider scales it)
-const SFX_BUS = 0.55;
+const SFX_BUS = 0.605;
 
 /** Seeded white noise (-1..1): FX that must sound the same on every render of a mix. */
 function seededNoise(n, seed) {

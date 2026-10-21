@@ -150,6 +150,15 @@
     const fader = { el, input, last: null };
     faders.push(fader);
 
+    // The crossfader goes where it is clicked and follows the drag; it ignores swipes (a two-finger move on
+    // a trackpad passing over it must never move the mix)
+    const absolute = el.classList.contains('fader-cross');
+    const at = (e) => {
+      const p = UI.local(e, el);
+      const cap = parseFloat(getComputedStyle(el).getPropertyValue('--cap-w')) || 22;
+      const q = Math.max(0, Math.min(1, (p.x - cap / 2) / Math.max(1, p.w - cap)));
+      return parseFloat(input.min) + q * (parseFloat(input.max) - parseFloat(input.min));
+    };
     let start = 0, startV = 0;
     el.addEventListener('pointerdown', (e) => {
       e.preventDefault();
@@ -158,9 +167,11 @@
       const p = UI.local(e, el);
       start = vertical ? p.y : p.x;
       startV = parseFloat(input.value);
+      if (absolute && !e.shiftKey) setValue(input, at(e));
     });
     el.addEventListener('pointermove', (e) => {
       if (!el.hasPointerCapture(e.pointerId)) return;
+      if (absolute && !e.shiftKey) { setValue(input, at(e)); return; }
       const len = vertical ? el.clientHeight : el.clientWidth;
       const range = parseFloat(input.max) - parseFloat(input.min);
       const p = UI.local(e, el);
@@ -168,8 +179,8 @@
       setValue(input, startV + (d / Math.max(40, len - 24)) * range * (e.shiftKey ? 0.25 : 1));
     });
     el.addEventListener('pointerup', (e) => el.releasePointerCapture(e.pointerId));
-    // A two-finger swipe (or wheel) moves it too: fingers up or to the right raise it
-    el.addEventListener('wheel', (e) => {
+    // A two-finger swipe (or wheel) moves it too: fingers up or to the right raise it (not the crossfader)
+    if (!absolute) el.addEventListener('wheel', (e) => {
       e.preventDefault();
       const range = parseFloat(input.max) - parseFloat(input.min);
       setValue(input, parseFloat(input.value) + (swipePx(e) / WHEEL_PX) * range * (e.shiftKey ? 0.25 : 1));
