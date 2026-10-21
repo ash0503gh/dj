@@ -344,9 +344,10 @@ async def _library() -> list:
 
 @app.get("/api/suggest-next")
 async def suggest_next(file_id: str, bpm: Optional[float] = None, exclude: List[str] = Query([]),
-                       limit: int = 6):
+                       limit: int = 6, soon: bool = False):
     """Library tracks that mix best after `file_id` on air at `bpm` (next_track.py): stored analyses
-    only, no AI. `exclude`: file ids not to suggest (the other deck's track, tracks already played)."""
+    only, no AI. `exclude`: file ids not to suggest (the other deck's track, tracks already played).
+    `soon`: MIX SOON is on (no tempo glide before a mix)."""
     import urllib.parse
     fid = urllib.parse.unquote(file_id)
     an = await get_cached_analysis(fid)
@@ -355,7 +356,7 @@ async def suggest_next(file_id: str, bpm: Optional[float] = None, exclude: List[
     out = next_track.features(dict(an, file_id=fid))
     if not out:
         return JSONResponse(content={"status": "success", "suggestions": []})
-    ranked = next_track.rank(out, bpm or out["bpm"], await _library(), exclude, max(1, min(12, limit)))
+    ranked = next_track.rank(out, bpm or out["bpm"], await _library(), exclude, max(1, min(12, limit)), glide=not soon)
     return JSONResponse(content={"status": "success", "suggestions": ranked})
 
 

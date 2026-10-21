@@ -663,6 +663,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .mixlog-what { font-size: 11px; letter-spacing: 0.04em; color: var(--text-2); }
 .mixlog-row.abrupt .mixlog-what { color: var(--warn); }
 .mixlog-nums { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+.mixlog-why { font-size: 11px; color: var(--text-2); line-height: 1.45; }
 .soon-pick input { accent-color: var(--accent); margin: 0; }
 .conf-pick select { background: var(--raised); color: var(--text); border: 1px solid var(--line-3); border-radius: 4px;
   font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }

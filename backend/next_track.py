@@ -1,16 +1,19 @@
 """
 next_track.py - Which library track to load next, after the one on air.
 
-Scored from the stored analyses alone (no AI, no audio): how close the tempo is (within
-GLIDE_MAX the console can beat-match and blend, at the track's own tempo or at half or double time,
-the two tempos meeting halfway past GLIDE_FROM; beyond it only switch), how well the keys sit
-together (Camelot), how much room the track gives to blend in (instrumental intro before its lead
-vocal, and not much quieter than its body), and how close its loudness is. The same song uploaded
-under several names or decks is suggested once.
+Scored from the stored analyses alone (no AI, no audio), the way the console will really mix it
+(MixPlanner.mixTempo): how close the tempo is (at the track's own tempo up to GLIDE_MAX apart, the two
+meeting halfway past GLIDE_FROM, by a glide; at half or double its tempo up to MAX_STRETCH, the
+incoming stretched, never glided; with MIX SOON no glide at all; beyond that only a switch), how well
+the keys sit together (Camelot: half as much for a switch, where they are never heard together), how
+much room the track gives to blend in (instrumental intro before its lead vocal, and not much quieter
+than its body), and how close its loudness is. A track the console can blend is always suggested
+before one it can only switch to. The same song under several names or decks is suggested once.
 """
 
 from typing import Any, Dict, Iterable, List, Optional
 
+MAX_STRETCH = 0.12           # frontend MixPlanner.MAX_STRETCH: the gap the incoming alone can take
 GLIDE_FROM = 0.04            # frontend MixPlanner.GLIDE_FROM: past it the outgoing glides to meet it halfway
 GLIDE_MAX = 0.20             # frontend MixPlanner.GLIDE_MAX: tempo gap beyond which there is no blend
 CLEAN_STRETCH = 0.08         # frontend MixPlanner.CLEAN_STRETCH: stretching past it costs a little
@@ -92,34 +95,39 @@ def song_key(title: str) -> str:
     return "".join(ch for ch in t if ch.isalnum())
 
 
-def tempo_fit(master_bpm: float, bpm: float):
-    """(gap, multiple): the tempo gap at the multiple of its tempo a blend can match (1: its own, 2: at
-    half time, 0.5: at double time; its own first, as the console's MixPlanner.tempoMultiple), or its
-    own gap and None when no blend can."""
+def tempo_fit(master_bpm: float, bpm: float, glide: bool = True):
+    """(gap, multiple): the tempo gap at the multiple of its tempo a blend can match, as the console's
+    MixPlanner.mixTempo decides (its own tempo first; 2: at half time, 0.5: at double time), or its own
+    gap and None when no blend can. At its own tempo the two meet halfway by a glide, up to GLIDE_MAX
+    apart either way round (`glide` False, MIX SOON: up to MAX_STRETCH); at half or double time the
+    incoming alone takes the gap, up to MAX_STRETCH."""
     for m in (1, 2, 0.5):
         g = master_bpm / (bpm * m) - 1
-        if max(1 + g, 1 / (1 + g)) - 1 <= GLIDE_MAX:       # either way round: they meet halfway
+        if abs(g) <= MAX_STRETCH or (m == 1 and glide and max(1 + g, 1 / (1 + g)) - 1 <= GLIDE_MAX):
             return g, m
     return master_bpm / bpm - 1, None
 
 
-def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[str, Any]:
-    """0-100 for playing `cand` after `out` (on air at `master_bpm`), with the reasons in words."""
-    gap, multiple = tempo_fit(master_bpm, cand["bpm"])
+def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any], glide: bool = True) -> Dict[str, Any]:
+    """0-100 for playing `cand` after `out` (on air at `master_bpm`), with the reasons in words.
+    `glide` False: MIX SOON is on (no glide before a mix)."""
+    gap, multiple = tempo_fit(master_bpm, cand["bpm"], glide)
     g = abs(gap)
     blend = multiple is not None
-    if g <= 0.02:
+    if not blend:
+        tempo = 0.0                       # a switch: no tempo to match
+    elif g <= 0.02:
         tempo = 40.0
-    elif g <= CLEAN_STRETCH:
-        tempo = 40 - 15 * (g - 0.02) / (CLEAN_STRETCH - 0.02)
-    elif blend:
-        tempo = 25 - 13 * (g - CLEAN_STRETCH) / (GLIDE_MAX - CLEAN_STRETCH)
+    elif g <= GLIDE_FROM:
+        tempo = 40 - 4 * (g - 0.02) / (GLIDE_FROM - 0.02)          # the incoming keylocked, a little
+    elif g <= MAX_STRETCH:
+        tempo = 36 - 10 * (g - GLIDE_FROM) / (MAX_STRETCH - GLIDE_FROM)   # a short glide, or a stretch
     else:
-        tempo = max(0.0, 12 - 100 * (g - GLIDE_MAX))
+        tempo = 26 - 10 * (g - MAX_STRETCH) / (GLIDE_MAX - MAX_STRETCH)   # a long glide: needs time
     if multiple in (2, 0.5):
-        tempo -= 5                        # a blend at its own tempo is still the classic one
+        tempo -= 10                       # half or double time: the groove changes under the blend
     sev = key_severity(out.get("camelot"), cand.get("camelot"))
-    key = 30 * (1 - sev)
+    key = (30 if blend else 15) * (1 - sev)   # a switch never plays the two keys together
     time = {2: " at half time", 0.5: " at double time"}.get(multiple, "")
     meet = ", meeting halfway" if g > GLIDE_FROM else ""
     reasons = [f"blends{time} ({g * 100:.1f}% tempo{meet})" if blend else f"tempo {g * 100:.0f}% away: switch only"]
@@ -160,14 +168,16 @@ def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[
 
 
 def rank(out: Dict[str, Any], master_bpm: float, library: Iterable[Dict[str, Any]],
-         exclude: Iterable[str] = (), limit: int = 6) -> List[Dict[str, Any]]:
+         exclude: Iterable[str] = (), limit: int = 6, glide: bool = True) -> List[Dict[str, Any]]:
     """The best `limit` tracks to play after `out`, one copy per song, never `out` itself or a song
-    in `exclude` (file ids: the other deck's track, tracks already played)."""
+    in `exclude` (file ids: the other deck's track, tracks already played). Tracks the console can
+    blend come first, then those it can only switch to; by score within each."""
     lib = [c for c in library if c]
     ex = set(exclude)
     taken = set(out.get("songs") or []).union(*[c["songs"] for c in lib if c["file_id"] in ex])
     best = []
-    for c, s in sorted(((c, score(out, master_bpm, c)) for c in lib), key=lambda cs: -cs[1]["score"]):
+    scored = ((c, score(out, master_bpm, c, glide)) for c in lib)
+    for c, s in sorted(scored, key=lambda cs: (not cs[1]["blend"], -cs[1]["score"])):
         if not taken.intersection(c["songs"]):   # the best-scoring copy of each song
             best.append(s)
         taken.update(c["songs"])

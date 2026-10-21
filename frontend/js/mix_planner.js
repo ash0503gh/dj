@@ -390,14 +390,17 @@ const MixPlanner = (() => {
         }
         if (q) p = q;
         else {
+          const flamMs = p.flamMs;
           p = plan(outTrack, outDeck, inTrack, p.bars, Object.assign({}, opts, { exit: p.exitNative, blend: false }));
           technique = opts.cutTechnique || 'echo_freeze';
+          p.notBlend = flamMs === null ? 'grid unsure' : `kicks drift ${Math.round(flamMs)} ms`;   // (the mix log)
         }
       }
       // Too near the end for a real blend (it would last a bar or two): an echo out there instead
       if (technique === 'blend' && p.bars < 4) {
         p = plan(outTrack, outDeck, inTrack, p.bars, Object.assign({}, opts, { blend: false }));
         technique = opts.cutTechnique || 'echo_freeze';
+        p.notBlend = 'too near the end';
       }
       const key = `${technique}@${p.bars}@${p.exitNative.toFixed(2)}@${p.inStartNative.toFixed(1)}@${p.loop ? 'loop' : ''}`;
       if (seen.has(key)) return;

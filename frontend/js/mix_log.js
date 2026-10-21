@@ -168,6 +168,17 @@ const MixLog = (() => {
         ` · swap ${fmt(l.swap_step_db)} · after ${fmt(l.after_vs_before_db)}` +
         ` · trim in ${fmt(e.in_trim_db)} · sound check bump ${fmt(e.check_bump_db)}`;
       row.append(head, what, nums);
+      const sr = e.search;
+      if (sr) {
+        const fam = (b, name) => (b ? `best ${name} ${b.conf}% (sound ${b.sound}, taste ${b.taste}` +
+          `${b.lost && b.lost.length ? `; lost: ${b.lost.map(([w, v]) => `${w} −${v}`).join(', ')}` : ''})` : `no ${name} measured`);
+        const turned = Object.entries(sr.became_switches || {}).map(([why, n]) => `${n} blend moments became switches (${why})`);
+        const why = document.createElement('div');
+        why.className = 'mixlog-why';
+        why.textContent = [sr.no_blend ? `no blend: ${sr.no_blend}` : `${sr.blends_measured} of ${sr.blends} blends measured`,
+                           fam(sr.best_blend, 'blend'), fam(sr.best_switch, 'switch')].concat(turned).join(' · ');
+        row.append(why);
+      }
       return row;
     }));
   }

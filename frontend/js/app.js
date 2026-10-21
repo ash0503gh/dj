@@ -979,6 +979,9 @@ document.addEventListener('DOMContentLoaded', () => {
       bpm: MixPlanner.deckBpm(outTrack, outNum === 1 ? engine.deck1 : engine.deck2).toFixed(2),
     });
     [nextTrack && nextTrack.file_id, ...playedIds].filter(Boolean).forEach(id => params.append('exclude', id));
+    // MIX SOON: no glide before a mix, so the suggestions count only what blends without one
+    const soonBox = document.getElementById('mix-soon-toggle');
+    if (soonBox && soonBox.checked) params.set('soon', 'true');
     try {
       const res = await fetch(`/api/suggest-next?${params}`);
       const data = await res.json();
@@ -1906,6 +1909,7 @@ document.addEventListener('DOMContentLoaded', () => {
     try { mixSoonToggle.checked = localStorage.getItem('mix_soon') === '1'; } catch (e) { /* blocked */ }
     mixSoonToggle.addEventListener('change', () => {
       try { localStorage.setItem('mix_soon', mixSoonToggle.checked ? '1' : '0'); } catch (e) { /* storage blocked */ }
+      refreshSuggestions();          // what blends depends on it
     });
   }
   const mixSoon = () => !!(mixSoonToggle && mixSoonToggle.checked);
@@ -2787,7 +2791,34 @@ document.addEventListener('DOMContentLoaded', () => {
     const start = marks.start !== undefined ? Math.min(marks.start, p.startCtx) : p.startCtx;
     const blendLike = t.blend && !(p.style && p.style.kind === 'gap');
     const name = tr => TrackPicker.cleanTitle(tr.title || tr.file_id);
+    // What the search found: the best blend and the best switch it measured (and what cost them points),
+    // and why blend moments became switches
+    const cands = t.search || [];
+    const measured = cands.filter(c => c.measured && typeof c.conf === 'number');
+    const family = c => (c.technique === 'blend' ? 'blend' : 'switch');
+    const best = f => measured.filter(c => family(c) === f).sort((a, b) => b.conf - a.conf)[0] || null;
+    const describe = c => c && {
+      label: MixBlocks.label(c), conf: c.conf, sound: Math.round(TransitionLab.soundScore(c)),
+      taste: Math.round(100 * TransitionLab.taste(c, tastePrefs)), lost: TransitionLab.penaltyParts(c).slice(0, 3),
+    };
+    const notBlend = {};
+    cands.filter(c => c.notBlend).forEach(c => {           // per moment (each has several styles)
+      const why = c.notBlend.replace(/\s*\d+ ms/, '');
+      (notBlend[why] = notBlend[why] || new Set()).add(`${c.exitNative.toFixed(1)}|${c.bars}`);
+    });
+    Object.keys(notBlend).forEach(k => { notBlend[k] = notBlend[k].size; });
+    const search = cands.length ? {
+      candidates: cands.length,
+      blends: cands.filter(c => family(c) === 'blend').length,
+      blends_measured: measured.filter(c => family(c) === 'blend').length,
+      switches_measured: measured.filter(c => family(c) === 'switch').length,
+      no_blend: !t.tempo ? 'tempos too far apart' : null,
+      became_switches: notBlend,
+      best_blend: describe(best('blend')),
+      best_switch: describe(best('switch')),
+    } : null;
     MixLog.begin({
+      search,
       at: Date.now(),
       out_title: name(t.outTrack), in_title: name(t.inTrack),
       out_id: t.outTrack.file_id, in_id: t.inTrack.file_id,

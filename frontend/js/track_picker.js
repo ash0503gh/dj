@@ -2,7 +2,8 @@
  * track_picker.js - The decks' track browser. Every library track once (the server merges copies),
  * under a clean name, with search, A-Z or tempo order, the suggested next tracks on top, and how each
  * track's tempo sits with the other deck's: "BLENDS" within 20% (the console stretches it, keylocked,
- * the tempos meeting halfway), "HALF-TIME" / "DOUBLE-TIME" when it blends at half or double its tempo,
+ * the tempos meeting halfway; 12% with MIX SOON), "HALF-TIME" / "DOUBLE-TIME" within 12% at half or
+ * double its tempo,
  * or how far apart. Tracks played this session are dimmed.
  *
  * Crates, down the left (across the top on a phone): every track; smart crates (FITS NOW: blends with
@@ -13,6 +14,7 @@
  */
 const TrackPicker = (() => {
   const BLEND_GAP = 0.20;   // MixPlanner.GLIDE_MAX (tempos past 4% apart meet halfway, gliding)
+  const STRETCH_GAP = 0.12; // MixPlanner.MAX_STRETCH (half or double time, or MIX SOON: no glide)
   const NEW_DAYS = 30;
   const BANDS = [[0, 85], [85, 100], [100, 115], [115, 130], [130, 999]];
   const SUNG = 0.25;        // a track sung over at least this share of it is "vocal"; under INSTRUMENTAL
@@ -209,7 +211,12 @@ const TrackPicker = (() => {
 
     function tempoHint(bpm, otherBpm) {
       if (!otherBpm || !bpm) return null;
-      const fits = m => Math.max(otherBpm / (bpm * m), bpm * m / otherBpm) - 1 <= BLEND_GAP;   // MixPlanner.mixTempo
+      // As the console mixes (MixPlanner.mixTempo): at its own tempo up to 20% apart by a glide (12% with
+      // MIX SOON: no glide); at half or double time the incoming alone takes at most 12%
+      const soonBox = document.getElementById('mix-soon-toggle');
+      const glide = !(soonBox && soonBox.checked);
+      const fits = m => (m === 1 && glide ? Math.max(otherBpm / (bpm * m), bpm * m / otherBpm) - 1 <= BLEND_GAP
+                                          : Math.abs(otherBpm / (bpm * m) - 1) <= STRETCH_GAP);
       if (fits(1)) return { text: 'BLENDS', ok: true };
       if (fits(2)) return { text: 'HALF-TIME', ok: true };
       if (fits(0.5)) return { text: 'DOUBLE-TIME', ok: true };

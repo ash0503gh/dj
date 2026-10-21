@@ -518,6 +518,33 @@ const TransitionLab = (() => {
              1.5 * Math.max(0, (m.level_change_db || 0) - 6)).toFixed(2);
   }
 
+  /** What cost a measured candidate its sound score (the parts of penalty() and soundScore()), biggest
+   *  first: [[what, points], ...] (the mix log shows why a mix lost). */
+  function penaltyParts(c) {
+    const m = c.measured;
+    if (!m) return [];
+    const stretch = c.technique === 'blend' ? Math.max(0, Math.abs((c.tempoRatio || 1) - 1) - MixPlanner.CLEAN_STRETCH) : 0;
+    const parts = [
+      [`kicks ${m.kick_flam_ms || 0} ms apart`, (m.kick_flam_ms || 0) / 2],
+      [`no bass ${m.bass_gap_s || 0} s`, 2 * (m.bass_gap_s || 0)],
+      [`two basses ${m.bass_overlap_s || 0} s`, 2 * (m.bass_overlap_s || 0)],
+      [`level dip ${m.loudness_dip_db} dB`, 3 * Math.max(0, -(m.loudness_dip_db || 0) - 1.5)],
+      [`level bump ${m.loudness_bump_db} dB`, 3 * Math.max(0, (m.loudness_bump_db || 0) - 1.5)],
+      [`hole ${m.hole_db} dB`, 3 * Math.max(0, (m.hole_db || 0) - 4)],
+      [`mids clash ${m.mid_clash_s || 0} s`, m.mid_clash_s || 0],
+      [`highs clash ${m.high_clash_s || 0} s`, m.high_clash_s || 0],
+      [`incoming pops in ${m.entry_pop_db} dB`, 2 * Math.max(0, (m.entry_pop_db || 0) - 6)],
+      [`gets louder ${m.rise_before_swap_db} dB before the swap`, 3 * Math.max(0, (m.rise_before_swap_db || 0) - 4)],
+      [`room ${m.level_change_db} dB louder after`, 1.5 * Math.max(0, (m.level_change_db || 0) - 6)],
+      [`cuts a vocal line ${c.vocalCutSec || 0} s`, 0.25 * Math.min(30, c.vocalCutSec || 0)],
+      [`enters mid-vocal ${c.vocalInSec || 0} s`, 0.25 * Math.min(30, c.vocalInSec || 0)],
+      [`two vocals ${c.vocalOverlapSec || 0} s`, 0.5 * Math.min(30, c.vocalOverlapSec || 0)],
+      [`stretched ${Math.round(Math.abs((c.tempoRatio || 1) - 1) * 100)}%`, 50 * stretch],
+      ['keys clash', 0.5 * (c.keySeverity || 0) * (m.tonal_overlap_s || 0)],
+    ];
+    return parts.filter(([, v]) => v >= 0.5).sort((a, b) => b[1] - a[1]).map(([w, v]) => [w, +v.toFixed(1)]);
+  }
+
   /**
    * Which engine picks the best transition? For one track pair: build the live console's
    * candidates, render and score every one, then ask each engine to pick.
@@ -650,7 +677,7 @@ const TransitionLab = (() => {
     return { blob: wav16(rendered), duration: rendered.duration, marks };
   }
 
-  return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed,
+  return { run, benchmark, promptAB, quickScore, measureAll, acceptable, settle, renderBlend, exportPerformed, penaltyParts,
            taste, soundScore, confidence, likesBonus, jevWeight };
 })();
 

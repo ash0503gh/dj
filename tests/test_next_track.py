@@ -97,3 +97,23 @@ def test_loudness_by_lufs_when_both_prepared():
     a, b = next_track.score(out, 124.0, same), next_track.score(out, 124.0, quiet)
     assert a["score"] > b["score"]
     assert any("quieter" in r for r in b["reasons"]) and not any("dB" in r for r in a["reasons"])
+
+
+def test_suggests_what_the_console_can_really_blend_before_any_switch():
+    """The console glides only at a track's own tempo (up to 20% apart); at half or double time the
+    incoming alone takes at most 12%; with MIX SOON nothing glides. A track it can only switch to never
+    ranks above one it can blend, whatever its key."""
+    lib = [next_track.features(a) for a in LIB + [
+        analysis("deck_1_switch_key.mp3", 160.0, "8A", "s"),      # 31% away: switch only, same key
+        analysis("deck_1_half_far.mp3", 53.0, "8A", "f"),         # 15% off at half time: switch only
+        analysis("deck_1_glide.mp3", 105.0, "8A", "g"),           # 16% away: blends only by gliding
+    ]]
+    ranked = next_track.rank(lib[0], 122.0, lib, limit=12)
+    by = {r["file_id"]: r for r in ranked}
+    assert not by["deck_1_switch_key.mp3"]["blend"] and not by["deck_1_half_far.mp3"]["blend"]
+    blends = [r["blend"] for r in ranked]
+    assert blends == sorted(blends, reverse=True)                     # every blend before any switch
+    assert ranked.index(by["deck_1_rubs.mp3"]) < ranked.index(by["deck_1_switch_key.mp3"])
+    assert by["deck_1_glide.mp3"]["blend"] and "meeting halfway" in by["deck_1_glide.mp3"]["reasons"][0]
+    soon = {r["file_id"]: r for r in next_track.rank(lib[0], 122.0, lib, limit=12, glide=False)}
+    assert not soon["deck_1_glide.mp3"]["blend"]                      # MIX SOON: no glide, so a switch
