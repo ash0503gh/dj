@@ -309,6 +309,23 @@ const TransitionLab = (() => {
     const heard = beatsDb.slice(a0, Math.max(a0 + 1, a1 + 1)).map((v, k) => (inSoft(a0 + k) ? v + SOFT_ALLOW_DB : v))
       .filter((v, k) => !inBuild(a0 + k));
     const hole = heard.length ? floorDb - Math.min(...heard) : 0;
+    // How suddenly the incoming appears before the swap (its entry): the most it gains from one beat to
+    // the next over what was there (its previous beat, or 20 dB under the outgoing: quieter isn't heard).
+    // A fade rises a few dB a beat; a track popping in at half volume jumps 10 or more. The swap and a
+    // switch's landing are meant to be sudden: not counted
+    // Full band, and the highs (>3 kHz) on their own: a filtered entry (a wash's hats and vocals) is all highs
+    const swapBeat = Math.floor(marks.swap / beat);
+    const popOf = (inDb, outDb) => {
+      let worst = 0;
+      for (let b = Math.max(1, a0 - 16); b < Math.min(swapBeat, inDb.length); b++) {
+        if (inDb[b] < -100) continue;
+        worst = Math.max(worst, inDb[b] - Math.max(inDb[b - 1], outDb[b] - 20));
+      }
+      return worst;
+    };
+    const popFull = popOf(blockDb(ch[1], nBeat), blockDb(ch[0], nBeat));
+    const popHigh = popOf(highs[1], highs[0]);
+    const pop = Math.max(popFull, popHigh);
     const m = {
       // Kicks apart over the blend, from both tracks' grid checks (MixPlanner.flamCheck: the same kicks this
       // render plays, measured once per track instead of in every render)
@@ -322,6 +339,8 @@ const TransitionLab = (() => {
       tonal_overlap_s: +(tonal * beat).toFixed(2),
       loudness_dip_db: +(Math.min(...during) - Math.min(pre, post)).toFixed(2),
       loudness_bump_db: +(Math.max(...during) - Math.max(pre, post)).toFixed(2),
+      entry_pop_db: +pop.toFixed(2),
+      entry_pop_high_db: +popHigh.toFixed(2),
     };
     return Object.assign(m, { penalty: penalty(m) });
   }
@@ -482,7 +501,8 @@ const TransitionLab = (() => {
     // A cut never overlaps: its "flam" compares two tempos that are never heard together
     return +((cut ? 0 : (m.kick_flam_ms || 0) / 2) + 2 * (m.bass_gap_s || 0) + 2 * (m.bass_overlap_s || 0) +
              3 * Math.max(0, -(m.loudness_dip_db || 0) - 1.5) + 3 * Math.max(0, (m.loudness_bump_db || 0) - 1.5) +
-             3 * Math.max(0, (m.hole_db || 0) - 4) + (m.mid_clash_s || 0) + (m.high_clash_s || 0)).toFixed(2);
+             3 * Math.max(0, (m.hole_db || 0) - 4) + (m.mid_clash_s || 0) + (m.high_clash_s || 0) +
+             2 * Math.max(0, (m.entry_pop_db || 0) - 6)).toFixed(2);
   }
 
   /**

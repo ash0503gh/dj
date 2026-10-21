@@ -40,6 +40,17 @@ const MixBlocks = (() => {
     param.exponentialRampToValueAtTime(f1, t1);
   }
 
+  /** param rises from silence to gain `to` over [t0, t1], evenly in loudness (from -30 dB, eased at both
+   *  ends): no moment where the track pops in. */
+  function riseIn(param, t0, t1, to) {
+    const top = 20 * Math.log10(to);
+    param.setValueAtTime(0, t0);
+    for (let i = 1; i <= 24; i++) {
+      const x = i / 24, e = x * x * (3 - 2 * x);
+      param.linearRampToValueAtTime(i === 24 ? to : Math.pow(10, (-30 + (top + 30) * e) / 20), t0 + x * (t1 - t0));
+    }
+  }
+
   /** Reverb throw: the send opens over [t0, t] and closes at t as the dry signal goes, so the
    *  room rings on over what comes next. Returns how long it rings. */
   function reverbOut(deck, t0, t) {
@@ -193,7 +204,7 @@ const MixBlocks = (() => {
     const inFrom = T - inLead;
     const outVol = outDeck.faderGain.gain.value;
     neutral(outDeck, T - Math.max(lead, beat, fx) - 0.05, outVol);
-    neutral(inDeck, inFrom - 0.05, s.entry === 'split' || s.soft ? 0.5 : 0.7);
+    neutral(inDeck, inFrom - 0.05, s.entry === 'split' ? 0 : s.soft ? 0.5 : 0.7);
     setTrim(inDeck, p.inTrimDb || 0, inFrom - 0.05);
 
     if (s.entry === 'split') {
@@ -204,7 +215,11 @@ const MixBlocks = (() => {
       inF.setValueAtTime(3000, inFrom);
       inF.exponentialRampToValueAtTime(150, T - 0.03);
       inF.exponentialRampToValueAtTime(20, T);
-      curve(inDeck.faderGain.gain, inFrom, T, 0.5, 1);
+      // The incoming fades in from silence, to half volume over the first three quarters of the wash, then
+      // to full on the switch (it used to start at half volume at once: its highs jumped ~25 dB in a beat)
+      const mid = inFrom + 0.75 * (T - inFrom);
+      riseIn(inDeck.faderGain.gain, inFrom, mid, 0.5);
+      curve(inDeck.faderGain.gain, mid, T, 0.5, 1);
     } else {
       if (soft) {
         // Soft landing: the incoming rises in (fader from half, its high-pass opening from 300 Hz)
