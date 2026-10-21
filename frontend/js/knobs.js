@@ -4,14 +4,35 @@
  * The <input type="range"> inside each .knob / .fader stays the source of truth: app.js reads and
  * writes its value and listens to its 'input' events, and it keeps keyboard control (arrow keys).
  * This only draws the control (knob pointer + value ring with 0 at twelve o'clock; fader slot,
- * scale and cap) and turns drags, wheel and double-clicks into input changes. Browsers draw
+ * scale and cap) and turns drags, wheel and double-clicks into input changes. Made for a trackpad as
+ * much as a mouse: a two-finger swipe turns a knob as far as the fingers travel, a drag works up or to
+ * the right, the knob's label is part of the target, and the value shows while it turns. Browsers draw
  * vertical native sliders inconsistently, so faders never rely on that. Controls follow
  * programmatic changes too (transition automation moves EQs and faders), by redrawing every
  * animation frame when a value changed.
  */
 (() => {
   const SWEEP = 135;       // degrees either side of twelve o'clock
-  const DRAG_PX = 160;     // pixels of vertical drag for the full range
+  const DRAG_PX = 160;     // pixels of drag (up or right) for the full range
+  const WHEEL_PX = 400;    // pixels of two-finger swipe (or wheel) for the full range
+  const WHEEL_STEP = 24;   // a mouse wheel's big notch moves at most 1/WHEEL_STEP of the range
+
+  /** Scroll distance in pixels, up = positive; a notch of a mouse wheel capped to a small step. */
+  function wheelPx(e) {
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 400 : 1;     // lines or pages to pixels
+    const px = -e.deltaY * unit;
+    const cap = WHEEL_PX / WHEEL_STEP;
+    return Math.max(-cap, Math.min(cap, px));
+  }
+
+  /** What a knob reads while it turns: dB for EQs, low-/high-pass for the filter, else the number. */
+  function readout(input) {
+    const v = parseFloat(input.value);
+    if (/-eq-/.test(input.id)) return `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`;
+    if (/-filter$/.test(input.id)) return v < 0 ? `LP ${Math.round(-v * 2)}` : v > 0 ? `HP ${Math.round(v * 2)}` : 'OFF';
+    const step = parseFloat(input.step) || 1;
+    return v.toFixed(step < 1 ? 1 : 0);
+  }
 
   function angleOf(input) {
     const v = parseFloat(input.value), min = parseFloat(input.min), max = parseFloat(input.max);
@@ -42,26 +63,48 @@
     const knob = { el, input, last: null };
     knobs.push(knob);
 
-    let startY = 0, startV = 0;
-    el.addEventListener('pointerdown', (e) => {
+    // The knob and its label are one target (its KILL button keeps its own clicks)
+    const target = el.closest('.knob-group') || el;
+    const label = target.querySelector('.knob-label');
+    const name = label ? label.textContent : '';
+    let showing = null;
+    const show = () => {               // the value in place of the label while it turns
+      if (!label) return;
+      target.classList.add('turning');
+      label.textContent = readout(input);
+      clearTimeout(showing);
+      showing = setTimeout(() => { label.textContent = name; target.classList.remove('turning'); }, 900);
+    };
+    const mine = e => !e.target.closest('button');
+
+    let startX = 0, startY = 0, startV = 0;
+    target.addEventListener('pointerdown', (e) => {
+      if (!mine(e)) return;
       e.preventDefault();
       input.focus({ preventScroll: true });
-      el.setPointerCapture(e.pointerId);
-      startY = UI.local(e, el).y;
+      target.setPointerCapture(e.pointerId);
+      const p = UI.local(e, el);
+      startX = p.x;
+      startY = p.y;
       startV = parseFloat(input.value);
+      show();
     });
-    el.addEventListener('pointermove', (e) => {
-      if (!el.hasPointerCapture(e.pointerId)) return;
+    target.addEventListener('pointermove', (e) => {
+      if (!target.hasPointerCapture(e.pointerId)) return;
       const range = parseFloat(input.max) - parseFloat(input.min);
       const fine = e.shiftKey ? 0.25 : 1;
-      setValue(input, startV + ((startY - UI.local(e, el).y) / DRAG_PX) * range * fine);
+      const p = UI.local(e, el);
+      setValue(input, startV + ((startY - p.y + p.x - startX) / DRAG_PX) * range * fine);
+      show();
     });
-    el.addEventListener('pointerup', (e) => el.releasePointerCapture(e.pointerId));
-    el.addEventListener('dblclick', () => setValue(input, 0));
-    el.addEventListener('wheel', (e) => {
+    target.addEventListener('pointerup', (e) => target.releasePointerCapture(e.pointerId));
+    target.addEventListener('dblclick', (e) => { if (mine(e)) { setValue(input, 0); show(); } });
+    target.addEventListener('wheel', (e) => {
+      if (!mine(e)) return;
       e.preventDefault();
       const range = parseFloat(input.max) - parseFloat(input.min);
-      setValue(input, parseFloat(input.value) - Math.sign(e.deltaY) * range / 60);
+      setValue(input, parseFloat(input.value) + (wheelPx(e) / WHEEL_PX) * range * (e.shiftKey ? 0.25 : 1));
+      show();
     }, { passive: false });
   });
 
@@ -106,6 +149,13 @@
       setValue(input, startV + (d / Math.max(40, len - 24)) * range * (e.shiftKey ? 0.25 : 1));
     });
     el.addEventListener('pointerup', (e) => el.releasePointerCapture(e.pointerId));
+    // A two-finger swipe (or wheel) moves it too: up raises a vertical fader, right moves a horizontal one
+    el.addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const range = parseFloat(input.max) - parseFloat(input.min);
+      const px = vertical ? wheelPx(e) : Math.max(-WHEEL_PX / WHEEL_STEP, Math.min(WHEEL_PX / WHEEL_STEP, -e.deltaX || wheelPx(e)));
+      setValue(input, parseFloat(input.value) + (px / WHEEL_PX) * range * (e.shiftKey ? 0.25 : 1));
+    }, { passive: false });
     if (el.dataset.reset !== undefined) {
       el.addEventListener('dblclick', () => setValue(input, parseFloat(el.dataset.reset)));
     }
