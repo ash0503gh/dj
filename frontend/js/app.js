@@ -1942,6 +1942,60 @@ document.addEventListener('DOMContentLoaded', () => {
     return stretchCache.get(key);
   }
 
+  // ── Stems while mixing (local mode, tracks with stems): a window of each deck's stems at the tempo it
+  // will play, rendered by the server and lined up with the deck's own audio (/api/track-layers). One
+  // window per track and tempo is kept; a mix uses them when they cover its moment ──
+  const layerCache = new Map();          // `${file_id}@${ratio}` -> { start, end, promise }
+  const LAYER_SPAN = 150;                // seconds of native time a window covers (~1 MB a second decoded)
+  const LAYER_WAIT_MS = 3000;            // how long a search waits for windows still on their way
+
+  function layersFor(track, ratio, start, end) {
+    ratio = Math.round(ratio * 1e6) / 1e6;
+    start = Math.max(0, Math.floor(start));
+    end = Math.ceil(Math.min(end, (track.duration || end) + 1));   // (the server pads past the track's end)
+    const key = `${track.file_id}@${ratio}`;
+    const have = layerCache.get(key);
+    if (have && have.start <= start && have.end >= end) return have.promise;
+    const promise = fetch(`/api/track-layers/${encodeURIComponent(track.file_id)}?ratio=${ratio}&start=${start}&end=${end}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
+      .then(ab => engine.ctx.decodeAudioData(ab))
+      .then(buffer => ({ buffer, start, ratio }))
+      .catch(err => {
+        console.warn('Stems unavailable for this mix:', err);
+        if (layerCache.get(key) && layerCache.get(key).promise === promise) layerCache.delete(key);
+        return null;
+      });
+    // Only the decks' windows are kept (a window is ~1 MB a second in memory)
+    const onDecks = [track1Data, track2Data].filter(Boolean).map(x => x.file_id);
+    for (const k of [...layerCache.keys()]) {
+      if (k.startsWith(`${track.file_id}@`) || !onDecks.includes(k.slice(0, k.lastIndexOf('@')))) layerCache.delete(k);
+    }
+    layerCache.set(key, { start, end, promise });
+    return promise;
+  }
+
+  /** Whether both tracks have stems the decks can play here (local mode, not on a phone). */
+  const stemsAtHand = (outTrack, inTrack) => localLibrary && !LOW_MEMORY && outTrack.stems && inTrack.stems;
+
+  /** Both decks' windows where mixes happen: the outgoing's last LAYER_SPAN seconds (from where it is,
+   *  if that's later), the incoming's from just before its intro, at master tempo `ratio`. */
+  function requestLayers(outTrack, outDeck, inTrack, ratio) {
+    const dur = outTrack.duration || outDeck.audio.duration || LAYER_SPAN;
+    const from = Math.max(outDeck.audio.currentTime, dur - LAYER_SPAN);
+    const intro = Math.max(0, (inTrack.suggested_cue_intro || 0) - 10);
+    return Promise.all([
+      layersFor(outTrack, outDeck.audio.tempoRatio, from, from + LAYER_SPAN),
+      layersFor(inTrack, ratio, intro, intro + LAYER_SPAN),
+    ]).then(([out, inc]) => (out && inc ? { out, inc } : null));
+  }
+
+  /** The windows already asked for (by the prefetch) for these two tracks at these tempos, or null. */
+  function pendingLayers(outTrack, outDeck, inTrack, ratio) {
+    const get = (track, r) => layerCache.get(`${track.file_id}@${Math.round(r * 1e6) / 1e6}`);
+    const out = get(outTrack, outDeck.audio.tempoRatio), inc = get(inTrack, ratio);
+    return out && inc ? Promise.all([out.promise, inc.promise]).then(([o, i]) => (o && i ? { out: o, inc: i } : null)) : null;
+  }
+
   /** Start rendering the next incoming track at the current master tempo before it's needed. */
   function prefetchIncoming() {
     if (!track1Data || !track2Data || isTransitioning) return;
@@ -1954,6 +2008,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const multiple = MixPlanner.tempoMultiple(outBpm, inTrack.bpm);
     const ratio = multiple ? outBpm / (inTrack.bpm * multiple) : 1;
     if (Math.abs(ratio - 1) >= 0.0005) stretchedBuffer(inTrack, ratio);
+    // Their stems for a blend at its own tempo (half- and double-time blends play the tracks whole)
+    if (multiple === 1 && stemsAtHand(outTrack, inTrack)) {
+      requestLayers(outTrack, isDir1to2 ? engine.deck1 : engine.deck2, inTrack, ratio);
+    }
+  }
+
+  /** The stem windows a search can use: both decks', when the blends play at the incoming's own tempo,
+   *  its keylocked copy is in (the sound check must hear what plays) and they arrive in time; and each
+   *  skeleton marked (sk.stems) when they cover its moment. */
+  async function stemLayersFor(t, skeletons, multiple) {
+    const blends = skeletons.filter(sk => sk.technique === 'blend');
+    if (multiple !== 1 || !blends.length || !stemsAtHand(t.outTrack, t.inTrack)) return null;
+    const ratio = blends[0].tempoRatio;
+    // The prefetched windows (asked for now if they weren't): rendering more while the search runs
+    // would come too late for it
+    const ready = Promise.all([
+      Math.abs(ratio - 1) >= 0.0005 ? stretchedBuffer(t.inTrack, ratio) : Promise.resolve(true),
+      pendingLayers(t.outTrack, t.outDeck, t.inTrack, ratio) || requestLayers(t.outTrack, t.outDeck, t.inTrack, ratio),
+    ]).then(([stretched, layers]) => (stretched && layers ? layers : null));
+    const layers = await Promise.race([ready, new Promise(r => setTimeout(() => r(null), LAYER_WAIT_MS))]);
+    if (!layers) {
+      console.info('Stems not ready for this mix: blends without them');
+      return null;
+    }
+    const outSpeed = MixPlanner.deckSpeed(t.outDeck);
+    blends.forEach(sk => {
+      const sec = (sk.bars + (sk.tailBars || 0)) * 4 * sk.beatSec;   // the blend (MixBlocks.performBlend)
+      const inside = (w, a, b) => w.start <= a && b <= w.start + w.buffer.duration * w.ratio;
+      sk.stems = !sk.loop && inside(layers.out, sk.exitNative, sk.exitNative + sec * outSpeed)
+        && inside(layers.inc, sk.inStartNative, sk.inStartNative + (sec + 4 * sk.beatSec) * sk.tempoRatio);
+    });
+    console.info(`Stems at hand for ${blends.filter(sk => sk.stems).length} of ${blends.length} blend moments`);
+    return layers;
   }
 
   function setPlayUI(btn, playing) {
@@ -2150,6 +2237,8 @@ document.addEventListener('DOMContentLoaded', () => {
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 16, extraExits,
     });
     const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, inPlanned, searchOpts);
+    t.layers = await stemLayersFor(t, skeletons, multiple);
+    if (activeTransition !== t) return;
     // At half or double time the washes and switches of the tempo gap stay on offer (as fallbacks to a
     // blend: a DJ blends when tempos allow): the search weighs the blends against them
     if (multiple && multiple !== 1) {
@@ -2166,6 +2255,7 @@ document.addEventListener('DOMContentLoaded', () => {
       cands.push(Object.assign(c, { rank, keySeverity: clash, tempoGap, late: start > pressedAt + MAX_WAIT_SEC,
                                     lastResort: MixBlocks.lastResort(c),
                                     vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0,
+                                    vocalOverlapSec: MixBlocks.vocalOverlap(c, t.outTrack, t.inTrack),
                                     vocalInSec: t.inTrack.vocal_source ? MixBlocks.vocalIn(c, t.inTrack) : 0 }));
     }));
     if (!cands.length) {
@@ -2354,6 +2444,10 @@ document.addEventListener('DOMContentLoaded', () => {
                           : { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: stretch ? ratio : 1 };
     const out = { buffer: t.outDeck.audio.buffer, tempoRatio: t.outDeck.audio.tempoRatio,
                   rate: t.outDeck.audio.playbackRate, trimDb: t.outDeck.trimDb || 0 };
+    if (t.layers) {
+      out.layers = t.layers.out;
+      inc.layers = t.layers.inc;
+    }
     const native = { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: 1 };
     await TransitionLab.measureAll(cands, out, inc, native, RENDERS_AT_ONCE);
   }
@@ -2484,6 +2578,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const T = p.startCtx;
     const lead = p.inLeadSec || 0;                        // a filter wash starts the incoming early
     t.inDeck.play(T - lead, p.inStartNative - lead);
+    // The stem windows the sound check heard (used by the stem styles only)
+    t.outDeck.layers = t.layers ? t.layers.out : null;
+    t.inDeck.layers = t.layers ? t.layers.inc : null;
     t.marks = MixBlocks.perform(p, t.outDeck, t.inDeck);
     atCtx(t, T - lead, () => setPlayUI(t.inBtnPlay, true));
     atCtx(t, t.marks.end + 0.05, () => completeTransition(t));
@@ -2570,6 +2667,7 @@ document.addEventListener('DOMContentLoaded', () => {
         setPitchReadout(t.outDeckNum);
       }
       pruneStretchCache(t.outTrack.file_id);
+      t.outDeck.layers = t.inDeck.layers = null;   // the windows were for this mix
       [t.outTrack.file_id, t.inTrack.file_id].forEach(id => { if (id) playedIds.add(id); });
       refreshSuggestions();
       MixPlanner.neutral(t.inDeck, engine.ctx.currentTime, 1);

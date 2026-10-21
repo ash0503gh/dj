@@ -472,7 +472,8 @@ const MixPlanner = (() => {
   function deckParams(deck) {
     return [deck.faderGain.gain, deck.eqLow.gain, deck.eqMid.gain, deck.eqHigh.gain,
             deck.lowCut1.frequency, deck.lowCut2.frequency, deck.filterHPF.frequency, deck.filterLPF.frequency,
-            deck.echoSend.gain].concat(deck.reverbSend ? [deck.reverbSend.gain] : []);
+            deck.echoSend.gain].concat(deck.reverbSend ? [deck.reverbSend.gain] : [],
+                                       deck.layerGains ? Object.values(deck.layerGains).map(g => g.gain) : []);
   }
 
   function clearAutomation(deck, t) {
@@ -506,6 +507,7 @@ const MixPlanner = (() => {
     deck.filterLPF.frequency.setValueAtTime(Math.min(20000, deck.ctx.sampleRate / 2), t);
     deck.echoSend.gain.setValueAtTime(1, t);
     if (deck.reverbSend) deck.reverbSend.gain.setValueAtTime(0, t);
+    if (deck.layerGains) Object.values(deck.layerGains).forEach(g => g.gain.setValueAtTime(1, t));
   }
 
   /** Bass swap downbeat: on the incoming drop when it's planned to land at the blend's end,

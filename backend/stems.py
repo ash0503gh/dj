@@ -134,3 +134,84 @@ def label_vocals(an: Dict[str, Any], sung: np.ndarray) -> None:
     downbeats: List[float] = an.get("downbeat_times") or []
     an["vocal_bars"] = [round(share(sung, a, b), 2) for a, b in zip(downbeats[:-1], downbeats[1:])]
     an["vocal_source"] = f"stems:{MODEL}"
+
+
+# ── Layers: what a deck plays during a mix that uses its stems ──
+
+LAYERS = ("vocals", "drums", "rest")    # rest = bass + other: the bass swap's isolator handles the bass
+LAYER_PAD_SEC = 1.0                     # decoded either side of the window, so the stretcher starts warm
+MAX_ALIGN_SEC = 0.06                    # the most the layers are moved to line up with the deck's audio
+
+
+def _decode_opus(path: str) -> np.ndarray:
+    out = subprocess.run(['ffmpeg', '-v', 'error', '-i', path, '-f', 'f32le', '-ac', '2', '-ar', str(SR), '-'],
+                         capture_output=True, check=True).stdout
+    return np.frombuffer(out, dtype=np.float32).reshape(-1, 2).T
+
+
+def _stretch(x: np.ndarray, ratio: float) -> np.ndarray:
+    """All channels of x (C x N) through the keylocked stretcher together (the same timing for every
+    stem), as the deck's own copy is stretched (stretch.py)."""
+    from .stretch import tempo_filter, has_rubberband
+    f = tempo_filter(ratio) + (":channels=together" if has_rubberband() else "")
+    out = subprocess.run(['ffmpeg', '-v', 'error', '-f', 'f32le', '-ar', str(SR), '-ac', str(len(x)), '-i', '-',
+                          '-af', f, '-f', 'f32le', '-'],
+                         input=np.ascontiguousarray(x.T).tobytes(), capture_output=True, check=True).stdout
+    return np.frombuffer(out, dtype=np.float32).reshape(-1, len(x)).T
+
+
+def _lag(a: np.ndarray, ref: np.ndarray, most: int) -> int:
+    """Samples by which `a` sits late against `ref` (cross-correlation, within ±most); 0 when unclear."""
+    n = min(len(a), len(ref))
+    size = 1 << int(np.ceil(np.log2(2 * n)))
+    xc = np.fft.irfft(np.fft.rfft(a[:n], size) * np.conj(np.fft.rfft(ref[:n], size)), size)
+    lags = np.concatenate([np.arange(0, most + 1), np.arange(-most, 0)])
+    vals = np.concatenate([xc[:most + 1], xc[-most:]])
+    k = int(np.argmax(vals))
+    clear = vals[k] > 0.5 * np.sqrt(np.dot(a[:n], a[:n]) * np.dot(ref[:n], ref[:n]))
+    return int(lags[k]) if clear else 0
+
+
+def render_layers(folder: str, reference: str, ratio: float, start: float, end: float) -> np.ndarray:
+    """The layers (6 x N: vocals, drums, rest as stereo pairs) of native [start, end) at `ratio` x tempo,
+    sample 0 at native `start` played at that tempo, lined up with `reference`: the very file the deck
+    plays (the track, or its keylocked copy at `ratio`), whose sample k is native k / SR * ratio."""
+    p = paths(folder)
+    s = {k: _decode_opus(p[k]) for k in SOURCES}
+    n = min(v.shape[1] for v in s.values())
+    a = max(0, int((start - LAYER_PAD_SEC) * SR))
+    b = min(n, int((end + LAYER_PAD_SEC) * SR))
+    x = np.vstack([s["vocals"][:, a:b], s["drums"][:, a:b], s["bass"][:, a:b] + s["other"][:, a:b]])
+    if abs(ratio - 1) >= 0.0005:
+        x = _stretch(x, ratio)
+    # where native `start` falls in x, and in the deck's own file
+    skip = int(round((start - a / SR) / ratio * SR))
+    ref0 = int(round(start / ratio * SR))
+    from .audio_analyzer import load_mono
+    ref = load_mono(reference, SR)
+    look = min(x.shape[1] - skip, int(20 * SR))           # 20 s are plenty to line up on
+    mix = x[0::2].sum(axis=0)[skip:skip + look] + x[1::2].sum(axis=0)[skip:skip + look]
+    lag = _lag(mix, ref[ref0:ref0 + look] * 2, int(MAX_ALIGN_SEC * SR))
+    skip += lag
+    length = int(round((end - start) / ratio * SR))
+    out = np.zeros((6, length), np.float32)
+    seg = x[:, max(0, skip):skip + length]
+    out[:, max(0, -skip):max(0, -skip) + seg.shape[1]] = seg
+    return out
+
+
+def write_flac(x: np.ndarray, dst: str) -> None:
+    """Multichannel float32 (C x N, at SR) to 16-bit FLAC (decodes in Chrome with its channel order)."""
+    subprocess.run(['ffmpeg', '-v', 'error', '-y', '-f', 'f32le', '-ar', str(SR), '-ac', str(len(x)), '-i', '-',
+                    '-c:a', 'flac', '-sample_fmt', 's16', dst],
+                   input=np.ascontiguousarray(np.clip(x, -1, 1).T, dtype=np.float32).tobytes(), check=True)
+
+
+def layers_file(folder: str, reference: str, ratio: float, start: float, end: float, dst: str) -> str:
+    """render_layers into a FLAC at `dst` (once: kept for the next request of the same window)."""
+    if not os.path.exists(dst):
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        tmp = dst + ".part.flac"
+        write_flac(render_layers(folder, reference, ratio, start, end), tmp)
+        os.replace(tmp, dst)
+    return dst

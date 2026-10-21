@@ -105,7 +105,7 @@ incoming never plays.
 Done when: downbeat errors on a hand-checked set of library tracks are near zero, and key agreement
 with the files' tags is clearly above the old estimate's (the benchmark's TAGS line).
 
-### Phase 4: Stems, Tier 3b (M-L) · part 1 built (stems, vocals), part 2 in progress (mixing with them)
+### Phase 4: Stems, Tier 3b (M-L) · built, to verify on the Mac (Demucs and live stem mixes)
 
 Part 1, built: Demucs v4 (htdemucs) separates each track once, one at a time after the other stages, on
 the Mac's GPU; the stems are kept as Ogg Opus (~13 MB a song; sample-aligned, checked in Chromium).
@@ -114,7 +114,19 @@ The vocal stem labels every section and bar (`vocal_bars`): on a synthetic track
 labels Gemini gave before are kept to compare (the benchmark's STEMS line). Demucs couldn't run in the
 build environment (its weights host is blocked there): its first real separation is the Mac's.
 
-Part 2, the plan:
+Part 2, built: decks can play a track as its stems (vocals, drums, rest) during a mix. The server
+renders a window of them at the deck's tempo and lines it up with the deck's own audio (kicks within
+0.12 ms, stretched or not); the deck crossfades to them and back seamlessly (null test: -70 dB with all
+stems up), live and in the sound check alike. Two blend styles use them, offered only where both decks'
+windows cover the moment: "vocals swap" (the outgoing vocal goes over the beat before the bass swap,
+the incoming's comes in on it) and "drums in" (the incoming's drums alone until the bar before the
+swap). Every blend now counts the seconds two lead vocals are heard together, by the vocal stems
+(0.5 points a second), so the search moves away from vocal clashes. Windows are prefetched where mixes
+happen (the outgoing's last 150 s, the incoming's first 150 s) and only on a computer (~1 MB a second
+in memory). Seen working offline end to end; a stem style winning a live Auto mix is still to be heard
+on real songs on the Mac.
+
+The original plan:
 - Demucs v4 (htdemucs) as a prepare stage on the GPU, cached as compressed stems (~30 MB per track).
 - Stem-aware mix blocks: hand over the outgoing vocal stem instead of ducking mids, bring the incoming
   in as drums only, acapella over instrumental, cleaner bass swap.

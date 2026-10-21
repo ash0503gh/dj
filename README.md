@@ -187,6 +187,11 @@ prepared tracks, and uploads are off.
   track with all their work. A track whose file is removed is kept, so adding it back costs nothing.
   Only a stage this code improves runs again, on your Mac, for free.
 - With stems (below) no song needs Gemini: their vocal stem says where the lead sings, for free.
+- Mixing with stems: when both tracks have them, Auto also tries "vocals swap" (the outgoing vocal goes as
+  the bass swaps and the incoming's comes in on it: never two lead vocals at once) and "drums in" (the
+  incoming's drums alone until the bar before the swap), and every blend is charged for the seconds two
+  lead vocals would be heard together. The decks play the stems only during the mix, from windows the
+  server renders at the deck's tempo and lines up with its audio (`/api/track-layers`).
 - Gemini (paid) never listens during a set. `python -m backend.library listen` has it listen once to
   every prepared song it hasn't heard: it shows the estimated cost in rupees, asks first, keeps to
   `--max-inr`, prints what each song really cost, and saves as it goes. Prepare reminds you how many

@@ -112,6 +112,7 @@ const TransitionLab = (() => {
     }
     const decks = [[new DJDeckAudio(ctx, 1, busOut), out], [new DJDeckAudio(ctx, 2, busIn), inc]];
     for (const [deck, side] of decks) {
+      deck.layers = side.layers || null;     // its stems for this moment, when the mix uses them
       deck.audio.buffer = side.buffer;
       deck.audio.nativeBuffer = { duration: side.buffer.duration * side.tempoRatio };
       deck.audio.tempoRatio = side.tempoRatio;
@@ -397,7 +398,8 @@ const TransitionLab = (() => {
   // lead vocal before its line ends costs 0.25 points a second (c.vocalCutSec, up to 30 s), so does
   // bringing the incoming in partway through a sung line (c.vocalInSec), and with
   // clashing keys (c.keySeverity, 0-1) the two tracks' midrange heard together costs up to 0.5 points a
-  // second. A blend that stretches the incoming more than 8% (keylocked) costs 0.5 points per extra
+  // second, as does each second two lead vocals are heard together by the tracks' vocal stems
+  // (c.vocalOverlapSec). A blend that stretches the incoming more than 8% (keylocked) costs 0.5 points per extra
   // percent. Taste: the DJ's ratings of this kind of mix (prefs = { key: [likes, ratings] }, keys from
   // MixBlocks.prefKeys), starting from a prior that a clean handover will please, and a switch too when
   // the tempos are too far apart to blend (when they aren't, the DJ wants a blend: a switch is a
@@ -458,6 +460,7 @@ const TransitionLab = (() => {
     if (!c.measured) return null;
     const stretch = c.technique === 'blend' ? Math.max(0, Math.abs((c.tempoRatio || 1) - 1) - MixPlanner.CLEAN_STRETCH) : 0;
     const penalty = c.measured.penalty + 0.25 * Math.min(30, c.vocalCutSec || 0) + 0.25 * Math.min(30, c.vocalInSec || 0)
+      + 0.5 * Math.min(30, c.vocalOverlapSec || 0)      // two lead vocals heard together (by the stems)
       + 50 * stretch
       + 0.5 * (c.keySeverity || 0) * (c.measured.tonal_overlap_s || 0);
     return Math.max(0, Math.min(100, 100 - 5 * Math.max(0, penalty - 1.5)));

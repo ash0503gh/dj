@@ -214,13 +214,49 @@ class BufferTransport {
   }
 
   /** Mute the main (slip) playback between two ctx times, e.g. while a roll plays slices. */
-  muteBetween(t0, t1) {
+  muteBetween(t0, t1, ramp = 0.003) {
     if (!this._node) return;
     const g = this._node.gain.gain;
     g.setValueAtTime(1, t0);
-    g.linearRampToValueAtTime(0, t0 + 0.003);
-    g.setValueAtTime(0, t1 - 0.003);
+    g.linearRampToValueAtTime(0, t0 + ramp);
+    g.setValueAtTime(0, t1 - ramp);
     g.linearRampToValueAtTime(1, t1);
+  }
+
+  /**
+   * Play the track as its stems from ctx t0 to t1. `layers` = { buffer: 6 channels (vocals, drums, rest
+   * as stereo pairs), start: the native time at its sample 0, ratio: the tempo ratio it was rendered at
+   * (this deck's, lined up with its buffer by the server) }; each pair goes into gains[name]. The full
+   * track is muted meanwhile, crossfading over 10 ms either side: the stems sum to it, so nothing is
+   * heard to change until a stem's gain moves. Returns the source (stopped with the deck's other FX),
+   * or null when the window doesn't cover [t0, t1] at this deck's tempo.
+   */
+  playLayers(layers, gains, t0, t1) {
+    if (!layers || this._paused || Math.abs(layers.ratio - this.tempoRatio) > 1e-6) return null;
+    const offset = (this.timeAt(t0) - layers.start) / this.tempoRatio;
+    if (offset < 0 || offset + (t1 - t0) * this._rate > layers.buffer.duration) return null;
+    const ctx = this.ctx;
+    const src = ctx.createBufferSource();
+    src.buffer = layers.buffer;
+    src.playbackRate.value = this._rate;
+    const fade = ctx.createGain();
+    const split = ctx.createChannelSplitter(6);
+    src.connect(fade).connect(split);
+    LAYER_NAMES.forEach((name, i) => {
+      const pair = ctx.createChannelMerger(2);
+      split.connect(pair, 2 * i, 0);
+      split.connect(pair, 2 * i + 1, 1);
+      pair.connect(gains[name]);
+    });
+    const XF = 0.01;
+    fade.gain.setValueAtTime(0, t0);
+    fade.gain.linearRampToValueAtTime(1, t0 + XF);
+    fade.gain.setValueAtTime(1, t1 - XF);
+    fade.gain.linearRampToValueAtTime(0, t1);
+    this.muteBetween(t0, t1, XF);
+    src.start(t0, offset);
+    src.stop(t1 + 0.02);
+    return src;
   }
 
   unmute() {
@@ -278,6 +314,9 @@ class BufferTransport {
   }
 }
 
+// A track's stems as a deck plays them in a mix (rest = bass + other: the isolator swaps the bass)
+const LAYER_NAMES = ['vocals', 'drums', 'rest'];
+
 /** Seeded white noise (-1..1): FX that must sound the same on every render of a mix. */
 function seededNoise(n, seed) {
   const out = new Float32Array(n);
@@ -315,6 +354,15 @@ class DJDeckAudio {
 
     this.source = this.ctx.createGain();
     this.audio = new BufferTransport(this.ctx, this.source);
+    // The track's stems while a mix uses them (BufferTransport.playLayers), each through its own gain;
+    // `layers` is the window of them for the mix ahead (set by the console or the sound check)
+    this.layerGains = {};
+    LAYER_NAMES.forEach(name => {
+      const g = this.ctx.createGain();
+      g.connect(this.source);
+      this.layerGains[name] = g;
+    });
+    this.layers = null;
 
     this.audio.addEventListener('play', () => { this.isPlaying = true; });
     this.audio.addEventListener('pause', () => { this.isPlaying = false; });

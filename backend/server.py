@@ -11,6 +11,7 @@ import json
 import shutil
 import gc
 import time
+import glob
 import hashlib
 import asyncio
 import functools
@@ -1200,6 +1201,37 @@ async def track_stem(file_id: str, stem: str):
     if not os.path.exists(path):
         raise HTTPException(status_code=404, detail="Stems not separated yet")
     return FileResponse(path, media_type="audio/ogg", headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/api/track-layers/{file_id:path}")
+async def track_layers(file_id: str, ratio: float = 1.0, start: float = 0.0, end: float = 0.0):
+    """What a deck plays while a mix uses its stems: native [start, end) of a library track as 6-channel
+    FLAC (vocals, drums, rest as stereo pairs) at `ratio` x tempo, lined up with the copy the deck plays
+    (the track, or its keylocked copy at `ratio`), sample 0 at native `start` (stems.render_layers)."""
+    import urllib.parse
+    fid = urllib.parse.unquote(file_id)
+    if not 0.8 <= ratio <= 1.25 or not 0 <= start < end or end - start > 300:
+        raise HTTPException(status_code=400, detail="ratio 0.8-1.25, 0 <= start < end, at most 300 s")
+    folder = library.stems_folder(fid) if library.enabled() else ""
+    if not folder or not track_stems.have(folder):
+        raise HTTPException(status_code=404, detail="No stems for this track")
+    path = await local_track(fid)
+    ratio = round(ratio, 6)
+    reference = path
+    if abs(ratio - 1) >= 0.0005:
+        reference = stretched_path(path, ratio, STRETCH_DIR, name=fid)
+        if not os.path.exists(reference):
+            grid = ((await get_cached_analysis(fid)) or {}).get("grid")
+            reference = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid, name=fid)
+    key = hashlib.sha1(f"{fid}|{ratio}|{start:.3f}|{end:.3f}".encode()).hexdigest()[:16]
+    dst = os.path.join(OUTPUT_DIR, "layers", f"{key}.flac")
+    out = await heavy(track_stems.layers_file, folder, reference, ratio, start, end, dst)
+    # Keep the disk bounded: the last 16 windows
+    files = sorted(glob.glob(os.path.join(OUTPUT_DIR, "layers", "*.flac")), key=os.path.getmtime)
+    for old in files[:-16]:
+        if old != out:
+            os.remove(old)
+    return stream_file(out, "audio/flac", {"Cache-Control": "no-cache"})
 
 
 @app.post("/api/grid-confirm")

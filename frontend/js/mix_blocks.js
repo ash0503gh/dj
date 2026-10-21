@@ -24,6 +24,8 @@ const MixBlocks = (() => {
   const FX_BEATS = { brake: 2, spinback: 2 };   // a vinyl brake or a spinback takes the last two beats
   const LAST_RESORT = new Set(['brake', 'spinback']);   // showy exits a DJ keeps for when nothing mixes cleanly
   const HATS_HZ = 4000;   // 'hats' blends: the incoming's high-pass until the swap (above melody and voice)
+  const STEM_MIDS = new Set(['vocalswap', 'drumsin']);   // blends played from both tracks' stems
+  const SUNG = 0.35;      // a bar sings when its vocal stem does for this share of it (stems.py SUNG_SHARE)
 
   // ── Moves on one deck ──
 
@@ -96,6 +98,25 @@ const MixBlocks = (() => {
       }
       inDeck.audio.muteBetween(T + 0.004, swap);
     }
+    // Stems: both decks play theirs through the blend (the incoming's a bar longer, all back to full by
+    // then), so a stem can come and go on its own. 'vocalswap': the outgoing's vocal goes over the beat
+    // before the bass swap and the incoming's comes over the beat after it (two lead vocals never
+    // together), the rest blends as 'overlap'. 'drumsin': the incoming plays its drums alone (their low
+    // end killed with its bass) until the bar before the swap, where its music comes in as the
+    // outgoing's mids go ('snap'); its vocal follows on the swap, as above
+    if (STEM_MIDS.has(s.mids)) {
+      keep(outDeck, outDeck.audio.playLayers(outDeck.layers, outDeck.layerGains, T, end));
+      keep(inDeck, inDeck.audio.playLayers(inDeck.layers, inDeck.layerGains, T, end + bar));
+      const beat = p.beatSec;
+      curve(outDeck.layerGains.vocals.gain, swap - beat, swap, 1, 0);
+      inDeck.layerGains.vocals.gain.setValueAtTime(0, T - 0.01);
+      curve(inDeck.layerGains.vocals.gain, swap, swap + beat, 0, 1);
+      if (s.mids === 'drumsin') {
+        inDeck.layerGains.rest.gain.setValueAtTime(0, T - 0.01);
+        curve(inDeck.layerGains.rest.gain, swap - bar, swap, 0, 1);
+        inDeck.eqMid.gain.setValueAtTime(0, T - 0.01);
+      }
+    }
     // Hats and groove in over the first quarter
     curve(inDeck.faderGain.gain, T, T + Math.min(4, q) * bar, 0, 1);
     curve(inDeck.eqHigh.gain, T, T + q * bar, -12, 0);
@@ -116,13 +137,13 @@ const MixBlocks = (() => {
       curve(inDeck.eqMid.gain, follow, swap, -14, 0);
     } else if (s.mids === 'crossfade') {
       curve(inDeck.eqMid.gain, around[0], around[1], -24, 0);
-    } else {
+    } else if (s.mids !== 'drumsin') {
       curve(inDeck.eqMid.gain, T, swap, -24, 0);
     }
     // Bass swap on the 1
     bassKill(outDeck, swap, true);
     bassKill(inDeck, swap, false);
-    if (s.mids === 'snap' || s.mids === 'hats') {
+    if (s.mids === 'snap' || s.mids === 'hats' || s.mids === 'drumsin') {
       curve(outDeck.eqMid.gain, swap - bar, swap - 0.25 * bar, 0, -24);
     } else if (s.mids === 'crossfade') {
       curve(outDeck.eqMid.gain, around[0], around[1], 0, -24);
@@ -261,7 +282,9 @@ const MixBlocks = (() => {
     const add = (style, extra = {}) => out.push(Object.assign({}, p, extra, { style }));
     if (p.technique === 'blend') {
       const clash = p.vocalClash || p.keyClash;
-      for (const mids of clash ? ['snap', 'crossfade', 'hats'] : ['overlap', 'crossfade', 'snap', 'hats']) {
+      // Stem styles where both decks have their stems for this moment (p.stems, set by the search)
+      const stemMids = p.stems && !p.loop ? ['vocalswap', 'drumsin'] : [];
+      for (const mids of (clash ? ['snap', 'crossfade', 'hats'] : ['overlap', 'crossfade', 'snap', 'hats']).concat(stemMids)) {
         for (const tail of ['eq', 'filter', 'echo', 'reverb']) add({ kind: 'blend', mids, tail });
       }
       return out;
@@ -327,7 +350,7 @@ const MixBlocks = (() => {
     let at;                                                   // ctx seconds after p.startCtx
     if (s.kind === 'blend') {
       const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
-      at = swapBar * bar - (['crossfade', 'snap', 'hats'].includes(s.mids) ? bar : 0);
+      at = swapBar * bar - (STEM_MIDS.has(s.mids) ? p.beatSec : ['crossfade', 'snap', 'hats'].includes(s.mids) ? bar : 0);
     } else {
       at = s.entry === 'split' || s.before !== 'none' ? -(s.leadBars || 0) * bar : 0;
     }
@@ -342,8 +365,8 @@ const MixBlocks = (() => {
     const bar = 4 * p.beatSec;
     const speed = gridOf(outTrack).period / p.beatSec;
     const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
-    const at = s.mids === 'snap' || s.mids === 'hats' ? swapBar * bar : s.mids === 'crossfade' ? (swapBar + 1) * bar
-      : (p.bars + (p.tailBars || 0) - 1) * bar;
+    const at = s.mids === 'snap' || s.mids === 'hats' || STEM_MIDS.has(s.mids) ? swapBar * bar
+      : s.mids === 'crossfade' ? (swapBar + 1) * bar : (p.bars + (p.tailBars || 0) - 1) * bar;
     return p.exitNative + at * speed;
   }
 
@@ -391,6 +414,36 @@ const MixBlocks = (() => {
     return Math.max(0, t - Math.max(...starts));
   }
 
+  /** Whether the track's lead vocal sings at native time t, by its vocal stem (vocal_bars, one value per
+   *  bar from the first downbeat); null without stems. */
+  function sungAt(track, t) {
+    const vb = track.vocal_bars, downs = track.downbeat_times;
+    if (!vb || !vb.length || !downs || !downs.length) return null;
+    const i = Math.floor((t - downs[0]) / (4 * gridOf(track).period));
+    return i >= 0 && i < vb.length ? vb[i] >= SUNG : false;
+  }
+
+  /** Seconds a blend lets two lead vocals be heard together, by both tracks' vocal stems: from where the
+   *  incoming's mids are up (half-way to the swap for 'overlap', the bar before it otherwise) to where
+   *  the outgoing's vocal is gone. A stem style hands the vocals over: never. null without stems. */
+  function vocalOverlap(p, outTrack, inTrack) {
+    const s = p.style || defaultStyle(p);
+    if (s.kind !== 'blend' || sungAt(outTrack, p.exitNative) === null || sungAt(inTrack, p.inStartNative) === null) return null;
+    if (STEM_MIDS.has(s.mids)) return 0;
+    const bar = 4 * p.beatSec;
+    const swapBar = p.swapBar !== undefined ? p.swapBar : Math.max(1, Math.round(p.bars / 2));
+    const from = s.mids === 'overlap' ? swapBar * bar / 2 : (swapBar - 1) * bar;
+    const outSpeed = gridOf(outTrack).period / p.beatSec;
+    const to = (vocalGone(p, outTrack) - p.exitNative) / outSpeed;
+    let both = 0;
+    for (let x = Math.max(0, from); x < to; x += p.beatSec) {
+      if (sungAt(outTrack, p.exitNative + x * outSpeed) && sungAt(inTrack, p.inStartNative + x * (p.tempoRatio || 1))) {
+        both += p.beatSec;
+      }
+    }
+    return +both.toFixed(2);
+  }
+
   /** Outgoing native times where a vocal run ends (the next section has no lead vocal), after `from`. */
   function vocalRunEnds(outTrack, from) {
     const secs = outTrack.section_map || [];
@@ -408,7 +461,8 @@ const MixBlocks = (() => {
     if (s.kind === 'blend') {
       const time = { 2: 'half-time ', 0.5: 'double-time ' }[p.tempoMultiple] || '';
       return `${p.bars}-bar ${time}blend` + ({ intro: ' from its intro', hook: ' into its hook', loop: ' over an intro loop' }[p.entry] || '') +
-             ({ snap: ', mids snap', crossfade: ', mids crossfade', hats: ', hats in' }[s.mids] || '') +
+             ({ snap: ', mids snap', crossfade: ', mids crossfade', hats: ', hats in', vocalswap: ', vocals swap',
+                drumsin: ', drums in' }[s.mids] || '') +
              ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '');
     }
     const after = { echo: 'echo out', reverb: 'reverb out', cut: 'cut', brake: 'vinyl brake',
@@ -427,7 +481,9 @@ const MixBlocks = (() => {
     if (s.kind === 'blend') {
       const mids = { overlap: 'mids blend gradually', snap: 'mids change hands over the bar before the bass swap',
                      crossfade: 'mids crossfade over the bar either side of the bass swap',
-                     hats: 'only the incoming hats play (high-passed) until the bar before the swap, where its filter opens as the outgoing mids go' }[s.mids];
+                     hats: 'only the incoming hats play (high-passed) until the bar before the swap, where its filter opens as the outgoing mids go',
+                     vocalswap: 'from the stems: the outgoing vocal goes over the beat before the bass swap and the incoming vocal comes in on it, never two vocals at once; the music blends gradually',
+                     drumsin: 'from the stems: the incoming drums play alone until the bar before the swap, where its music comes in as the outgoing mids go; the vocals hand over on the swap' }[s.mids];
       const tail = { eq: 'outgoing hats and fader down', filter: 'outgoing leaves through a rising high-pass',
                      echo: 'outgoing last beat echoes out', reverb: 'outgoing thrown into the reverb' }[s.tail];
       const enters = { intro: 'the incoming plays from its intro', hook: 'the incoming reaches its hook as the blend ends',
@@ -479,7 +535,7 @@ const MixBlocks = (() => {
   }
 
   return { perform, preSec, postSec, variants, defaultStyle, label, describe, prefKeys, lastResort, vocalCut,
-           vocalIn, vocalRunEnds };
+           vocalIn, vocalRunEnds, vocalOverlap, sungAt, STEM_MIDS };
 })();
 
 window.MixBlocks = MixBlocks;

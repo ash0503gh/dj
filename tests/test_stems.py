@@ -72,3 +72,23 @@ def test_opus_stems_stay_aligned_with_the_track(song):
     lag = int(np.argmax(np.fft.irfft(np.fft.rfft(y[:n]) * np.conj(np.fft.rfft(x[:n])))))
     lag = lag - n if lag > n // 2 else lag
     assert abs(lag) <= 2      # samples
+
+
+@pytest.mark.parametrize("ratio", [1.0, 1.05])
+def test_layer_windows_line_up_with_what_the_deck_plays(song, tmp_path, ratio):
+    # The kicks of a window of layers land where the deck's own copy (the track, or its keylocked copy)
+    # has them: the deck can switch to its stems mid-mix without a flam
+    from backend.stretch import stretch_file
+    from backend.grid_check import beat_offsets
+    d, path, an, truth = song
+    ref = path if ratio == 1 else stretch_file(path, ratio, str(tmp_path))
+    x = stems.render_layers(str(d), ref, ratio, 40.0, 60.0)
+    assert x.shape == (6, int(round(20.0 / ratio * SR)))
+    from backend.audio_analyzer import load_mono
+    mix = ((x[0::2].sum(0) + x[1::2].sum(0)) / 2).astype(np.float32)
+    r = load_mono(ref, SR)[int(round(40.0 / ratio * SR)):][:len(mix)]
+    beats = (np.array([b for b in truth["beat_times"] if 41 < b < 59]) - 40.0) / ratio
+    period = 60 / 124.0 / ratio
+    a = [o for o in beat_offsets(mix, SR, beats, period) if o is not None]
+    b = [o for o in beat_offsets(r, SR, beats, period) if o is not None]
+    assert len(a) > 20 and abs(np.median(a) - np.median(b)) < 0.001     # within 1 ms
