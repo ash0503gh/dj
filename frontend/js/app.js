@@ -1887,6 +1887,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const TIE_BUDGET_SEC = 8;    // how long the AI may take to rate or break a tie
   const MAX_WAIT_SEC = 60;     // a mix starts within a minute of pressing MIX...
   const LATE_WAIT_SEC = 120;   // ...unless none there clears the bar: then the next clean moment, within two
+  const MIX_SOON_SEC = 30;     // MIX SOON: only mixes that start (lead-in included) within this of pressing MIX
+  const WAIT_COST = 0.15;      // confidence points a second of waiting costs in the final choice
+  const mixSoonToggle = document.getElementById('mix-soon-toggle');
+  if (mixSoonToggle) {
+    try { mixSoonToggle.checked = localStorage.getItem('mix_soon') === '1'; } catch (e) { /* blocked */ }
+    mixSoonToggle.addEventListener('change', () => {
+      try { localStorage.setItem('mix_soon', mixSoonToggle.checked ? '1' : '0'); } catch (e) { /* storage blocked */ }
+    });
+  }
+  const mixSoon = () => !!(mixSoonToggle && mixSoonToggle.checked);
   // A family of blends: one moment and style but for how the outgoing leaves (its tail), which moves
   // the sound check little (at most 5.2 penalty points and 1.2 s of both tracks' midrange heard
   // together, over 519 comparisons on 9 pairs). Once one is measured, the rest are taken to sound at
@@ -2068,7 +2078,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (activeTransition !== t) return;
     }
     t.planDeck = deck;
-    const keylocked = deck.audio.playbackRate === 1 && deck.audio.map.constant && t.outTrack.grid && t.inTrack.grid;
+    // MIX SOON: no glide (it takes 30-70 s before a mix can start); the incoming takes the whole gap
+    const keylocked = deck.audio.playbackRate === 1 && deck.audio.map.constant && t.outTrack.grid && t.inTrack.grid
+      && !t.soon;
     let tempo = MixPlanner.mixTempo(t.outTrack, deck, t.inTrack, keylocked);
     // Room for the glide and a 16-bar blend after it (and what a mix may wait for)
     const span = tempo && tempo.glide ? glideSpan(deck, t.outTrack, tempo.outSpeed, 24) : null;
@@ -2281,6 +2293,7 @@ document.addEventListener('DOMContentLoaded', () => {
       t.outDeck.play();
       setPlayUI(t.outBtnPlay, true);
     }
+    t.soon = mixSoon();
     planMix(t);
   });
 
@@ -2306,6 +2319,7 @@ document.addEventListener('DOMContentLoaded', () => {
       keyClash: !camelotCompatible(t.outTrack.camelot, t.inTrack.camelot),
       phraseLock: togglePhraseLock ? togglePhraseLock.checked : true,
       notBefore: t.notBefore,
+      within: t.soon ? MIX_SOON_SEC + 8 : undefined,   // (the search keeps those whose lead-in fits too)
     };
     if (!t.inTrack.grid || !t.outTrack.grid) console.warn('Beat grid not analyzed yet: using an estimated grid');
 
@@ -2420,6 +2434,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const start = c.startCtx - MixBlocks.preSec(c);
       // Mixes count from the end of a glide: nothing of them is heard while the tempo still moves
       if (start - (t.settleCtx || pressedAt) > LATE_WAIT_SEC || (t.settleCtx && start < t.settleCtx + 0.5)) return;
+      if (t.soon && start - pressedAt > MIX_SOON_SEC) return;
       cands.push(Object.assign(c, { rank, keySeverity: clash, tempoGap, late: start > (t.settleCtx || pressedAt) + MAX_WAIT_SEC,
                                     lastResort: MixBlocks.lastResort(c),
                                     vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0,
@@ -2552,7 +2567,7 @@ document.addEventListener('DOMContentLoaded', () => {
    *  goes by confidence alone). */
   function utility(c) {
     return c.conf + TransitionLab.likesBonus(c, tastePrefs)
-      - 0.1 * Math.max(0, (c.startCtx - engine.ctx.currentTime) - 20) - (c.lastResort ? 10 : 0);
+      - WAIT_COST * Math.max(0, c.startCtx - MixBlocks.preSec(c) - engine.ctx.currentTime) - (c.lastResort ? 10 : 0);
   }
 
   /** Commit to the best of `ranked` (confident ones, or the best left when `below` the bar). A near

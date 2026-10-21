@@ -626,6 +626,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .sound-check { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .sound-check-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .conf-pick { display: flex; align-items: center; gap: 6px; font-size: 10px; letter-spacing: 0.1em; color: var(--muted); }
+.soon-pick { margin-left: auto; cursor: pointer; }
+.soon-pick input { accent-color: var(--accent); margin: 0; }
 .conf-pick select { background: var(--raised); color: var(--text); border: 1px solid var(--line-3); border-radius: 4px;
   font-family: var(--font-mono); font-size: 11px; padding: 2px 4px; }
 /* Rating after each Auto mix: GOOD / NOT FOR ME, then (optional) why, in the same row: nothing moves */

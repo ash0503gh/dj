@@ -178,7 +178,8 @@ const MixPlanner = (() => {
 
   /**
    * Decide timing. All track times are NATIVE seconds; ctx times are AudioContext seconds.
-   * opts: { now, leadSec, blend, keyClash, notBefore (native: no exit before it, e.g. a glide's end) }
+   * opts: { now, leadSec, blend, keyClash, notBefore (native: no exit before it, e.g. a glide's end),
+   *         within (seconds from now: no exit later, MIX SOON) }
    */
   function plan(outTrack, outDeck, inTrack, bars, opts) {
     const outBpm = deckBpm(outTrack, outDeck);
@@ -265,7 +266,8 @@ const MixPlanner = (() => {
     const blendNative = (bars + tailBars) * outBar;
     const inVocal = !loop && hasVocals(inTrack, inStart, inStart + bars * inBar);
     const slots = opts.phraseLock === false ? outTrack.downbeat_times : outTrack.phrase_8_times;
-    const cands = (slots || []).filter(t => t >= outNow && t + blendNative <= dur - 0.5);
+    const cands = (slots || []).filter(t => t >= outNow && t + blendNative <= dur - 0.5
+      && (opts.within === undefined || outDeck.audio.ctxTimeAt(t) - opts.now <= opts.within));
     const exits = [];
     for (const t of cands) {
       let score = 0;
@@ -293,8 +295,10 @@ const MixPlanner = (() => {
           if (opts.blend && lv !== null && lv < med - holeDb) { score -= 25; outHoles++; }
         }
       }
+      // Waiting costs from the first second: a later moment wins only when clearly better (10 points
+      // for 20 s more: a 16-bar phrase line, or the outgoing's outro)
       const waitSec = (t - outNow) / speed;
-      score -= Math.max(0, waitSec - 20) * 0.4;
+      score -= waitSec * 0.5;
       exits.push({ t, score, outVocal, bassDropouts, outHoles, energyFalling });
     }
     // Best first; ties keep the earliest exit
