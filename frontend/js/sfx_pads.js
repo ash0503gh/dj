@@ -163,7 +163,7 @@ const SfxPads = (() => {
       });
     });
     if (opts.level) {
-      const apply = () => engine.sfxBus.gain.setTargetAtTime(Math.pow(10, parseFloat(opts.level.value) / 20) * 0.5,
+      const apply = () => engine.sfxBus.gain.setTargetAtTime(Math.pow(10, parseFloat(opts.level.value) / 20) * SFX_BUS,
                                                              engine.ctx.currentTime, 0.02);
       opts.level.addEventListener('input', apply);
       apply();

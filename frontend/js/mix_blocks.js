@@ -25,7 +25,7 @@ const MixBlocks = (() => {
   const LAST_RESORT = new Set(['brake', 'spinback']);   // showy exits a DJ keeps for when nothing mixes cleanly
   const HATS_HZ = 4000;   // 'hats' blends: the incoming's high-pass until the swap (above melody and voice)
   const STEM_MIDS = new Set(['vocalswap', 'drumsin']);   // blends played from both tracks' stems
-  const SFX_GAIN = 0.35;  // library sounds in a mix sit under the music
+  const SFX_GAIN = 0.385;  // library sounds in a mix sit under the music
   /** A library sound's decoded buffer (sfx_pads.js), or null when it isn't decoded (or no library). */
   const sfxBuffer = id => (typeof SfxLibrary !== 'undefined' ? SfxLibrary.buffer(id) : null);
   /** The library sounds an Auto mix may use now (decoded already), or null. */

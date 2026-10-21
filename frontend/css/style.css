@@ -533,7 +533,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .fader-channel { width: 38px; }
 .fader-cross { flex-grow: 1; }
 .crossfader-section { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.crossfader-track { display: flex; align-items: center; gap: 12px; width: 100%; }
+.crossfader-track { display: flex; align-items: center; gap: 12px; width: min(100%, 280px); }
 
 /* ── Transition bar ─────────────────────────── */
 .transition-bar {

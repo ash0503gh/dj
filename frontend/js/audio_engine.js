@@ -427,6 +427,9 @@ class BufferTransport {
 // A track's stems as a deck plays them in a mix (rest = bass + other: the isolator swaps the bass)
 const LAYER_NAMES = ['vocals', 'drums', 'rest'];
 
+// The SFX pads' bus at LEVEL 0 dB (the LEVEL slider scales it)
+const SFX_BUS = 0.55;
+
 /** Seeded white noise (-1..1): FX that must sound the same on every render of a mix. */
 function seededNoise(n, seed) {
   const out = new Float32Array(n);
@@ -1414,7 +1417,7 @@ class DJAudioEngine {
 
     // Sound effects fired from the pads (sfx_pads.js) go straight to the master
     this.sfxBus = this.ctx.createGain();
-    this.sfxBus.gain.value = 0.5;
+    this.sfxBus.gain.value = SFX_BUS;
     this.sfxBus.connect(this.masterGain);
 
     this.deck1 = new DJDeckAudio(this.ctx, 1, this.masterGain);
