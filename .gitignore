@@ -52,3 +52,6 @@ test_waveform_math.js
 
 # Local mode: the remembered music folder
 .pulse_library
+
+# Sound effects library (python -m backend.sfx): generated and downloaded sounds, never committed
+sfx/
