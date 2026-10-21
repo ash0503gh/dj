@@ -26,9 +26,12 @@ def test_library_and_pairs():
 
     pairs = benchmark.pairs_report(lib)
     assert pairs["pairs"] == 12
-    # a, b and d (at double time: 140) blend with each other; c is 16-19% from a and b, 26% from d's 140
-    assert pairs["blend"] + pairs["ramp_12_20"] + pairs["switch_only"] == 1.0
-    assert pairs["no_blend_partner"] == 1 and pairs["no_blend_partner_titles"] == ["c"]
+    # a, b and d (at double time: 140) blend with each other; c, 19% from a, only by gliding to meet it
+    # halfway; c is 21% from b and 26% from d's 140: switches. By gliding only: a<->c, and d into a
+    # (a alone would have to take 12.9%)
+    assert pairs["blend"] + pairs["switch_only"] == 1.0
+    assert pairs["blend"] == round(8 / 12, 3) and pairs["glide_12_20"] == round(3 / 12, 3)
+    assert pairs["no_blend_partner"] == 0
 
 
 def test_played():

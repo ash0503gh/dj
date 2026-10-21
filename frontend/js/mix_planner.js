@@ -1,8 +1,10 @@
 /**
  * mix_planner.js - Plans a transition the way a club DJ does, then runs it on the audio clock.
  *
- *  1. One master tempo: the incoming track is keylock-stretched to the outgoing deck's
- *     current BPM *before* it starts, and stays there. Nothing changes tempo mid-blend.
+ *  1. One master tempo through the blend: the incoming track is keylock-stretched to it before it
+ *     starts. Nothing changes tempo mid-blend. Tempos far apart meet halfway (mixTempo): the
+ *     outgoing glides to the mix tempo over the bars before the blend, keylocked, and the incoming
+ *     glides back to its own tempo after it (app.js glideDeck, backend/glide.py).
  *  2. Plan backwards: pick where the incoming track's first drop should land, start it
  *     `bars` earlier, and put the start on a phrase boundary of the outgoing track.
  *  3. Every fader/EQ move is scheduled as AudioParam automation relative to one ctx start
@@ -15,6 +17,9 @@ const MixPlanner = (() => {
   const MAX_STRETCH = 0.12;    // beyond ±12% a blend sounds wrong: use an overlap-free technique
   const CLEAN_STRETCH = 0.08;  // keylocked stretching past ±8% starts to smear: blends beyond it cost a little
   const FLAM_MAX_MS = 10;      // kicks this far apart start to smear: a blend is shortened or not played
+  const GLIDE_FROM = 0.04;     // tempos closer than this: the incoming takes the whole gap, no glide
+  const GLIDE_MAX = 0.20;      // with glides, tempos this far apart still blend (each side stretched ≤ ~9.5%)
+  const GLIDE_PER_BAR = 0.005; // a glide changes the tempo at most this much a bar (unheard on the floor)
   const KILL_HZ = 220;         // isolator bass-kill frequency
   const OPEN_HZ = 10;
 
@@ -64,6 +69,38 @@ const MixPlanner = (() => {
       bar_low_db: barLow,
       tempoMultiple: m,
     });
+  }
+
+  /**
+   * How a mix of these decks meets in tempo: { multiple (the incoming counted at 1, 2 or 0.5 times its
+   * tempo, as tempoMultiple), outSpeed (the outgoing's speed through the mix), inRatio (the incoming's
+   * keylock ratio), glide (the outgoing glides from where it is to outSpeed first) }, or null when no
+   * blend can match them (only a switch then). Within GLIDE_FROM the incoming takes the whole gap, as
+   * without glides; past it, when the outgoing can glide (`canGlide`: a keylocked deck with time left),
+   * both meet at the geometric mean of their own tempos, up to GLIDE_MAX apart; otherwise the incoming
+   * takes it up to MAX_STRETCH.
+   */
+  function mixTempo(outTrack, outDeck, inTrack, canGlide) {
+    const s0 = deckSpeed(outDeck);
+    const outBpm = outTrack.bpm || 128;
+    const inBpm = inTrack.bpm || outBpm;
+    for (const m of [1, 2, 0.5]) {
+      const r = outBpm * s0 / (inBpm * m);
+      if (Math.abs(r - 1) <= GLIDE_FROM) return { multiple: m, outSpeed: s0, inRatio: r, glide: false };
+      const own = outBpm / (inBpm * m);
+      if (canGlide && Math.max(own, 1 / own) - 1 <= GLIDE_MAX) {   // either way round: they meet halfway
+        const outSpeed = Math.sqrt(1 / own);
+        if (Math.abs(outSpeed - s0) < 0.002) return { multiple: m, outSpeed: s0, inRatio: r, glide: false };
+        return { multiple: m, outSpeed, inRatio: Math.sqrt(own), glide: true };
+      }
+      if (Math.abs(r - 1) <= MAX_STRETCH) return { multiple: m, outSpeed: s0, inRatio: r, glide: false };
+    }
+    return null;
+  }
+
+  /** Bars a glide from speed s0 to s1 takes: GLIDE_PER_BAR at most, in whole 4 bars, at least 8. */
+  function glideBars(s0, s1) {
+    return Math.max(8, 4 * Math.ceil(Math.abs(s1 - s0) / GLIDE_PER_BAR / 4));
   }
 
   function deckBpm(track, deck) {
@@ -141,7 +178,7 @@ const MixPlanner = (() => {
 
   /**
    * Decide timing. All track times are NATIVE seconds; ctx times are AudioContext seconds.
-   * opts: { now, leadSec, blend, keyClash }
+   * opts: { now, leadSec, blend, keyClash, notBefore (native: no exit before it, e.g. a glide's end) }
    */
   function plan(outTrack, outDeck, inTrack, bars, opts) {
     const outBpm = deckBpm(outTrack, outDeck);
@@ -149,7 +186,7 @@ const MixPlanner = (() => {
     const outBar = 4 * gridOf(outTrack).period;
     const inBar = 4 * gridOf(inTrack).period;
     const speed = deckSpeed(outDeck);
-    const outNow = outDeck.audio.timeAt(opts.now + opts.leadSec);
+    const outNow = Math.max(outDeck.audio.timeAt(opts.now + opts.leadSec), opts.notBefore || 0);
     const dur = outTrack.duration || outDeck.audio.duration || 0;
 
     // Key clash: keep the harmonic overlap short
@@ -560,7 +597,7 @@ const MixPlanner = (() => {
     return { start: T, swap, end: T + D };
   }
 
-  return { MAX_STRETCH, CLEAN_STRETCH, FLAM_MAX_MS, setTrim, gridErrAt, flamCheck, gridOf, beatPhase, deckBpm, deckSpeed, tempoMultiple, atTempoMultiple,
+  return { MAX_STRETCH, CLEAN_STRETCH, FLAM_MAX_MS, GLIDE_MAX, mixTempo, glideBars, setTrim, gridErrAt, flamCheck, gridOf, beatPhase, deckBpm, deckSpeed, tempoMultiple, atTempoMultiple,
            plan, candidates, candidateFeatures,
            trackSummary, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals,
            curve, bassKill, swapTime };

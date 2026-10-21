@@ -136,8 +136,23 @@ The original plan:
 Done when: no benchmark mix has two lead vocals at full level together, and the console needs no
 network to mix.
 
-### Phase 5: Variable tempo, Tier 2 (M-L)
+### Phase 5: Variable tempo, Tier 2 (M-L) · part 1 built (glides), part 2 (straightening drift) next
 
+Part 1, built: tempo glides. Tempos more than 4% apart (up to 20%, either way round) meet halfway: the
+outgoing glides to the geometric mean of the two tempos over the 8-32 bars before the blend (at most 0.5%
+a bar), keylocked; the incoming is stretched only the rest of the way (≤ ~9.5% each, inside the clean
+8%-ish zone for most pairs); after the mix the incoming glides back to its own tempo, and so does a deck
+whose mix was called off. The server renders each glide as a short window (`backend/glide.py`, ffmpeg's
+Rubber Band with its tempo stepped every 23 ms; the exact time map is computed in closed form on both
+sides, and the change in the stretcher's own delay is compensated): on synthetic tracks every kick lands
+within 2 ms of the map along a 9% glide, and in Chromium the deck's kicks follow it within 0.5 ms
+through both buffer switches. The deck's transport now follows a time map (`TimeMap`) instead of one
+tempo ratio; the planner plans on the deck as it will run after the glide, so the sound check still
+renders exactly what plays (the outgoing's keylocked copy at the mix tempo). Track suggestions and the
+benchmark's PAIRS line count blends up to 20% apart. A glide is a ~30-60 s window, rendered outside the
+queue of whole-track renders; one that isn't in time cancels the mix (the deck plays on).
+
+The original plan:
 - Keylocked tempo ramps rendered with Rubber Band time maps (`rubberband --timemap`): the outgoing eases
   toward the incoming over the 16-32 bars before a mix, and the incoming eases back to its own tempo
   after. Buffers stay pre-rendered, so the sound check still hears exactly what plays.

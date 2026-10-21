@@ -31,8 +31,9 @@ import numpy as np
 
 from . import library, next_track
 
+MAX_STRETCH = 0.12  # frontend MixPlanner.MAX_STRETCH: past it a pair blends only by gliding (Phase 5)
+
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-RAMP_GAP = 0.20     # tempo gaps a ramp could bridge (roadmap Phase 5)
 
 
 def _pct(xs: List[float], q: float):
@@ -124,17 +125,16 @@ def pairs_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
             gap, multiple = next_track.tempo_fit(a["bpm"], b["bpm"])
             if multiple is not None:
                 blend += 1
+                near += abs(gap) > MAX_STRETCH           # blends only since tempos glide to meet halfway
                 partners[a.get("title")] += 1
                 keys_ok += next_track.key_severity(a.get("camelot"), b.get("camelot")) == 0
-            elif min(abs(a["bpm"] / (b["bpm"] * m) - 1) for m in (1, 2, 0.5)) <= RAMP_GAP:
-                near += 1
             else:
                 switch += 1
     share = (lambda k: round(k / n, 3)) if n else (lambda k: None)
     orphans = [a.get("title") for a in tracks if not partners[a.get("title")]]
     return {
         "pairs": n,
-        "blend": share(blend), "ramp_12_20": share(near), "switch_only": share(switch),
+        "blend": share(blend), "glide_12_20": share(near), "switch_only": share(switch),
         "blend_keys_together": round(keys_ok / blend, 3) if blend else None,
         "no_blend_partner": len(orphans), "no_blend_partner_titles": orphans[:10],
     }
@@ -208,7 +208,7 @@ def _fmt(rep: Dict[str, Any]) -> str:
          + (f"; agrees with Gemini's earlier labels on {pc(St['gemini_agree'])} of {St['gemini_compared']} sections"
             if St["gemini_compared"] else ""))
         if St["tracks"] else "STEMS  none yet (install requirements-local.txt: ./setup_mac.sh)",
-        f"PAIRS  {P['pairs']} ordered pairs: blend {pc(P['blend'])}, 12-20% apart {pc(P['ramp_12_20'])}, "
+        f"PAIRS  {P['pairs']} ordered pairs: blend {pc(P['blend'])} (12-20% apart, by tempo glides: {pc(P['glide_12_20'])}), "
         f"switch only {pc(P['switch_only'])}; keys together in {pc(P['blend_keys_together'])} of blends",
         f"  {P['no_blend_partner']} tracks with no track to blend with"
         + (f": {', '.join(P['no_blend_partner_titles'])}" if P["no_blend_partner_titles"] else ""),

@@ -29,7 +29,7 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
     where the incoming enters, when the bass hands over) + a style (plain data: how the mids hand over,
     how the outgoing leaves, how the incoming enters, how long the lead-in is). Nothing is tied to a
     song pair: the search decides.
-  - Styles tried: beat-matched blends within 12% of tempo (at the incoming's own tempo, or at half or double
+  - Styles tried: beat-matched blends within 12% of tempo, 20% with tempo glides (at the incoming's own tempo, or at half or double
     time: a 90 BPM track under a 180 BPM dhol mix plays its beats on every other beat, planned with the
     incoming counted at that multiple), the incoming keylocked (past 8% a blend costs
     0.5 points per extra percent: the stretch starts to smear) (mids overlap, snap (change hands over the
@@ -223,9 +223,16 @@ prepared tracks, and uploads are off.
   land together, a blend whose kicks would still drift more than 10 ms apart is shortened (or becomes a
   switch), and the sound check counts what's left as flam. Past a 2% tempo change the incoming never
   plays pitched: the mix waits for the keylocked copy and moves to a later phrase.
+- Tempo glides (`backend/glide.py`): when the two tempos are more than 4% apart (up to 20%), they meet
+  halfway. The outgoing eases to the mix tempo, keylocked, over the 8-32 bars before the blend (at most
+  0.5% a bar), the incoming is stretched only the rest of the way, and after the mix it eases back to its
+  own tempo the same way. Each glide is a short window the server renders with Rubber Band, its tempo
+  stepped every 23 ms (kicks within ~2 ms of where they should be all along it), and the deck switches to
+  it and off it seamlessly; the countdown shows TEMPO GLIDE TO ... BPM meanwhile. Pressing MIX while a
+  deck still glides back waits for it.
 - `python -m backend.benchmark` is the yardstick for every change: grids that wander; the key and BPM
   against the files' own tags (old and new key estimate side by side); what the neural tracker changed;
-  how the library's pairs split into blends, 12-20% near misses and switches; how the rated Auto mixes
+  how the library's pairs split into blends (and those 12-20% apart that blend by gliding) and switches; how the rated Auto mixes
   went.
 - Use Chrome or Edge: the DJ controller needs Web MIDI, which Safari lacks.
 

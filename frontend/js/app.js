@@ -1130,6 +1130,7 @@ document.addEventListener('DOMContentLoaded', () => {
     phraseHud.classList.add('hidden');
     hideTransitionButtons();
     transitionStatusBanner.textContent = `🛑 TRANSITION ABORTED: DECK ${keepNum} STAYS LIVE`;
+    returnHome(keep);                 // a glide toward the mix tempo goes back (after it is over)
   }
 
   /** Call off a mix before anything of it is heard, saying why (the deck on air plays on). */
@@ -1539,7 +1540,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function setPitchReadout(deckNum) {
     const deck = (deckNum === 1) ? engine.deck1 : engine.deck2;
     const el = (deckNum === 1) ? d1PitchVal : d2PitchVal;
-    const pct = (MixPlanner.deckSpeed(deck) - 1) * 100;
+    const pct = (deck.audio.speedAt(engine.ctx.currentTime) - 1) * 100;
     if (el) el.textContent = `${pct > 0 ? '+' : ''}${pct.toFixed(1)}%`;
   }
 
@@ -1943,7 +1944,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const key = `${track.file_id}@${ratio}`;
     if (!stretchCache.has(key)) {
       pruneStretchCache();
-      while (stretchCache.size >= (LOW_MEMORY ? 1 : 2)) stretchCache.delete(stretchCache.keys().next().value);
+      // (both decks' copies for a mix whose tempos meet halfway, and the one a deck still plays)
+      while (stretchCache.size >= (LOW_MEMORY ? 1 : 3)) stretchCache.delete(stretchCache.keys().next().value);
       stretchCache.set(key, fetch(`/api/stretched/${encodeURIComponent(track.file_id)}?ratio=${ratio}`)
         .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
         .then(ab => engine.ctx.decodeAudioData(ab))
@@ -1954,6 +1956,146 @@ document.addEventListener('DOMContentLoaded', () => {
         }));
     }
     return stretchCache.get(key);
+  }
+
+  // ── Tempo glides (Phase 5): a deck eases from one tempo to another, keylocked, over 8-32 bars. The
+  // server renders the glide as a window (backend/glide.py) lined up with what the deck plays; the deck
+  // switches to it just before the glide, and to its keylocked copy at the new tempo (or the track
+  // itself) once the glide is over. The outgoing glides to the mix tempo before a blend of tempos far
+  // apart; the incoming glides back to its own tempo after it ──
+  const GLIDE_LEAD_SEC = 10;    // a glide starts on the first bar line at least this far ahead (its render)
+  const GLIDE_PRE_SEC = 6;      // the window's lead-in at the old tempo (lines it up; the switch is in it)
+  const GLIDE_POST_BARS = 16;   // the window's bars at the new tempo, while the copy for after it arrives
+
+  const deckNumOf = deck => (deck === engine.deck1 ? 1 : 2);
+
+  /** The first bar line of `track` at or after native `n`. */
+  function barLineAfter(track, n) {
+    const g = MixPlanner.gridOf(track);
+    const bar = 4 * g.period;
+    const d0 = g.first + ((track.grid && track.grid.downbeat_offset) || 0) * g.period;
+    return d0 + Math.ceil((n - d0) / bar - 1e-6) * bar;
+  }
+
+  /** Where a glide of `deck` to speed s1 would run: { at, len } in native seconds, or null when the
+   *  track has no time left for it and `tailBars` more bars after it. */
+  function glideSpan(deck, track, s1, tailBars) {
+    const a = deck.audio;
+    const bar = 4 * MixPlanner.gridOf(track).period;
+    const at = barLineAfter(track, a.timeAt(engine.ctx.currentTime + GLIDE_LEAD_SEC) + 1.5 * bar / 4);
+    const len = MixPlanner.glideBars(a.tempoRatio, s1) * bar;
+    const dur = track.duration || a.duration || 0;
+    return at + len + tailBars * bar <= dur - 1 ? { at, len } : null;
+  }
+
+  /**
+   * Glide `deck` (playing `track` keylocked at a constant tempo, no vinyl rate) to speed s1 over native
+   * [at, at + len). Returns { map, s1, at, len, started, done }: `started` resolves true once the switch to
+   * the glide window is scheduled (false when it didn't arrive in time: the deck stays as it was), `done`
+   * once the deck has settled at s1 on the copy it keeps playing. deck.glide holds it meanwhile.
+   */
+  function glideDeck(deck, track, s1, at, len) {
+    const a = deck.audio;
+    const s0 = a.tempoRatio;
+    const bar = 4 * MixPlanner.gridOf(track).period;
+    const beat = bar / 4;
+    const start = at - GLIDE_PRE_SEC * s0;
+    const end = Math.min(at + len + GLIDE_POST_BARS * bar, (track.duration || a.duration) + 1);
+    const map = new TimeMap({ start, s0, s1, at, len });
+    const src = a.src;
+    const same = () => a.src === src && deck.glide === g;
+    const q = `start=${start.toFixed(4)}&end=${end.toFixed(4)}&at=${at.toFixed(4)}&length=${len.toFixed(4)}` +
+              `&s0=${Math.round(s0 * 1e6) / 1e6}&s1=${Math.round(s1 * 1e6) / 1e6}`;
+    const windowBuf = fetch(`/api/glide/${encodeURIComponent(track.file_id)}?${q}`)
+      .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
+      .then(ab => engine.ctx.decodeAudioData(ab))
+      .catch(err => { console.warn('Tempo glide unavailable:', err); return null; });
+    const target = Math.abs(s1 - 1) < 0.0005 ? Promise.resolve(a.nativeBuffer) : stretchedBuffer(track, s1);
+    const switchAt = at - 1.5 * beat;      // between two beats of the lead-in
+    const g = { map, s0, s1, at, len, switchAt, target };
+    const until = (ctxTime, p) => Promise.race([p, new Promise(r => setTimeout(() => r(null),
+                                                                               Math.max(0, (ctxTime - engine.ctx.currentTime) * 1000)))]);
+    g.started = until(a.ctxTimeAt(switchAt) - 0.15, windowBuf).then(buf => {
+      const n = deckNumOf(deck);
+      if (!buf || !same() || a.paused || a.timeAt(engine.ctx.currentTime + 0.05) >= switchAt) {
+        console.warn(`Tempo glide on deck ${n} not started: ${!buf ? 'no window' : !same() ? 'track changed'
+          : a.paused ? 'deck paused' : 'window too late'}`);
+        return false;
+      }
+      a.useBuffer(buf, map, a.ctxTimeAt(switchAt));
+      console.info(`Tempo glide on deck ${n}: x${s0.toFixed(4)} -> x${s1.toFixed(4)} from ${at.toFixed(2)} s`);
+      return true;
+    });
+    g.done = g.started.then(async ok => {
+      if (!ok) return false;
+      const n = deckNumOf(deck);
+      const readout = setInterval(() => setPitchReadout(n), 250);
+      // Onto the copy at s1 after the glide, between two beats; the window lasts GLIDE_POST_BARS more bars
+      const settle = Math.max(at + len, a.timeAt(engine.ctx.currentTime + 0.3));
+      let copy = await until(a.ctxTimeAt(end - 2 * bar) - 0.3, target);
+      if (copy && copy.duration * s1 < (track.duration || a.duration) - 1) copy = null;
+      if (!same()) { clearInterval(readout); return false; }
+      const nSettle = Math.max(barLineAfter(track, settle) + 0.5 * beat, a.timeAt(engine.ctx.currentTime + 0.3));
+      const settleCtx = a.ctxTimeAt(nSettle);
+      if (copy) a.useBuffer(copy, s1, settleCtx);
+      const wait = sec => new Promise(r => setTimeout(r, Math.max(0, sec * 1000)));
+      await wait(settleCtx - engine.ctx.currentTime);
+      clearInterval(readout);
+      if (!same()) return false;
+      if (!copy) {
+        // No keylocked copy: tempo kept, pitch follows (vinyl) rather than the deck running out
+        console.warn('Keylocked copy for after the glide unavailable: vinyl tempo');
+        a.useBuffer(a.nativeBuffer, 1.0);
+        a.playbackRate = s1;
+      }
+      setPitchReadout(n);
+      console.info(`Tempo glide on deck ${n} settled at x${s1.toFixed(4)} (${!copy ? 'vinyl' : copy === a.nativeBuffer ? 'its own audio' : 'keylocked copy'})`);
+      return true;
+    }).catch(err => { console.error('Tempo glide failed:', err); return false; }).finally(() => { if (deck.glide === g) deck.glide = null; });
+    deck.glide = g;
+    return g;
+  }
+
+  /** The tempo a mix meets at, and the outgoing's glide to it when the tempos are far apart: t.tempo
+   *  (MixPlanner.mixTempo), t.glide, t.planDeck (the outgoing as it will run: what the plans use),
+   *  t.notBefore (no exit before the glide is over) and t.settleCtx. */
+  async function tempoForMix(t) {
+    const deck = t.outDeck;
+    if (deck.glide) {
+      // Still returning to its own tempo after the last mix: from there
+      transitionStatusBanner.textContent = 'DECK STILL GLIDING TO ITS OWN TEMPO: MIX PLANS WHEN IT IS THERE';
+      await deck.glide.done;
+      if (activeTransition !== t) return;
+    }
+    t.planDeck = deck;
+    const keylocked = deck.audio.playbackRate === 1 && deck.audio.map.constant && t.outTrack.grid && t.inTrack.grid;
+    let tempo = MixPlanner.mixTempo(t.outTrack, deck, t.inTrack, keylocked);
+    // Room for the glide and a 16-bar blend after it (and what a mix may wait for)
+    const span = tempo && tempo.glide ? glideSpan(deck, t.outTrack, tempo.outSpeed, 24) : null;
+    if (tempo && tempo.glide && !span) tempo = MixPlanner.mixTempo(t.outTrack, deck, t.inTrack, false);
+    t.tempo = tempo;
+    if (!tempo || !tempo.glide) return;
+    const g = t.glide = glideDeck(deck, t.outTrack, tempo.outSpeed, span.at, span.len);
+    t.planDeck = Object.create(deck, { audio: { value: deck.audio.planned(g.map, g.switchAt) } });
+    const bar = 4 * MixPlanner.gridOf(t.outTrack).period;
+    t.notBefore = span.at + span.len + bar;
+    t.settleCtx = t.planDeck.audio.ctxTimeAt(span.at + span.len + bar / 2);
+    console.info(`Tempo glide: deck ${t.outDeckNum} ${(deck.audio.tempoRatio * t.outTrack.bpm).toFixed(1)} -> ` +
+                 `${(tempo.outSpeed * t.outTrack.bpm).toFixed(1)} BPM over ${Math.round(span.len / bar)} bars; ` +
+                 `incoming keylocked x${tempo.inRatio.toFixed(3)}`);
+    g.started.then(ok => { if (!ok) cancelTransition(t, 'TEMPO GLIDE NOT READY: MIX CANCELLED'); });
+  }
+
+  /** Bring a deck that plays on after a mix (or a cancelled one) back to its own tempo, by a glide. */
+  async function returnHome(deck) {
+    if (deck.glide) await deck.glide.done;
+    const track = deck === engine.deck1 ? track1Data : track2Data;
+    const a = deck.audio;
+    if (!track || !track.grid || activeTransition || deck.glide || !deck.isPlaying || a.playbackRate !== 1
+        || !a.map.constant || Math.abs(a.tempoRatio - 1) < 0.0005) return;
+    const span = glideSpan(deck, track, 1.0, 4);
+    if (span) glideDeck(deck, track, 1.0, span.at, span.len);
+    else console.info(`Deck ${deckNumOf(deck)} stays at x${a.tempoRatio.toFixed(4)}: no time left to glide home`);
   }
 
   // ── Stems while mixing (local mode, tracks with stems): a window of each deck's stems at the tempo it
@@ -1992,21 +2134,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const stemsAtHand = (outTrack, inTrack) => localLibrary && !LOW_MEMORY && outTrack.stems && inTrack.stems;
 
   /** Both decks' windows where mixes happen: the outgoing's last LAYER_SPAN seconds (from where it is,
-   *  if that's later), the incoming's from just before its intro, at master tempo `ratio`. */
-  function requestLayers(outTrack, outDeck, inTrack, ratio) {
+   *  if that's later) at the speed it mixes at (`outSpeed`, after a glide), the incoming's from just
+   *  before its intro at its keylock `ratio`. */
+  function requestLayers(outTrack, outDeck, inTrack, outSpeed, ratio) {
     const dur = outTrack.duration || outDeck.audio.duration || LAYER_SPAN;
     const from = Math.max(outDeck.audio.currentTime, dur - LAYER_SPAN);
     const intro = Math.max(0, (inTrack.suggested_cue_intro || 0) - 10);
     return Promise.all([
-      layersFor(outTrack, outDeck.audio.tempoRatio, from, from + LAYER_SPAN),
+      layersFor(outTrack, outSpeed, from, from + LAYER_SPAN),
       layersFor(inTrack, ratio, intro, intro + LAYER_SPAN),
     ]).then(([out, inc]) => (out && inc ? { out, inc } : null));
   }
 
   /** The windows already asked for (by the prefetch) for these two tracks at these tempos, or null. */
-  function pendingLayers(outTrack, outDeck, inTrack, ratio) {
+  function pendingLayers(outTrack, inTrack, outSpeed, ratio) {
     const get = (track, r) => layerCache.get(`${track.file_id}@${Math.round(r * 1e6) / 1e6}`);
-    const out = get(outTrack, outDeck.audio.tempoRatio), inc = get(inTrack, ratio);
+    const out = get(outTrack, outSpeed), inc = get(inTrack, ratio);
     return out && inc ? Promise.all([out.promise, inc.promise]).then(([o, i]) => (o && i ? { out: o, inc: i } : null)) : null;
   }
 
@@ -2017,14 +2160,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const outTrack = isDir1to2 ? track1Data : track2Data;
     const inTrack = isDir1to2 ? track2Data : track1Data;
     if (!inTrack.grid || !outTrack.grid) return;
-    // At the tempo a blend would use (half or double time included); none for a switch
-    const outBpm = MixPlanner.deckBpm(outTrack, isDir1to2 ? engine.deck1 : engine.deck2);
-    const multiple = MixPlanner.tempoMultiple(outBpm, inTrack.bpm);
-    const ratio = multiple ? outBpm / (inTrack.bpm * multiple) : 1;
-    if (Math.abs(ratio - 1) >= 0.0005) stretchedBuffer(inTrack, ratio);
+    // At the tempos a blend would use (half or double time included; both decks' when the outgoing
+    // glides to meet the incoming halfway); none for a switch
+    const outDeck = isDir1to2 ? engine.deck1 : engine.deck2;
+    const tempo = MixPlanner.mixTempo(outTrack, outDeck, inTrack, outDeck.audio.playbackRate === 1);
+    if (!tempo) return;
+    if (Math.abs(tempo.inRatio - 1) >= 0.0005) stretchedBuffer(inTrack, tempo.inRatio);
+    if (tempo.glide && Math.abs(tempo.outSpeed - 1) >= 0.0005) stretchedBuffer(outTrack, tempo.outSpeed);
     // Their stems for a blend at its own tempo (half- and double-time blends play the tracks whole)
-    if (multiple === 1 && stemsAtHand(outTrack, inTrack)) {
-      requestLayers(outTrack, isDir1to2 ? engine.deck1 : engine.deck2, inTrack, ratio);
+    if (tempo.multiple === 1 && stemsAtHand(outTrack, inTrack)) {
+      requestLayers(outTrack, outDeck, inTrack, tempo.outSpeed, tempo.inRatio);
     }
   }
 
@@ -2035,18 +2180,19 @@ document.addEventListener('DOMContentLoaded', () => {
     const blends = skeletons.filter(sk => sk.technique === 'blend');
     if (multiple !== 1 || !blends.length || !stemsAtHand(t.outTrack, t.inTrack)) return null;
     const ratio = blends[0].tempoRatio;
+    const outSpeed = MixPlanner.deckSpeed(t.planDeck);
     // The prefetched windows (asked for now if they weren't): rendering more while the search runs
     // would come too late for it
     const ready = Promise.all([
       Math.abs(ratio - 1) >= 0.0005 ? stretchedBuffer(t.inTrack, ratio) : Promise.resolve(true),
-      pendingLayers(t.outTrack, t.outDeck, t.inTrack, ratio) || requestLayers(t.outTrack, t.outDeck, t.inTrack, ratio),
+      pendingLayers(t.outTrack, t.inTrack, outSpeed, ratio)
+        || requestLayers(t.outTrack, t.outDeck, t.inTrack, outSpeed, ratio),
     ]).then(([stretched, layers]) => (stretched && layers ? layers : null));
     const layers = await Promise.race([ready, new Promise(r => setTimeout(() => r(null), LAYER_WAIT_MS))]);
     if (!layers) {
       console.info('Stems not ready for this mix: blends without them');
       return null;
     }
-    const outSpeed = MixPlanner.deckSpeed(t.outDeck);
     blends.forEach(sk => {
       const sec = (sk.bars + (sk.tailBars || 0)) * 4 * sk.beatSec;   // the blend (MixBlocks.performBlend)
       const inside = (w, a, b) => w.start <= a && b <= w.start + w.buffer.duration * w.ratio;
@@ -2130,30 +2276,36 @@ document.addEventListener('DOMContentLoaded', () => {
       if (b) b.style.display = 'inline-block';
     });
 
-    // Blend by default. Effects/cuts only when chosen, or when the tempos are too far apart
-    // to run at one master tempo (then the tracks must not overlap at all).
-    let tech = selectedTechnique === 'auto'
-      ? (currentAIRec ? currentAIRec.recommended_technique : 'bass_swap')
-      : selectedTechnique;
-    const tempoGap = Math.abs(MixPlanner.deckBpm(t.outTrack, t.outDeck) / t.inTrack.bpm - 1);
-    if (!CUT_TECHNIQUES.has(tech) && tempoGap > MixPlanner.MAX_STRETCH) tech = 'echo_freeze';
-    t.tech = tech;
-    t.blend = !CUT_TECHNIQUES.has(tech);
-
     // The plan is expressed in the outgoing deck's clock, so it must be running
     if (!t.outDeck.isPlaying) {
       t.outDeck.play();
       setPlayUI(t.outBtnPlay, true);
     }
+    planMix(t);
+  });
+
+  /** Where the two tempos meet (a glide of the outgoing first, when they are far apart), then the mix. */
+  async function planMix(t) {
+    await tempoForMix(t);
+    if (activeTransition !== t) return;
+    // Blend by default. Effects/cuts only when chosen, or when the tempos are too far apart
+    // to run at one master tempo (then the tracks must not overlap at all).
+    let tech = selectedTechnique === 'auto'
+      ? (currentAIRec ? currentAIRec.recommended_technique : 'bass_swap')
+      : selectedTechnique;
+    if (!CUT_TECHNIQUES.has(tech) && !t.tempo) tech = 'echo_freeze';
+    t.tech = tech;
+    t.blend = !CUT_TECHNIQUES.has(tech);
 
     const bars = selectedBars;
-    const beatSecNow = 60 / MixPlanner.deckBpm(t.outTrack, t.outDeck);
+    const beatSecNow = 60 / MixPlanner.deckBpm(t.outTrack, t.planDeck);
     const aiModel = aiModelSelect ? aiModelSelect.value : 'local';
     const planOpts = {
       now: engine.ctx.currentTime,
       blend: t.blend,
       keyClash: !camelotCompatible(t.outTrack.camelot, t.inTrack.camelot),
       phraseLock: togglePhraseLock ? togglePhraseLock.checked : true,
+      notBefore: t.notBefore,
     };
     if (!t.inTrack.grid || !t.outTrack.grid) console.warn('Beat grid not analyzed yet: using an estimated grid');
 
@@ -2165,10 +2317,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const leadIn = cutLeadInBeats(tech, bars);
-    commitTransitionPlan(t, MixPlanner.plan(t.outTrack, t.outDeck, t.inTrack, bars, Object.assign({}, planOpts, {
+    const inPlanned = t.tempo && t.blend ? MixPlanner.atTempoMultiple(t.inTrack, t.tempo.multiple) : t.inTrack;
+    commitTransitionPlan(t, MixPlanner.plan(t.outTrack, t.planDeck, inPlanned, bars, Object.assign({}, planOpts, {
       leadSec: t.blend ? 3.0 : leadIn * beatSecNow + 1.0,
     })), null);
-  });
+  }
 
   /** Beats of outgoing FX before an overlap-free technique's drop. */
   function cutLeadInBeats(tech, bars) {
@@ -2181,7 +2334,7 @@ document.addEventListener('DOMContentLoaded', () => {
   /** Jev's ratings (engines ['jev']) or Gemini's pick (['gemini']) of a few candidates, or {}. */
   async function askAI(t, cands, engines, model) {
     const now = engine.ctx.currentTime;
-    const outBpm = MixPlanner.deckBpm(t.outTrack, t.outDeck);
+    const outBpm = MixPlanner.deckBpm(t.outTrack, t.planDeck);
     const position = t.outDeck.audio.timeAt(now);
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), (TIE_BUDGET_SEC + 1.0) * 1000);
@@ -2221,7 +2374,7 @@ document.addEventListener('DOMContentLoaded', () => {
   async function searchAndMix(t, planOpts, bars, aiModel, attempt = 0, pressedAt = engine.ctx.currentTime) {
     // Tempos a blend can match, at the incoming's own or at half or double time (90 under 180 BPM, as a
     // DJ blends a dhol mix into a 90 BPM track): the plans count the incoming at that multiple
-    const multiple = MixPlanner.tempoMultiple(MixPlanner.deckBpm(t.outTrack, t.outDeck), t.inTrack.bpm);
+    const multiple = t.tempo ? t.tempo.multiple : null;
     const gap = multiple === null;
     const inPlanned = gap ? t.inTrack : MixPlanner.atTempoMultiple(t.inTrack, multiple);
     // The decision card shows the search, then the mix it picked: nothing from before
@@ -2250,13 +2403,13 @@ document.addEventListener('DOMContentLoaded', () => {
       now: engine.ctx.currentTime, blend: !gap, leadSec: 1.0 + SEARCH_LEAD_SEC,
       barsOptions: bars >= 16 ? [bars, 8] : [bars, 16], perBars: 3, cutTechnique: 'echo_freeze', max: 16, extraExits,
     });
-    const skeletons = MixPlanner.candidates(t.outTrack, t.outDeck, inPlanned, searchOpts);
+    const skeletons = MixPlanner.candidates(t.outTrack, t.planDeck, inPlanned, searchOpts);
     t.layers = await stemLayersFor(t, skeletons, multiple);
     if (activeTransition !== t) return;
     // At half or double time the washes and switches of the tempo gap stay on offer (as fallbacks to a
     // blend: a DJ blends when tempos allow): the search weighs the blends against them
     if (multiple && multiple !== 1) {
-      MixPlanner.candidates(t.outTrack, t.outDeck, t.inTrack, Object.assign({}, searchOpts, { blend: false }))
+      MixPlanner.candidates(t.outTrack, t.planDeck, t.inTrack, Object.assign({}, searchOpts, { blend: false }))
         .forEach(sk => skeletons.push(Object.assign(sk, { outOfRange: false })));
     }
     const clash = keySeverity(t.outTrack.camelot, t.inTrack.camelot);
@@ -2265,15 +2418,16 @@ document.addEventListener('DOMContentLoaded', () => {
     const cands = [];
     skeletons.forEach((sk, rank) => MixBlocks.variants(sk, t.inTrack).forEach(c => {
       const start = c.startCtx - MixBlocks.preSec(c);
-      if (start > pressedAt + LATE_WAIT_SEC) return;
-      cands.push(Object.assign(c, { rank, keySeverity: clash, tempoGap, late: start > pressedAt + MAX_WAIT_SEC,
+      // Mixes count from the end of a glide: nothing of them is heard while the tempo still moves
+      if (start - (t.settleCtx || pressedAt) > LATE_WAIT_SEC || (t.settleCtx && start < t.settleCtx + 0.5)) return;
+      cands.push(Object.assign(c, { rank, keySeverity: clash, tempoGap, late: start > (t.settleCtx || pressedAt) + MAX_WAIT_SEC,
                                     lastResort: MixBlocks.lastResort(c),
                                     vocalCutSec: labelled ? MixBlocks.vocalCut(c, t.outTrack) : 0,
                                     vocalOverlapSec: MixBlocks.vocalOverlap(c, t.outTrack, t.inTrack),
                                     vocalInSec: t.inTrack.vocal_source ? MixBlocks.vocalIn(c, t.inTrack) : 0 }));
     }));
     if (!cands.length) {
-      commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, inPlanned, bars,
+      commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.planDeck, inPlanned, bars,
         Object.assign({}, planOpts, { now: engine.ctx.currentTime, blend: !gap, leadSec: 3.0 })),
         { technique: gap ? 'echo_freeze' : 'blend' }), 'NO ROOM TO SEARCH: THE PLANNER\'S OWN MIX');
       return;
@@ -2373,7 +2527,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (ranked.length) return settleOn(t, ranked, aiModel, bar, true);
         // Every moment passed while searching: look again from here
         if (attempt < 1) return searchAndMix(t, planOpts, bars, aiModel, attempt + 1, pressedAt);
-        commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.outDeck, inPlanned, bars,
+        commitTransitionPlan(t, Object.assign(MixPlanner.plan(t.outTrack, t.planDeck, inPlanned, bars,
           Object.assign({}, planOpts, { now: engine.ctx.currentTime, blend: !gap, leadSec: 3.0 })),
           { technique: gap ? 'echo_freeze' : 'blend' }), 'SEARCH RAN OUT OF TIME: THE PLANNER\'S OWN MIX');
         return;
@@ -2458,6 +2612,13 @@ document.addEventListener('DOMContentLoaded', () => {
                           : { buffer: t.inDeck.audio.nativeBuffer, tempoRatio: 1, rate: stretch ? ratio : 1 };
     const out = { buffer: t.outDeck.audio.buffer, tempoRatio: t.outDeck.audio.tempoRatio,
                   rate: t.outDeck.audio.playbackRate, trimDb: t.outDeck.trimDb || 0 };
+    if (t.glide) {
+      // After its glide: its keylocked copy at the mix tempo (what it plays then); the track at that
+      // rate until the copy is in
+      const copy = await Promise.race([t.glide.target, new Promise(r => setTimeout(() => r(null), 2000))]);
+      Object.assign(out, copy ? { buffer: copy, tempoRatio: t.glide.s1, rate: 1 }
+                              : { buffer: t.outDeck.audio.nativeBuffer, tempoRatio: 1, rate: t.glide.s1 });
+    }
     if (t.layers) {
       out.layers = t.layers.out;
       inc.layers = t.layers.inc;
@@ -2522,7 +2683,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const beats = remain / p.beatSec;
         phraseHudCounter.textContent = `IN ON THE 1: ${Math.floor(beats / 4)} BARS (${Math.floor(beats % 4) + 1}/4)`;
         phraseHudProgress.style.width = `${(100 * (1 - remain / total0)).toFixed(1)}%`;
-        show(line(`STARTS IN ${Math.ceil(remain)} S`));   // wraps as one piece
+        const gliding = t.glide && engine.ctx.currentTime < t.settleCtx
+          ? `TEMPO GLIDE TO ${(t.glide.s1 * t.outTrack.bpm).toFixed(1)} BPM · ` : '';
+        show(line(`${gliding}STARTS IN ${Math.ceil(remain)} S`));   // wraps as one piece
       } else {
         phraseHud.classList.add('hidden');
         show(line('MIXING'));
@@ -2581,7 +2744,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const side = deck => ({ buffer: deck.audio.buffer, tempoRatio: deck.audio.tempoRatio,
                             rate: deck.audio.playbackRate, trimDb: deck.trimDb || 0 });
     const recipe = t.blend || t.tech === 'echo_freeze';   // MixBlocks performs these, in any style
-    lastPerformed = recipe && !LOW_MEMORY ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
+    lastPerformed = recipe && !LOW_MEMORY && t.outDeck.audio.map.constant ? { out: side(t.outDeck), inc: side(inDeck), plan: Object.assign({}, p),
                                               technique: t.tech } : null;
     if (recipe) runRecipe(t); else runCut(t);
   }
@@ -2691,6 +2854,7 @@ document.addEventListener('DOMContentLoaded', () => {
       });
       finishTransition(t.renderPromise);
       if (t.plan.style) askForRating(t.plan);
+      returnHome(t.inDeck);           // back to its own tempo, gliding (Phase 5)
     }, 40);
   }
 

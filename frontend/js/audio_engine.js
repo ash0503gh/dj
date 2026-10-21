@@ -12,17 +12,69 @@
  *    started from the same clock stay locked with no PLL;
  *  - positions are computed from ctx.currentTime (no coarse/jittery element clock);
  *  - it can play a keylocked (server time-stretched) copy of the track: `tempoRatio` = how
- *    many times faster than native it runs. `currentTime` is always NATIVE track time, so
- *    beat grids and waveforms stay valid whatever buffer is playing.
+ *    many times faster than native it runs; or a tempo glide, whose speed eases from one tempo to
+ *    another (`map`, a TimeMap). `currentTime` is always NATIVE track time, so beat grids and
+ *    waveforms stay valid whatever buffer is playing.
  *  - playbackRate is vinyl-style (pitch follows), used for manual tempo moves and FX.
  */
+
+/**
+ * TimeMap - where each native second of a track sits in the buffer a deck plays (backend/glide.py has
+ * the same map). The speed (native seconds played a second) is s0 until native `at`, moves linearly in
+ * native time to s1 over the next `len` native seconds, and stays s1; buffer time 0 is native `start`.
+ * A keylocked copy at ratio r is the constant map (start 0, s0 = s1 = r); a glide window, whose
+ * lead-in plays at s0, takes a deck from one tempo to another.
+ */
+class TimeMap {
+  constructor({ start = 0, s0 = 1, s1 = s0, at = start, len = 0 } = {}) {
+    Object.assign(this, { start, s0, s1, at, len });
+    this.k = len > 0 ? (s1 - s0) / len : 0;
+  }
+
+  static constant(r) { return new TimeMap({ s0: r }); }
+
+  /** The speed it settles at. */
+  get speed() { return this.s1; }
+
+  get constant() { return this.s0 === this.s1; }
+
+  speedAt(n) {
+    if (n <= this.at) return this.s0;
+    return n >= this.at + this.len ? this.s1 : this.s0 + this.k * (n - this.at);
+  }
+
+  /** Buffer seconds for the first x native seconds of the ramp. */
+  _ramp(x) {
+    return Math.abs(this.k) < 1e-12 ? x / this.s0 : Math.log((this.s0 + this.k * x) / this.s0) / this.k;
+  }
+
+  toBuf(n) {
+    const b0 = (this.at - this.start) / this.s0;
+    if (n <= this.at) return (n - this.start) / this.s0;
+    if (n <= this.at + this.len) return b0 + this._ramp(n - this.at);
+    return b0 + this._ramp(this.len) + (n - this.at - this.len) / this.s1;
+  }
+
+  toNative(b) {
+    const b0 = (this.at - this.start) / this.s0;
+    if (b <= b0) return this.start + b * this.s0;
+    const b1 = b0 + this._ramp(this.len);
+    if (b <= b1) {
+      const u = b - b0;
+      return this.at + (Math.abs(this.k) < 1e-12 ? u * this.s0 : this.s0 * (Math.exp(this.k * u) - 1) / this.k);
+    }
+    return this.at + this.len + (b - b1) * this.s1;
+  }
+}
+
 class BufferTransport {
   constructor(ctx, output) {
     this.ctx = ctx;
     this.output = output;
     this.nativeBuffer = null;
     this.buffer = null;
-    this.tempoRatio = 1.0;
+    this.map = TimeMap.constant(1);
+    this._past = [];         // [{ map, pos, t0 }]: what plays until scheduled switches of buffer
     this.src = '';
     this.seeking = false;
     this.error = null;
@@ -59,6 +111,7 @@ class BufferTransport {
     this.src = url;
     this.nativeBuffer = this.buffer = null;
     this.tempoRatio = 1.0;
+    this._past = [];
     this.loaded = fetch(url)
       .then(r => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.arrayBuffer(); })
       .then(ab => this.ctx.decodeAudioData(ab))
@@ -76,20 +129,66 @@ class BufferTransport {
   }
 
   get duration() { return this.nativeBuffer ? this.nativeBuffer.duration : NaN; }
+  /** How many times faster than native it runs: a keylocked copy's ratio, or where a glide settles. */
+  get tempoRatio() { return this.map.speed; }
+  set tempoRatio(r) { this.map = TimeMap.constant(r); }
   get paused() { return this._paused; }
   /** Actually sounding now (false while a scheduled start is still in the future). */
   get running() { return !this._paused && this.ctx.currentTime >= this._t0; }
 
   /** Native track time at ctx time `t` (for a running deck, extrapolated at the current rate). */
+  /** The stretch of playback (buffer map, native position, ctx start) heard at ctx time t. */
+  _segAt(t) {
+    const segs = this._past.concat([{ map: this.map, pos: this._pos, t0: this._t0 }]);
+    let seg = segs[0];
+    for (const s of segs) if (s.t0 <= t) seg = s;
+    return seg;
+  }
+
   timeAt(t) {
     if (this._paused) return this._pos;
-    const dt = Math.max(0, t - this._t0);
-    return Math.min(this.duration || Infinity, this._pos + dt * this._rate * this.tempoRatio);
+    const seg = this._segAt(t);
+    const dt = Math.max(0, t - seg.t0);
+    return Math.min(this.duration || Infinity, seg.map.toNative(seg.map.toBuf(seg.pos) + dt * this._rate));
   }
 
   /** ctx time at which the deck will reach native time `native` (running decks only). */
   ctxTimeAt(native) {
-    return this._t0 + (native - this._pos) / (this._rate * this.tempoRatio);
+    let seg = { map: this.map, pos: this._pos, t0: this._t0 };
+    for (let i = this._past.length - 1; i >= 0 && native < seg.pos; i--) seg = this._past[i];
+    return seg.t0 + (seg.map.toBuf(native) - seg.map.toBuf(seg.pos)) / this._rate;
+  }
+
+  /** How many native seconds a second it plays at ctx time `t` (glides, keylock and vinyl rate). */
+  speedAt(t) {
+    return this._segAt(t).map.speedAt(this.timeAt(t)) * this._rate;
+  }
+
+  /** Whether the buffer playing holds native time `native`. */
+  covers(native) {
+    const b = this.map.toBuf(native);
+    return !!this.buffer && b >= 0 && b < this.buffer.duration;
+  }
+
+  /**
+   * How the deck will run once it switches, at native `at`, to a buffer with time map `map` (a planned
+   * glide): what the planner needs of a deck (timeAt, ctxTimeAt, tempoRatio, playbackRate, duration),
+   * nothing played.
+   */
+  planned(map, at) {
+    const self = this;
+    const tAt = this.ctxTimeAt(at);
+    const bAt = map.toBuf(at);
+    return {
+      tempoRatio: map.speed,
+      playbackRate: this._rate,
+      duration: this.duration,
+      paused: this._paused,
+      timeAt: t => (t <= tAt ? self.timeAt(t)
+        : Math.min(self.duration || Infinity, map.toNative(bAt + (t - tAt) * self._rate))),
+      ctxTimeAt: n => (n <= at ? self.ctxTimeAt(n) : tAt + (map.toBuf(n) - bAt) / self._rate),
+      get currentTime() { return self.currentTime; },
+    };
   }
 
   get currentTime() { return this.timeAt(this.ctx.currentTime); }
@@ -102,6 +201,7 @@ class BufferTransport {
     if (!this._paused && now >= this._t0) {
       this._pos = this.timeAt(now);
       this._t0 = now;
+      this._past = [];
     }
     this._rate = r;
     if (this._node) this._node.src.playbackRate.setValueAtTime(r, Math.max(now, this._t0));
@@ -117,7 +217,7 @@ class BufferTransport {
     // 3 ms declick ramp (only noticeable on seeks, never on a kick)
     gain.gain.setValueAtTime(0, when);
     gain.gain.linearRampToValueAtTime(1, when + 0.003);
-    const offset = Math.max(0, native / this.tempoRatio);
+    const offset = Math.max(0, this.map.toBuf(native));
     const node = { src, gain };
     src.onended = () => {
       if (this._node === node) {
@@ -155,6 +255,7 @@ class BufferTransport {
     this._stopNode(t);
     this._pos = pos;
     this._t0 = t;
+    this._past = [];
     this._paused = false;
     this._startNode(t, pos);
     this._emit('play');
@@ -177,20 +278,26 @@ class BufferTransport {
   }
 
   /**
-   * Switch to another rendering of the same track (e.g. a keylocked stretch) at ctx time
-   * `when` without a jump in native position. tempoRatio = how much faster than native it runs.
+   * Switch to another rendering of the same track (a keylocked stretch, a glide window) at ctx time
+   * `when` without a jump in native position. `map`: its TimeMap, or the tempo ratio of a keylocked
+   * copy (how much faster than native it runs). Until `when` the deck goes on as it was.
    */
-  useBuffer(buffer, tempoRatio, when = null) {
+  useBuffer(buffer, map, when = null) {
     const t = Math.max(this.ctx.currentTime + 0.02, when === null ? 0 : when);
+    map = map instanceof TimeMap ? map : TimeMap.constant(map);
     if (this._paused) {
       this.buffer = buffer;
-      this.tempoRatio = tempoRatio;
+      this.map = map;
       return;
     }
     const pos = this.timeAt(t);
     this._stopNode(t);
+    // Segments that ended over a second ago are forgotten
+    const now = this.ctx.currentTime;
+    this._past = this._past.concat([{ map: this.map, pos: this._pos, t0: this._t0 }])
+      .filter((seg, i, all) => (i + 1 < all.length ? all[i + 1].t0 : t) > now - 1);
     this.buffer = buffer;
-    this.tempoRatio = tempoRatio;
+    this.map = map;
     this._pos = pos;
     this._t0 = t;
     this._startNode(t, pos);
@@ -209,7 +316,7 @@ class BufferTransport {
     g.gain.linearRampToValueAtTime(1, when + 0.002);
     g.gain.setValueAtTime(1, when + Math.max(0.003, lenSec - 0.003));
     g.gain.linearRampToValueAtTime(0, when + lenSec);
-    src.start(when, native / this.tempoRatio, len);
+    src.start(when, this.map.toBuf(native), len);
     return src;
   }
 
@@ -232,8 +339,11 @@ class BufferTransport {
    * or null when the window doesn't cover [t0, t1] at this deck's tempo.
    */
   playLayers(layers, gains, t0, t1) {
-    if (!layers || this._paused || Math.abs(layers.ratio - this.tempoRatio) > 1e-6) return null;
-    const offset = (this.timeAt(t0) - layers.start) / this.tempoRatio;
+    if (!layers || this._paused) return null;
+    const n0 = this.timeAt(t0);
+    // the stems are at one tempo: the deck must hold it from t0 to t1 (not mid-glide)
+    if ([n0, this.timeAt(t1)].some(n => Math.abs(layers.ratio - this.map.speedAt(n)) > 1e-6)) return null;
+    const offset = (n0 - layers.start) / layers.ratio;
     if (offset < 0 || offset + (t1 - t0) * this._rate > layers.buffer.duration) return null;
     const ctx = this.ctx;
     const src = ctx.createBufferSource();
@@ -287,7 +397,7 @@ class BufferTransport {
    *  playback is muted meanwhile (the caller stops the deck at t1). */
   playBrake(t0, t1) {
     if (!this.buffer) return null;
-    const src = this._oneShot(this.buffer, this.timeAt(t0) / this.tempoRatio, t0, t1);
+    const src = this._oneShot(this.buffer, this.map.toBuf(this.timeAt(t0)), t0, t1);
     src.playbackRate.setValueAtTime(this._rate, t0);
     src.playbackRate.linearRampToValueAtTime(0.05, t1);
     this.muteBetween(t0, t1);
@@ -299,7 +409,7 @@ class BufferTransport {
   playSpinback(t0, t1) {
     if (!this.buffer) return null;
     const b = this.buffer;
-    const end = Math.floor(this.timeAt(t0) / this.tempoRatio * b.sampleRate);
+    const end = Math.floor(this.map.toBuf(this.timeAt(t0)) * b.sampleRate);
     const n = Math.max(1, Math.min(end, Math.ceil(1.7 * (t1 - t0) * b.sampleRate)));  // what the push uses
     const rev = this.ctx.createBuffer(b.numberOfChannels, n, b.sampleRate);
     for (let c = 0; c < b.numberOfChannels; c++) {

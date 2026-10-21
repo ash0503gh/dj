@@ -6,7 +6,7 @@
  * this session are dimmed.
  */
 const TrackPicker = (() => {
-  const BLEND_GAP = 0.12;   // MixPlanner.MAX_STRETCH
+  const BLEND_GAP = 0.20;   // MixPlanner.GLIDE_MAX (tempos past 4% apart meet halfway, gliding)
 
   /** "deck_1_07_-_Dj_Sanj_-_Das_Ja___(Mp3Hungama.com).mp3" -> "Dj Sanj - Das Ja" */
   function cleanTitle(raw) {
@@ -79,7 +79,7 @@ const TrackPicker = (() => {
 
     function tempoHint(bpm, otherBpm) {
       if (!otherBpm || !bpm) return null;
-      const fits = m => Math.abs(otherBpm / (bpm * m) - 1) <= BLEND_GAP;   // MixPlanner.tempoMultiple
+      const fits = m => Math.max(otherBpm / (bpm * m), bpm * m / otherBpm) - 1 <= BLEND_GAP;   // MixPlanner.mixTempo
       if (fits(1)) return { text: 'BLENDS', ok: true };
       if (fits(2)) return { text: 'HALF-TIME', ok: true };
       if (fits(0.5)) return { text: 'DOUBLE-TIME', ok: true };

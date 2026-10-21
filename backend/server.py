@@ -30,6 +30,7 @@ import soundfile as sf
 from .audio_analyzer import analyze_track, check_camelot_compatibility, build_grid_times, ANALYSIS_VERSION
 from .dj_engine import render_pro_transition
 from .stretch import stretch_file, stretched_path
+from . import glide
 from . import storage
 from .stem_separator import separate_with_demucs, separate_fast_spectral
 from .ai_advisor import generate_ai_dj_strategy
@@ -47,6 +48,7 @@ STEMS_DIR = os.path.join(BASE_DIR, "stems")
 FRONTEND_DIR = os.path.join(BASE_DIR, "frontend")
 CACHE_FILE = os.path.join(UPLOAD_DIR, "analysis_cache.json")
 STRETCH_DIR = os.path.join(OUTPUT_DIR, "stretch")
+GLIDE_DIR = os.path.join(OUTPUT_DIR, "glides")
 
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -1119,25 +1121,62 @@ async def get_audio(filename: str):
 async def get_stretched(file_id: str, ratio: float):
     """The track at `ratio` x tempo with pitch unchanged (keylock), as FLAC.
     Rendered and kick-aligned in a heavy-job child process."""
-    import urllib.parse
     if not 0.8 <= ratio <= 1.25:
         raise HTTPException(status_code=400, detail="ratio must be within 0.8 - 1.25")
     path = await local_track(file_id)
     if not path:
         raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
     ratio = round(ratio, 6)
-    # A library file's name isn't its id, nor unique across folders: its (audio-derived) id names it
-    fid = urllib.parse.unquote(file_id) if library.enabled() and await run_in_threadpool(
-        library.get, urllib.parse.unquote(file_id)) else os.path.basename(path)
+    fid = await _track_name(file_id, path)
+    out = await _keylocked(path, fid, ratio)
+    return stream_file(out, "audio/flac",
+                       {"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+
+
+async def _track_name(file_id: str, path: str) -> str:
+    """What names a track's renders: a library file's (audio-derived) id (its file name isn't unique
+    across folders), an uploaded file's name."""
+    import urllib.parse
+    fid = urllib.parse.unquote(file_id)
+    if library.enabled() and await run_in_threadpool(library.get, fid):
+        return fid
+    return os.path.basename(path)
+
+
+async def _keylocked(path: str, fid: str, ratio: float) -> str:
+    """The track's keylocked copy at `ratio` x tempo: rendered before (this instance, or any instance
+    via the bucket), or rendered now and kept."""
     out = stretched_path(path, ratio, STRETCH_DIR, name=fid)
     key = f"stretch/{os.path.basename(out)}"
-    # Rendered before (this instance, or any instance via the bucket)? Otherwise render + keep it.
     if not os.path.exists(out) and not await run_in_threadpool(storage.fetch_file, key, out):
         grid = ((await get_cached_analysis(fid)) or {}).get("grid")
         out = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid, name=fid)
         await run_in_threadpool(storage.put_file, key, out, "audio/flac")
-    return stream_file(out, "audio/flac",
-                       {"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})
+    return out
+
+
+@app.get("/api/glide/{file_id:path}")
+async def get_glide(file_id: str, start: float, end: float, at: float, length: float, s0: float, s1: float):
+    """A keylocked tempo glide (backend/glide.py): native [start, end) of the track as FLAC, its speed
+    s0 until native `at`, easing to s1 over `length` native seconds, s1 after; sample 0 is native
+    `start`, lined up with the file the deck plays at s0 (the track, or its keylocked copy)."""
+    if not (0.8 <= s0 <= 1.25 and 0.8 <= s1 <= 1.25 and 0 <= start and start + 2 * s0 <= at
+            and 0 < length <= 120 and at + length <= end and end - start <= 240):
+        raise HTTPException(status_code=400, detail="speeds 0.8-1.25, a 2 s lead-in, a ramp of at most "
+                                                    "120 s, at most 240 s in all")
+    path = await local_track(file_id)
+    if not path:
+        raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
+    fid = await _track_name(file_id, path)
+    s0, s1 = round(s0, 6), round(s1, 6)
+    reference, ref_ratio = path, 1.0
+    if abs(s0 - 1) >= 0.0005:
+        reference, ref_ratio = await _keylocked(path, fid, s0), s0
+    # Not in the heavy-job queue: a glide is due within seconds, and whole-track renders (keylocked copies,
+    # stem windows) may be queued there. It's a short window: ffmpeg does the work, outside the GIL
+    out = await run_in_threadpool(glide.glide_file, path, GLIDE_DIR, fid, start, end, at, length, s0, s1,
+                                  reference, ref_ratio)
+    return stream_file(out, "audio/flac", {"Cache-Control": "no-cache"})
 
 
 @app.post("/api/score-transition")

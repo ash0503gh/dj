@@ -160,8 +160,9 @@ def _stretch(x: np.ndarray, ratio: float) -> np.ndarray:
     return np.frombuffer(out, dtype=np.float32).reshape(-1, len(x)).T
 
 
-def _lag(a: np.ndarray, ref: np.ndarray, most: int) -> int:
-    """Samples by which `a` sits late against `ref` (cross-correlation, within ±most); 0 when unclear."""
+def _lag(a: np.ndarray, ref: np.ndarray, most: int, unclear=0):
+    """Samples by which `a` sits late against `ref` (cross-correlation, within ±most); `unclear` when
+    they don't correlate clearly."""
     n = min(len(a), len(ref))
     size = 1 << int(np.ceil(np.log2(2 * n)))
     xc = np.fft.irfft(np.fft.rfft(a[:n], size) * np.conj(np.fft.rfft(ref[:n], size)), size)
@@ -169,7 +170,7 @@ def _lag(a: np.ndarray, ref: np.ndarray, most: int) -> int:
     vals = np.concatenate([xc[:most + 1], xc[-most:]])
     k = int(np.argmax(vals))
     clear = vals[k] > 0.5 * np.sqrt(np.dot(a[:n], a[:n]) * np.dot(ref[:n], ref[:n]))
-    return int(lags[k]) if clear else 0
+    return int(lags[k]) if clear else unclear
 
 
 def render_layers(folder: str, reference: str, ratio: float, start: float, end: float) -> np.ndarray:

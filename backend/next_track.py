@@ -2,8 +2,8 @@
 next_track.py - Which library track to load next, after the one on air.
 
 Scored from the stored analyses alone (no AI, no audio): how close the tempo is (within
-MAX_STRETCH the console can beat-match and blend, at the track's own tempo or at half or double time;
-beyond it only switch), how well the keys sit
+GLIDE_MAX the console can beat-match and blend, at the track's own tempo or at half or double time,
+the two tempos meeting halfway past GLIDE_FROM; beyond it only switch), how well the keys sit
 together (Camelot), how much room the track gives to blend in (instrumental intro before its lead
 vocal, and not much quieter than its body), and how close its loudness is. The same song uploaded
 under several names or decks is suggested once.
@@ -11,7 +11,8 @@ under several names or decks is suggested once.
 
 from typing import Any, Dict, Iterable, List, Optional
 
-MAX_STRETCH = 0.12           # frontend MixPlanner.MAX_STRETCH: tempo gap beyond which there is no blend
+GLIDE_FROM = 0.04            # frontend MixPlanner.GLIDE_FROM: past it the outgoing glides to meet it halfway
+GLIDE_MAX = 0.20             # frontend MixPlanner.GLIDE_MAX: tempo gap beyond which there is no blend
 CLEAN_STRETCH = 0.08         # frontend MixPlanner.CLEAN_STRETCH: stretching past it costs a little
 INTRO_BARS_FULL = 16         # an instrumental intro this long is all the room a blend needs
 
@@ -97,7 +98,7 @@ def tempo_fit(master_bpm: float, bpm: float):
     own gap and None when no blend can."""
     for m in (1, 2, 0.5):
         g = master_bpm / (bpm * m) - 1
-        if abs(g) <= MAX_STRETCH:
+        if max(1 + g, 1 / (1 + g)) - 1 <= GLIDE_MAX:       # either way round: they meet halfway
             return g, m
     return master_bpm / bpm - 1, None
 
@@ -112,15 +113,16 @@ def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[
     elif g <= CLEAN_STRETCH:
         tempo = 40 - 15 * (g - 0.02) / (CLEAN_STRETCH - 0.02)
     elif blend:
-        tempo = 25 - 10 * (g - CLEAN_STRETCH) / (MAX_STRETCH - CLEAN_STRETCH)
+        tempo = 25 - 13 * (g - CLEAN_STRETCH) / (GLIDE_MAX - CLEAN_STRETCH)
     else:
-        tempo = max(0.0, 15 - 100 * (g - MAX_STRETCH))
+        tempo = max(0.0, 12 - 100 * (g - GLIDE_MAX))
     if multiple in (2, 0.5):
         tempo -= 5                        # a blend at its own tempo is still the classic one
     sev = key_severity(out.get("camelot"), cand.get("camelot"))
     key = 30 * (1 - sev)
     time = {2: " at half time", 0.5: " at double time"}.get(multiple, "")
-    reasons = [f"blends{time} ({g * 100:.1f}% tempo)" if blend else f"tempo {g * 100:.0f}% away: switch only"]
+    meet = ", meeting halfway" if g > GLIDE_FROM else ""
+    reasons = [f"blends{time} ({g * 100:.1f}% tempo{meet})" if blend else f"tempo {g * 100:.0f}% away: switch only"]
     reasons.append("keys match" if sev == 0 else f"keys {'clash' if sev >= 0.6 else 'rub'} ({out.get('camelot')}→{cand.get('camelot')})")
     intro_bars = None
     if not blend:
