@@ -105,8 +105,16 @@ incoming never plays.
 Done when: downbeat errors on a hand-checked set of library tracks are near zero, and key agreement
 with the files' tags is clearly above the old estimate's (the benchmark's TAGS line).
 
-### Phase 4: Stems, Tier 3b (M-L)
+### Phase 4: Stems, Tier 3b (M-L) · part 1 built (stems, vocals), part 2 in progress (mixing with them)
 
+Part 1, built: Demucs v4 (htdemucs) separates each track once, one at a time after the other stages, on
+the Mac's GPU; the stems are kept as Ogg Opus (~13 MB a song; sample-aligned, checked in Chromium).
+The vocal stem labels every section and bar (`vocal_bars`): on a synthetic track with a known sung line,
+24 of 24 sections right, and an instrumental's residue marks nothing. Songs with stems need no Gemini;
+labels Gemini gave before are kept to compare (the benchmark's STEMS line). Demucs couldn't run in the
+build environment (its weights host is blocked there): its first real separation is the Mac's.
+
+Part 2, the plan:
 - Demucs v4 (htdemucs) as a prepare stage on the GPU, cached as compressed stems (~30 MB per track).
 - Stem-aware mix blocks: hand over the outgoing vocal stem instead of ducking mids, bring the incoming
   in as drums only, acapella over instrumental, cleaner bass swap.

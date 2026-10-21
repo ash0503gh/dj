@@ -345,3 +345,73 @@ def test_console_never_pays_for_listening_in_local_mode(lib, monkeypatch):
     from backend import server
     fid = library.ready_tracks()[0]["file_id"]
     assert TestClient(server.app).post("/api/listen-vocals", json={"file_id": fid}).json()["status"] == "skipped"
+
+
+@pytest.fixture
+def with_stems(lib, monkeypatch):
+    """The library with the stems and vocals stages; the separator stubbed (it writes silent stems), the
+    vocal stem read as singing in the first section only."""
+    monkeypatch.setitem(library.STAGES, "stems", 1)
+    monkeypatch.setitem(library.STAGES, "vocals", 1)
+    music, calls = lib
+    loaded = []
+
+    def fake_separate(path, folder):
+        calls.append(("stems", os.path.basename(path)))
+        os.makedirs(folder, exist_ok=True)
+        for p in library.stems.paths(folder).values():
+            open(p, "wb").write(b"opus")
+        return {"stems_model": "demucs:htdemucs"}
+
+    def fake_sung(vocal_path, track_path):
+        calls.append(("vocals", os.path.basename(track_path)))
+        return np.array([True] * int(7.74 / library.stems.FRAME_SEC) + [False] * 400)
+
+    monkeypatch.setattr(library.stems, "separate", fake_separate)
+    monkeypatch.setattr(library.stems, "sung_frames", fake_sung)
+    monkeypatch.setattr(library.stems, "load", lambda device=None: loaded.append(1))
+    monkeypatch.setattr(library.stems, "_device_used", "cpu", raising=False)
+    return music, calls, loaded
+
+
+def test_stems_separated_after_the_rest_and_label_vocals(with_stems, monkeypatch):
+    music, calls, loaded = with_stems
+    (music / "s.mp3").write_bytes(b"audio s")
+    prep()
+    order = [c[0] for c in calls if c[1] == "s.mp3"]
+    assert order == ["beats_nn", "analysis", "key", "loudness", "grid_check", "stems", "vocals"]
+    assert loaded == [1]                                   # the model loaded once, in this process
+    fid = library.ready_tracks()[0]["file_id"]
+    an = library.get(fid)["analysis"]
+    assert an["vocal_source"] == "stems:htdemucs" and [s["has_vocals"] for s in an["section_map"]] == [True, False]
+    monkeypatch.setattr("backend.ai_advisor.get_gemini_api_key", lambda *a: "key")
+    assert library.unlistened() == []                      # nothing left to pay Gemini for
+
+    from backend import server
+    client = TestClient(server.app)
+    assert client.get(f"/api/track-stems/{fid}/vocals").content == b"opus"
+    assert client.get(f"/api/track-stems/{fid}/lead").status_code == 404
+    assert client.post("/api/load-preset", data={"file_id": fid}).json()["track"]["stems"] is True
+
+    # A newer analysis relabels from the stems it has, without separating again
+    calls.clear()
+    monkeypatch.setitem(library.STAGES, "analysis", library.STAGES["analysis"] + 1)
+    prep()
+    assert [c[0] for c in calls] == ["analysis", "key", "grid_check", "vocals"]
+
+    # Stems deleted from disk: separated again
+    calls.clear()
+    for p in library.stems.paths(library.stems_folder(fid)).values():
+        os.remove(p)
+    prep()
+    assert [c[0] for c in calls] == ["stems", "vocals"]
+
+
+def test_without_the_separator_tracks_are_still_ready(with_stems, monkeypatch):
+    music, calls, _ = with_stems
+    monkeypatch.setattr(library.stems, "load", lambda device=None: (_ for _ in ()).throw(RuntimeError("offline")))
+    (music / "s.mp3").write_bytes(b"audio s")
+    res = prep()
+    assert res["counts"]["ready"] == 1 and not any(c[0] == "stems" for c in calls)
+    an = library.get(library.ready_tracks()[0]["file_id"])["analysis"]
+    assert "vocal_source" not in an

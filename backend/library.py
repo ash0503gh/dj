@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional
 from .audio_analyzer import analyze_track, build_grid_times, ANALYSIS_VERSION
 from .vocal_listen import carry_vocal_labels
 from .grid_check import check_track, DRIFT_FLAG_MS
-from . import beats_nn, key_detect, next_track
+from . import beats_nn, key_detect, next_track, stems
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
 
@@ -51,16 +51,29 @@ def _stages() -> Dict[str, int]:
     if key_detect.available():
         st["key"] = 1
     st.update(loudness=2, grid_check=1)
+    if stems.available():
+        st.update(stems=1, vocals=1)
     return st
 
 
 STAGES = _stages()
 # A stage re-runs after one it builds on has run: the analysis takes the neural beats as a second
 # opinion, the key replaces the analysis's, the grid check measures the analysis's grid
-AFTER = {"analysis": ("beats_nn",), "key": ("analysis",), "grid_check": ("analysis",)}
-# Stages a track is ready without (it keeps the analyzer's own grid decisions and key): tried again
-# at the next prepare when they fail
-OPTIONAL = {"beats_nn", "key"}
+AFTER = {"analysis": ("beats_nn",), "key": ("analysis",), "grid_check": ("analysis",),
+         "vocals": ("analysis", "stems")}   # the vocal stem labels the analysis's sections and bars
+# Stages a track is ready without (it keeps the analyzer's own grid decisions, key and vocal guess):
+# tried again at the next prepare when they fail
+OPTIONAL = {"beats_nn", "key", "stems", "vocals"}
+# Stages that fill the GPU and memory on their own: one track at a time, after the others
+SEQUENTIAL = {"stems"}
+
+
+class SkipStage(Exception):
+    """A stage with nothing to work on yet (the vocals before the stems exist): neither run nor failed."""
+
+
+def stems_folder(file_id: str) -> str:
+    return os.path.join(os.path.dirname(db_path()), "stems", file_id)
 
 # A grid that lands fewer of its strong beats within 20 ms than this is flagged for a check
 # (provisional: tuned on the Phase 2 benchmark)
@@ -246,7 +259,8 @@ def _keep_manual_grid(fresh: Dict[str, Any], prior: Optional[Dict[str, Any]]) ->
         fresh.update(grid_manual=False, grid_confirmed=False)
 
 
-def _run_stage(stage: str, path: str, an: Dict[str, Any], prior: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _run_stage(stage: str, path: str, an: Dict[str, Any], prior: Optional[Dict[str, Any]],
+               file_id: str) -> Dict[str, Any]:
     if stage == "beats_nn":
         an.update(beats_nn.track_beats(path))
     elif stage == "analysis":
@@ -267,25 +281,36 @@ def _run_stage(stage: str, path: str, an: Dict[str, Any], prior: Optional[Dict[s
         an.update(measure_loudness(path))
     elif stage == "grid_check":
         an.update(check_track(path, an["grid"], an["duration"]))
+    elif stage == "stems":
+        an.update(stems.separate(path, stems_folder(file_id)))
+    elif stage == "vocals":
+        folder = stems_folder(file_id)
+        if not stems.have(folder):
+            raise SkipStage()
+        stems.label_vocals(an, stems.sung_frames(stems.paths(folder)["vocals"], path))
     return an
 
 
-def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]]):
+def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]], file_id: str = ""):
     """Run one file's outdated stages (in a worker process), and every stage after one that ran and that
-    it builds on. Returns (the new analysis, the stages that ran, {optional stage: why it failed})."""
+    it builds on. Returns (the new analysis, the stages that ran, {optional stage: why it failed},
+    seconds it took)."""
+    t0 = time.time()
     an = dict(prior or {})
     ran, failed = [], {}
     for stage in STAGES:
         if stage not in todo and not any(d in ran for d in AFTER.get(stage, ())):
             continue
         try:
-            an = _run_stage(stage, path, an, prior)
+            an = _run_stage(stage, path, an, prior, file_id)
             ran.append(stage)
+        except SkipStage:
+            continue
         except Exception as e:
             if stage not in OPTIONAL:
                 raise
             failed[stage] = str(e) or type(e).__name__
-    return an, ran, failed
+    return an, ran, failed, time.time() - t0
 
 
 def _uploaded_labels() -> Dict[str, Dict[str, Any]]:
@@ -383,64 +408,97 @@ def prepare(root: Optional[str] = None, workers: Optional[int] = None, retry_fai
     with closing(_connect()) as con:
         index(con, root, log)
         labelled = _uploaded_labels()
-        jobs = []
-        for t in con.execute("SELECT * FROM tracks WHERE status IN ('pending', 'failed', 'ready')"):
-            if t["status"] == "failed" and not retry_failed:
-                continue
-            stages = json.loads(t["stages"] or "{}")
-            todo = [s for s, v in STAGES.items() if stages.get(s) != v]
-            if todo:
-                # A new track uploaded to the console before (found by its whole file's hash there)
-                # brings Gemini's labels along
-                prior = json.loads(t["analysis"]) if t["analysis"] else (
-                    labelled.get(t["sha1"]) or (labelled.get(_sha1_file(t["path"])) if labelled else None))
-                jobs.append((t["file_id"], t["path"], todo, prior, stages, t["sha1"], t["title"]))
-        # The neural tracker's weights download once, here, rather than in every worker at once; without
-        # them (offline, say) this prepare runs without it
-        if any("beats_nn" in j[2] for j in jobs):
+
+        def outdated(only=None):
+            jobs = []
+            for t in con.execute("SELECT * FROM tracks WHERE status IN ('pending', 'failed', 'ready')"):
+                if t["status"] == "failed" and not retry_failed:
+                    continue
+                stages = json.loads(t["stages"] or "{}")
+                if "stems" in stages and not stems.have(stems_folder(t["file_id"])):
+                    stages = {k: v for k, v in stages.items() if k != "stems"}    # its files were deleted
+                todo = [s for s, v in STAGES.items() if stages.get(s) != v and (only is None or s in only)]
+                if todo:
+                    # A new track uploaded to the console before (found by its whole file's hash there)
+                    # brings Gemini's labels along
+                    prior = json.loads(t["analysis"]) if t["analysis"] else (
+                        labelled.get(t["sha1"]) or (labelled.get(_sha1_file(t["path"])) if labelled else None))
+                    jobs.append((t["file_id"], t["path"], todo, prior, stages, t["sha1"], t["title"]))
+            return jobs
+
+        def without(jobs, drop):
+            jobs = [(j[0], j[1], [s for s in j[2] if s not in drop]) + j[3:] for j in jobs]
+            return [j for j in jobs if j[2]]
+
+        def preload(module, what):
             try:
-                beats_nn.load()
-                log(f"Neural beat tracker ready (Beat This! on {beats_nn._device_used})")
+                module.load()
+                log(f"{what} ready (on {module._device_used})")
+                return True
             except Exception as e:
-                log(f"Neural beat tracker unavailable ({e}): preparing without it this time")
-                jobs = [(j[0], j[1], [s for s in j[2] if s != "beats_nn"]) + j[3:] for j in jobs]
-                jobs = [j for j in jobs if j[2]]
-        if not jobs:
+                log(f"{what} unavailable ({e}): preparing without it this time")
+                return False
+
+        # Every stage but the GPU-heavy ones, several tracks at a time. The neural tracker's weights
+        # download once, here, rather than in every worker at once; without them (offline, say) this
+        # prepare runs without it
+        jobs = without(outdated(), SEQUENTIAL)
+        if any("beats_nn" in j[2] for j in jobs) and not preload(beats_nn, "Neural beat tracker (Beat This!)"):
+            jobs = without(jobs, {"beats_nn"})
+        if jobs:
+            log(f"Preparing {len(jobs)} tracks with {workers or 1} worker(s)...")
+            _run_jobs(con, jobs, workers, log)
+        # Then the stems, one track at a time in this process with the model loaded once (the vocals
+        # are read from them as each track's are done)
+        heavy = [j for j in outdated(SEQUENTIAL) if j[3]]   # tracks with an analysis to label
+        if heavy and preload(stems, "Stem separation (Demucs)"):
+            log(f"Separating stems of {len(heavy)} tracks, one at a time...")
+            _run_jobs(con, heavy, 0, log)
+        elif not jobs and not heavy:
             log("Everything is prepared.")
-            return summary(con)
-        log(f"Preparing {len(jobs)} tracks with {workers or 1} worker(s)...")
-
-        def finish(job, result, err, n):
-            file_id, _, todo, prior, stages, sha, title = job
-            failed = {}
-            if err is None:
-                an, ran, failed = result
-                stages = dict(stages, **{s: STAGES[s] for s in ran})
-                an.update(file_id=file_id, title=title, content_sha1=sha)
-            else:
-                an = prior if prior and prior.get("file_id") == file_id else {}   # not an upload's labels
-            _store(con, file_id, an, stages, err)
-            what = (f"{float(an.get('bpm') or 0):.2f} BPM, {an.get('camelot', '--')}, {an.get('loudness_lufs', '?')} LUFS"
-                    + (f", check: {', '.join(flags_for(an))}" if flags_for(an) else "")
-                    + "".join(f", {s} skipped: {why}" for s, why in failed.items())) if err is None else f"FAILED: {err}"
-            log(f"[{n}/{len(jobs)}] {title} · {what}")
-
-        if workers == 0:
-            for n, job in enumerate(jobs, 1):
-                try:
-                    finish(job, _prepare_one(job[1], job[2], job[3]), None, n)
-                except Exception as e:
-                    finish(job, None, str(e) or type(e).__name__, n)
-        else:
-            with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
-                                     max_tasks_per_child=4) as ex:
-                futs = {ex.submit(_prepare_one, j[1], j[2], j[3]): j for j in jobs}
-                for n, fut in enumerate(as_completed(futs), 1):
-                    try:
-                        finish(futs[fut], fut.result(), None, n)
-                    except Exception as e:
-                        finish(futs[fut], None, str(e) or type(e).__name__, n)
         return summary(con)
+
+
+def _run_jobs(con: sqlite3.Connection, jobs: list, workers: int, log) -> None:
+    """Run `jobs` (file_id, path, todo, prior, stages, sha1, title), `workers` at a time (0: in this
+    process), saving each track as it ends."""
+    def finish(job, result, err, n):
+        file_id, _, todo, prior, stages, sha, title = job
+        failed, secs = {}, 0.0
+        if err is None:
+            an, ran, failed, secs = result
+            stages = dict(stages, **{s: STAGES[s] for s in ran})
+            an.update(file_id=file_id, title=title, content_sha1=sha)
+        else:
+            an = prior if prior and prior.get("file_id") == file_id else {}   # not an upload's labels
+        _store(con, file_id, an, stages, err)
+        if err is not None:
+            what = f"FAILED: {err}"
+        elif "stems" in todo:
+            sung = sum(bool(s.get("has_vocals")) for s in an.get("section_map", []))
+            what = (f"stems in {secs:.0f} s, vocals in {sung}/{len(an.get('section_map', []))} sections"
+                    if "stems" in ran else "no stems")
+        else:
+            what = (f"{float(an.get('bpm') or 0):.2f} BPM, {an.get('camelot', '--')}, {an.get('loudness_lufs', '?')} LUFS"
+                    + (f", check: {', '.join(flags_for(an))}" if flags_for(an) else ""))
+        what += "".join(f", {s} skipped: {why}" for s, why in failed.items()) if err is None else ""
+        log(f"[{n}/{len(jobs)}] {title} · {what}")
+
+    if workers == 0:
+        for n, job in enumerate(jobs, 1):
+            try:
+                finish(job, _prepare_one(job[1], job[2], job[3], job[0]), None, n)
+            except Exception as e:
+                finish(job, None, str(e) or type(e).__name__, n)
+        return
+    with ProcessPoolExecutor(workers, mp_context=multiprocessing.get_context("spawn"),
+                             max_tasks_per_child=4) as ex:
+        futs = {ex.submit(_prepare_one, j[1], j[2], j[3], j[0]): j for j in jobs}
+        for n, fut in enumerate(as_completed(futs), 1):
+            try:
+                finish(futs[fut], fut.result(), None, n)
+            except Exception as e:
+                finish(futs[fut], None, str(e) or type(e).__name__, n)
 
 
 # ── Reads and writes for the server ──

@@ -186,6 +186,7 @@ prepared tracks, and uploads are off.
   duplicated or re-tagged files (Serato, Mixed In Key and tag editors write into MP3 tags) stay one
   track with all their work. A track whose file is removed is kept, so adding it back costs nothing.
   Only a stage this code improves runs again, on your Mac, for free.
+- With stems (below) no song needs Gemini: their vocal stem says where the lead sings, for free.
 - Gemini (paid) never listens during a set. `python -m backend.library listen` has it listen once to
   every prepared song it hasn't heard: it shows the estimated cost in rupees, asks first, keeps to
   `--max-inr`, prints what each song really cost, and saves as it goes. Prepare reminds you how many
@@ -195,9 +196,12 @@ prepared tracks, and uploads are off.
   the whole track (Essentia's EDM profile, `backend/key_detect.py`; the analyzer's own estimate is kept
   as `key_ks`, and the file's BPM and key tags are read for comparison); loudness (EBU R128: integrated,
   range, short-term every second, and the body's loudness the trim matches); and a grid check, where
-  each beat's kick really lands against the grid, per 4 bars (`backend/grid_check.py`). The neural and
-  key stages need `requirements-local.txt` (setup_mac.sh installs it); a track is ready without them
-  and they're tried again at the next prepare. Every other stage must pass before a track loads.
+  each beat's kick really lands against the grid, per 4 bars (`backend/grid_check.py`); then, one track
+  at a time, its stems (Demucs v4 on the Mac's GPU, `backend/stems.py`: vocals, drums, bass, other, kept
+  as Ogg Opus, ~13 MB a song, in `~/.pulsepro/stems`), and where its vocal stem sings, by section and
+  by bar (replacing any guess or Gemini label). The neural, key, stems and vocals stages need
+  `requirements-local.txt` (setup_mac.sh installs it); a track is ready without them and they're tried
+  again at the next prepare. Every other stage must pass before a track loads.
 - CHECK GRID (in the browser, on the deck's GRID chip) marks a grid to look at: kicks that wander more
   than 20 ms, or a neural tracker that hears other beats. Fix it with the GRID menu's buttons, then
   GRID OK; a fixed or confirmed grid survives a re-analysis that finds the same tempo.

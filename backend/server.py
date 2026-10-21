@@ -36,6 +36,7 @@ from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
 from .vocal_listen import carry_vocal_labels
 from . import next_track
 from . import library
+from . import stems as track_stems
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -367,7 +368,8 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
         if row["status"] != "ready" or not row["analysis"]:
             raise HTTPException(status_code=409, detail=f"{row['title']} isn't prepared yet ({row['status']})")
         data = dict(row["analysis"], file_id=fid, deck=deck, flags=row["flags"],
-                    audio_url=f"/api/audio/{urllib.parse.quote(fid)}")
+                    audio_url=f"/api/audio/{urllib.parse.quote(fid)}",
+                    stems=track_stems.have(library.stems_folder(fid)))
         return JSONResponse(content={"status": "success", "track": data})
     load_cache_from_disk()
     target_id = file_id
@@ -1185,6 +1187,19 @@ async def grid_adjust(request: Request):
               "phrase_32_times", "suggested_cue_intro", "suggested_cue_outro")
     track = dict({k: an[k] for k in fields}, flags=library.flags_for(an))
     return JSONResponse(content={"status": "success", "track": track})
+
+
+@app.get("/api/track-stems/{file_id}/{stem}")
+async def track_stem(file_id: str, stem: str):
+    """One of a library track's stems (vocals, drums, bass, other) as Ogg Opus (local mode)."""
+    import urllib.parse
+    fid = urllib.parse.unquote(file_id)
+    if not library.enabled() or stem not in track_stems.SOURCES or not await run_in_threadpool(library.get, fid):
+        raise HTTPException(status_code=404, detail="No such stem")
+    path = track_stems.paths(library.stems_folder(fid))[stem]
+    if not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Stems not separated yet")
+    return FileResponse(path, media_type="audio/ogg", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.post("/api/grid-confirm")

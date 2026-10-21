@@ -6,6 +6,8 @@ change and compare.
                apart the tracks' loudness sits (what the trim has to make up)
   Tags         against the BPM and key the files' own tags give (DJ software and stores write them):
                the grid's BPM, the key used for mixing and the analyzer's old key estimate
+  Stems        tracks separated; where their vocal stems say the lead sings, and how often that agrees
+               with Gemini's labels on songs it listened to before
   Neural       what the neural beat tracker decided: downbeats it moved, tempos it refitted or disputed,
                how much of each track the grid and its beats agree on
   Pairs        every pair of prepared tracks: share that can blend (tempos within 12%, at their own,
@@ -92,6 +94,24 @@ def neural_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def stems_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
+    done = [a for a in analyses if str(a.get("vocal_source", "")).startswith("stems")]
+    sections = [s for a in done for s in a.get("section_map", [])]
+    agree = []
+    for a in done:
+        for s in a.get("section_map", []) if a.get("vocal_gemini") is not None else []:
+            t0, t1 = s["time"], s["time"] + s["duration"]
+            gemini = sum(max(0.0, min(t1, y) - max(t0, x)) for x, y in a["vocal_gemini"]) >= 0.5 * (t1 - t0)
+            agree.append(gemini == bool(s.get("has_vocals")))
+    return {
+        "tracks": len(done),
+        "instrumentals": sum(not any(s.get("has_vocals") for s in a.get("section_map", [])) for a in done),
+        "sung_sections": round(sum(bool(s.get("has_vocals")) for s in sections) / len(sections), 3) if sections else None,
+        "gemini_compared": len(agree),
+        "gemini_agree": round(sum(agree) / len(agree), 3) if agree else None,
+    }
+
+
 def pairs_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
     tracks = [a for a in analyses if (a.get("bpm") or 0) > 0]
     n = blend = near = switch = keys_ok = 0
@@ -157,11 +177,13 @@ def report() -> Dict[str, Any]:
         rows = con.execute("SELECT analysis FROM tracks WHERE status = 'ready' AND analysis IS NOT NULL").fetchall()
     analyses = [json.loads(r["analysis"]) for r in rows]
     return {"library": library_report(analyses), "tags": tags_report(analyses), "neural": neural_report(analyses),
+            "stems": stems_report(analyses),
             "pairs": pairs_report(analyses), "played": played_report(load_ratings())}
 
 
 def _fmt(rep: Dict[str, Any]) -> str:
     L, T, N, P, R = rep["library"], rep["tags"], rep["neural"], rep["pairs"], rep["played"]
+    St = rep["stems"]
     pc = lambda v: "-" if v is None else f"{100 * v:.0f}%"  # noqa: E731
     lines = [
         f"LIBRARY  {L['tracks']} tracks, {L['grid_checked']} grid-checked",
@@ -181,6 +203,11 @@ def _fmt(rep: Dict[str, Any]) -> str:
          f"{N['tempo_refitted']}, disputed on {N['tempo_conflict']}; its beats on the grid: median "
          f"{pc(N['agree']['median'])}, p10 {pc(N['agree']['p10'])}")
         if N["tracks"] else "NEURAL  not run (install requirements-local.txt: ./setup_mac.sh)",
+        (f"STEMS  {St['tracks']} tracks separated ({St['instrumentals']} instrumentals); lead vocal in "
+         f"{pc(St['sung_sections'])} of their sections"
+         + (f"; agrees with Gemini's earlier labels on {pc(St['gemini_agree'])} of {St['gemini_compared']} sections"
+            if St["gemini_compared"] else ""))
+        if St["tracks"] else "STEMS  none yet (install requirements-local.txt: ./setup_mac.sh)",
         f"PAIRS  {P['pairs']} ordered pairs: blend {pc(P['blend'])}, 12-20% apart {pc(P['ramp_12_20'])}, "
         f"switch only {pc(P['switch_only'])}; keys together in {pc(P['blend_keys_together'])} of blends",
         f"  {P['no_blend_partner']} tracks with no track to blend with"

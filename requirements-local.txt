@@ -9,3 +9,7 @@ beat-this==1.1.0
 
 # Key extraction over the whole track with the EDM profile ('edma').
 essentia>=2.1b6.dev1177
+
+# Stems (vocals, drums, bass, other) by Demucs v4 (htdemucs): where the lead vocal sings, for free.
+# Its weights download once, on the first prepare that uses it.
+demucs==4.1.0
