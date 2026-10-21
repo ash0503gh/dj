@@ -326,6 +326,15 @@ const TransitionLab = (() => {
     const popFull = popOf(blockDb(ch[1], nBeat), blockDb(ch[0], nBeat));
     const popHigh = popOf(highs[1], highs[0]);
     const pop = Math.max(popFull, popHigh);
+    // How suddenly the whole mix gets louder before the swap, whichever deck does it (the outgoing's own
+    // drop landing as a wash or a blend starts is the usual one): each beat against the bar before it,
+    // from a bar before the mix starts. Builds rise on purpose; the swap and a switch's landing may
+    // rise (a drop): not counted
+    let rise = 0;
+    for (let b = Math.max(4, a0 - 4); b < Math.min(swapBeat, beatsDb.length); b++) {
+      if (inBuild(b)) continue;
+      rise = Math.max(rise, beatsDb[b] - med(beatsDb.slice(b - 4, b)));
+    }
     const m = {
       // Kicks apart over the blend, from both tracks' grid checks (MixPlanner.flamCheck: the same kicks this
       // render plays, measured once per track instead of in every render)
@@ -341,6 +350,9 @@ const TransitionLab = (() => {
       loudness_bump_db: +(Math.max(...during) - Math.max(pre, post)).toFixed(2),
       entry_pop_db: +pop.toFixed(2),
       entry_pop_high_db: +popHigh.toFixed(2),
+      rise_before_swap_db: +rise.toFixed(2),
+      // the room after the mix against before it (a quiet outro handed to a loud hook lifts it a lot)
+      level_change_db: +(post - pre).toFixed(2),
     };
     return Object.assign(m, { penalty: penalty(m) });
   }
@@ -502,7 +514,8 @@ const TransitionLab = (() => {
     return +((cut ? 0 : (m.kick_flam_ms || 0) / 2) + 2 * (m.bass_gap_s || 0) + 2 * (m.bass_overlap_s || 0) +
              3 * Math.max(0, -(m.loudness_dip_db || 0) - 1.5) + 3 * Math.max(0, (m.loudness_bump_db || 0) - 1.5) +
              3 * Math.max(0, (m.hole_db || 0) - 4) + (m.mid_clash_s || 0) + (m.high_clash_s || 0) +
-             2 * Math.max(0, (m.entry_pop_db || 0) - 6)).toFixed(2);
+             2 * Math.max(0, (m.entry_pop_db || 0) - 6) + 3 * Math.max(0, (m.rise_before_swap_db || 0) - 4) +
+             1.5 * Math.max(0, (m.level_change_db || 0) - 6)).toFixed(2);
   }
 
   /**

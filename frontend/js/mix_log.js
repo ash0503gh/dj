@@ -9,7 +9,7 @@
  *   sharpest     the biggest jump of the master from one second to the next, and when it happened
  *   swap step    the level just after the bass swap against just before
  *   after        the level once the incoming is alone, against before the mix
- * A mix whose master jumps 3 dB or more from one second to the next is marked ABRUPT, and each deck is
+ * A mix whose master jumps 4 dB or more from one second to the next is marked ABRUPT, and each deck is
  * metered too, so the jump is put down to the deck that added more of the power it gained: the INCOMING
  * (coming in too fast or too loud) or the OUTGOING's own music (its drop arriving as the mix starts, say).
  * Entries go to the server
@@ -17,7 +17,7 @@
  */
 const MixLog = (() => {
   const STEP_MS = 100;
-  const ABRUPT_DB = 3;
+  const ABRUPT_DB = 4;          // as the sound check (TransitionLab: rise_before_swap_db past 4 dB costs)
   let engine = null;
   let meters = null;
   let entries = [];
@@ -90,13 +90,18 @@ const MixLog = (() => {
       const v = meanDb(samples, 'out', t, t + 1);
       if (v !== null && (outMax === null || v > outMax)) outMax = v;
     }
+    // The incoming's sharpest gain while it comes in (before the swap or landing, which may be sudden by
+    // design), over what was there: its previous second, or 20 dB under the outgoing or the room before
     let inJump = null, inJumpAt = null;
-    for (let t = start - 1; t + 2 <= end + 3; t += 0.25) {
+    const floorDb = (before ?? -60) - 20;
+    for (let t = start - 1; t + 2 <= (swap || end); t += 0.25) {
       const a = meanDb(samples, 'in', t, t + 1), b = meanDb(samples, 'in', t + 1, t + 2);
       const o = meanDb(samples, 'out', t + 1, t + 2);
-      if (a === null || b === null || o === null || b < o - 10) continue;     // not heard yet under the outgoing
-      if (inJump === null || b - a > inJump) { inJump = b - a; inJumpAt = t + 1 - start; }
+      if (a === null || b === null || o === null) continue;
+      const jump = b - Math.max(a, o - 20, floorDb);
+      if (inJump === null || jump > inJump) { inJump = jump; inJumpAt = t + 1 - start; }
     }
+    if (inJump !== null) inJump = Math.max(0, inJump);
     const after = meanDb(samples, 'master', end + 2, end + 6);
     const live = {
       before_db: r1(before),

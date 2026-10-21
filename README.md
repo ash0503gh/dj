@@ -245,7 +245,7 @@ prepared tracks, and uploads are off.
 - MIX LOG (the LOG button in the Auto mix header): every mix the console plays, with what it was (style,
   confidence, tempos and glide, how much the incoming was raised or lowered to match) and how it sounded,
   metered live off the master and each deck: the level as the incoming comes in, the sharpest one-second
-  jump and when, the step at the bass swap. A jump of 3 dB or more is marked ABRUPT with the deck that made
+  jump and when, the step at the bass swap. A jump of 4 dB or more is marked ABRUPT with the deck that made
   it (the incoming, or the outgoing's own music, e.g. its drop landing as the mix starts). Kept in
   `~/.pulsepro/mix_log.jsonl` (the last 2000); DOWNLOAD saves them as JSON.
 - The crossfader moves only when dragged or clicked (a click puts it there), never with a two-finger swipe.
