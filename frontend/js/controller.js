@@ -245,7 +245,13 @@ const DJController = (() => {
 
   function padMessage(n, d1, on) {
     const i = HOTCUE_PADS.indexOf(d1);
-    if (!on || i < 0) return;
+    if (!on) return;
+    if (i < 0) {
+      // Any other pad mode (sampler, loops...): the console's sound-effects pads, deck A's four then B's
+      if (window.SfxPads) SfxPads.fire((n - 1) * 4 + (d1 & 3));
+      touched(`${n === 1 ? 'DECK A' : 'DECK B'} SFX PAD ${(d1 & 3) + 1}`);
+      return;
+    }
     bridge.unlock();
     click(`d${n}-cue-${i + 1}`);
     touched(`${n === 1 ? 'DECK A' : 'DECK B'} PAD ${i + 1}`);

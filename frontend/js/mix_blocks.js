@@ -25,6 +25,11 @@ const MixBlocks = (() => {
   const LAST_RESORT = new Set(['brake', 'spinback']);   // showy exits a DJ keeps for when nothing mixes cleanly
   const HATS_HZ = 4000;   // 'hats' blends: the incoming's high-pass until the swap (above melody and voice)
   const STEM_MIDS = new Set(['vocalswap', 'drumsin']);   // blends played from both tracks' stems
+  const SFX_GAIN = 0.35;  // library sounds in a mix sit under the music
+  /** A library sound's decoded buffer (sfx_pads.js), or null when it isn't decoded (or no library). */
+  const sfxBuffer = id => (typeof SfxLibrary !== 'undefined' ? SfxLibrary.buffer(id) : null);
+  /** The library sounds an Auto mix may use now (decoded already), or null. */
+  const sfxForMix = sec => (typeof SfxLibrary !== 'undefined' ? SfxLibrary.forMix(sec) : null);
   const SUNG = 0.35;      // a bar sings when its vocal stem does for this share of it (stems.py SUNG_SHARE)
 
   // ── Moves on one deck ──
@@ -140,9 +145,11 @@ const MixBlocks = (() => {
     } else if (s.mids !== 'drumsin') {
       curve(inDeck.eqMid.gain, T, swap, -24, 0);
     }
-    // Bass swap on the 1
+    // Bass swap on the 1 (with a crash or impact from the library on it, s.hit)
     bassKill(outDeck, swap, true);
     bassKill(inDeck, swap, false);
+    const hit = s.hit && sfxBuffer(s.hit);
+    if (hit) keep(inDeck, inDeck.playSample(hit, swap, 0, SFX_GAIN));
     if (s.mids === 'snap' || s.mids === 'hats' || s.mids === 'drumsin') {
       curve(outDeck.eqMid.gain, swap - bar, swap - 0.25 * bar, 0, -24);
     } else if (s.mids === 'crossfade') {
@@ -211,8 +218,13 @@ const MixBlocks = (() => {
         sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
       } else if (s.before === 'riser') {
         sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
-        keep(outDeck, outDeck.playRiser(T - lead, T));
-        keep(inDeck, inDeck.playImpact(T));
+        // A library riser (s.sfx, sfx_pads.js) ends on the switch, entering partway if longer than the
+        // lead; its impact lands with the incoming. Otherwise the built-in noise riser and impact
+        const build = s.sfx && sfxBuffer(s.sfx.build), hit = s.sfx && sfxBuffer(s.sfx.hit);
+        if (build) keep(outDeck, outDeck.playSample(build, T - lead, build.duration - lead, SFX_GAIN));
+        else keep(outDeck, outDeck.playRiser(T - lead, T));
+        if (hit) keep(inDeck, inDeck.playSample(hit, T, 0, SFX_GAIN));
+        else keep(inDeck, inDeck.playImpact(T));
       } else if (s.before === 'roll') {
         roll(outDeck, T - lead, T, beat);
         sweep(outDeck.filterHPF.frequency, T - lead, T, 20, 1500);
@@ -287,6 +299,9 @@ const MixBlocks = (() => {
       for (const mids of (clash ? ['snap', 'crossfade', 'hats'] : ['overlap', 'crossfade', 'snap', 'hats']).concat(stemMids)) {
         for (const tail of ['eq', 'filter', 'echo', 'reverb']) add({ kind: 'blend', mids, tail });
       }
+      // The classic blend with a crash (an impact when the library has none) on the bass swap
+      const lib = sfxForMix(0);
+      if (lib && lib.crash) add(Object.assign(defaultStyle(p), { hit: lib.crash.id }));
       return out;
     }
     const inBar = 4 * gridOf(inTrack).period;
@@ -294,8 +309,8 @@ const MixBlocks = (() => {
     for (const inPreBars of [0, 8]) {
       const land = p.inStartNative - inPreBars * inBar;     // where the incoming is at the switch
       if (land < 0) continue;
-      const at = (before, leadBars, after, soft) =>
-        add(Object.assign({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars }, soft ? { soft } : {}),
+      const at = (before, leadBars, after, soft, extra = {}) =>
+        add(Object.assign({ kind: 'gap', entry: 'at', before, leadBars, after, inPreBars }, soft ? { soft } : {}, extra),
             { inStartNative: land, inLeadSec: 0 });
       for (const after of ['echo', 'reverb', 'cut', 'brake', 'spinback']) at('none', 0, after);
       // Soft landings of the plain switches (not onto a build, already quiet; risers keep their hit)
@@ -304,7 +319,14 @@ const MixBlocks = (() => {
         for (const after of ['echo', 'cut']) at('roll', 2, after, true);
       }
       for (const leadBars of [2, 4]) for (const after of ['echo', 'reverb']) at('hpf', leadBars, after);
-      for (const leadBars of [2, 4]) for (const after of ['echo', 'cut']) at('riser', leadBars, after);
+      for (const leadBars of [2, 4]) {
+        for (const after of ['echo', 'cut']) {
+          at('riser', leadBars, after);
+          // The same build with a riser and an impact from the sound-effects library
+          const lib = sfxForMix(leadBars * 4 * beat);
+          if (lib && lib.build && lib.hit) at('riser', leadBars, after, false, { sfx: { build: lib.build.id, hit: lib.hit.id } });
+        }
+      }
       for (const leadBars of [1, 2]) for (const after of ['echo', 'reverb', 'cut']) at('roll', leadBars, after);
       for (const leadBars of [2, 4]) at('verb', leadBars, 'reverb');
       // Spectral crossfade: the incoming starts under the split for half its length (in its own
@@ -463,7 +485,8 @@ const MixBlocks = (() => {
       return `${p.bars}-bar ${time}blend` + ({ intro: ' from its intro', hook: ' into its hook', loop: ' over an intro loop' }[p.entry] || '') +
              ({ snap: ', mids snap', crossfade: ', mids crossfade', hats: ', hats in', vocalswap: ', vocals swap',
                 drumsin: ', drums in' }[s.mids] || '') +
-             ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '');
+             ({ filter: ', filter out', echo: ', echo out', reverb: ', reverb out' }[s.tail] || '') +
+             (s.hit ? ', crash on the swap' : '');
     }
     const after = { echo: 'echo out', reverb: 'reverb out', cut: 'cut', brake: 'vinyl brake',
                     spinback: 'spinback' }[s.after];
@@ -471,7 +494,8 @@ const MixBlocks = (() => {
       || (s.inPreBars ? ' into its build' : '');
     if (s.entry === 'split') return `${s.leadBars}-bar filter wash, ${after}${land}`;
     const before = { none: '', hpf: `${s.leadBars}-bar high-pass, `, roll: `${s.leadBars}-bar loop roll, `,
-                     verb: `${s.leadBars}-bar reverb swell, `, riser: `${s.leadBars}-bar riser, ` }[s.before];
+                     verb: `${s.leadBars}-bar reverb swell, `,
+                     riser: `${s.leadBars}-bar ${s.sfx ? 'library ' : ''}riser, ` }[s.before];
     return `${before}${after}${land}${s.soft ? ', soft landing' : ''}`;
   }
 
@@ -530,6 +554,8 @@ const MixBlocks = (() => {
          `gap.land.${s.inLand || (s.inPreBars ? 'build' : 'drop')}`];
     if (s.kind !== 'blend' && s.entry !== 'split') keys.push(`gap.before.${s.before}`);
     if (s.soft) keys.push('gap.land.soft');
+    if (s.sfx) keys.push('gap.sfx.library');        // a riser and impact from the sound-effects library
+    if (s.hit) keys.push('blend.hit');              // a crash on the bass swap
     if (p.vocalInSec > 1) keys.push('in.midline');   // the incoming comes in partway through a sung line
     return keys;
   }

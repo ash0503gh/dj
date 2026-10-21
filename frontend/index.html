@@ -6,7 +6,7 @@
   <title>Pulse Pro · DJ Console</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=Barlow:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/css/style.css?v=15.25">
+  <link rel="stylesheet" href="/css/style.css?v=15.26">
 </head>
 <body>
   <div class="dj-console">
@@ -407,6 +407,14 @@
           <button type="button" id="btn-abort-transition" class="abort-btn" style="display:none">ABORT</button>
           <button type="button" id="btn-manual-override" class="override-btn" style="display:none">TAKE OVER</button>
         </div>
+        <div class="tb-row sfx-row">
+          <span class="section-label" title="Sound effects, fired on the beat of the deck on air">SFX</span>
+          <div class="sfx-pads" id="sfx-pads" role="group" aria-label="Sound effects pads"></div>
+          <div class="knob-group sfx-level">
+            <div class="knob knob-fx"><input type="range" class="rotary-knob" id="sfx-level" min="-24" max="6" step="0.5" value="-6" aria-label="Sound effects level"></div>
+            <span class="knob-label">LEVEL</span>
+          </div>
+        </div>
       </div>
 
       <div class="tb-divider"></div>
@@ -626,16 +634,17 @@
     </div>
   </div>
 
-  <script src="/js/audio_engine.js?v=15.25"></script>
-  <script src="/js/mix_planner.js?v=15.25"></script>
-  <script src="/js/mix_blocks.js?v=15.25"></script>
-  <script src="/js/transition_lab.js?v=15.25"></script>
-  <script src="/js/mobile.js?v=15.25"></script>
-  <script src="/js/jog_wheel.js?v=15.25"></script>
-  <script src="/js/waveform.js?v=15.25"></script>
-  <script src="/js/knobs.js?v=15.25"></script>
-  <script src="/js/track_picker.js?v=15.25"></script>
-  <script src="/js/controller.js?v=15.25"></script>
-  <script src="/js/app.js?v=15.25"></script>
+  <script src="/js/audio_engine.js?v=15.26"></script>
+  <script src="/js/mix_planner.js?v=15.26"></script>
+  <script src="/js/mix_blocks.js?v=15.26"></script>
+  <script src="/js/transition_lab.js?v=15.26"></script>
+  <script src="/js/mobile.js?v=15.26"></script>
+  <script src="/js/jog_wheel.js?v=15.26"></script>
+  <script src="/js/waveform.js?v=15.26"></script>
+  <script src="/js/knobs.js?v=15.26"></script>
+  <script src="/js/track_picker.js?v=15.26"></script>
+  <script src="/js/sfx_pads.js?v=15.26"></script>
+  <script src="/js/controller.js?v=15.26"></script>
+  <script src="/js/app.js?v=15.26"></script>
 </body>
 </html>

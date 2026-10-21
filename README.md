@@ -131,8 +131,8 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Decks: play, cue, sync, pitch fader (14-bit, ±16%), pitch bend buttons (±4% while held), jog wheel
     (nudges while playing, scrubs with short snippets while paused, searches with shift), EQ, filter,
     gain (trim ±12 dB), channel fader, headphone cue. The layer buttons' decks 3 and 4 play decks A and B.
-  - Pads 1-4 (hot cue mode): the cue points (intro, build, drop, outro). Loops and samplers aren't in the
-    console, so their pads do nothing.
+  - Pads 1-4 (hot cue mode): the cue points (intro, build, drop, outro). In any other pad mode (sampler,
+    loops) they fire the console's SFX pads: deck A's four pads the first four, deck B's the last four.
   - Browse knob: the track list of the deck not playing, its highlight moving; LOAD A / LOAD B load the
     highlighted track. Browse push: Auto MIX; shift + push: abort.
   - FX 1 / 2 / 3 on each side: echo / flanger / a one-bar loop roll on that side's deck; the FX knob sets how
@@ -187,6 +187,15 @@ prepared tracks, and uploads are off.
   track with all their work. A track whose file is removed is kept, so adding it back costs nothing.
   Only a stage this code improves runs again, on your Mac, for free.
 - With stems (below) no song needs Gemini: their vocal stem says where the lead sings, for free.
+- Sound effects (`backend/sfx.py`, kept in `sfx/`, never committed): eight SFX pads under the transition
+  controls fire on the beat of the deck on air (a riser or upward sweep ends on the next 4-bar line, a
+  downlifter starts on the next downbeat, an impact or crash lands on the next beat); each pad's › steps
+  through that kind of sound, and LEVEL sets how loud they are. Auto mixes may also use them: a library
+  riser and impact on a switch, a crash on a blend's bass swap, measured and rated like any other mix.
+  `python -m backend.sfx generate` makes 25 sounds of our own (run_local.sh does it); `python -m
+  backend.sfx download` adds recorded ones (air horns, scratches, shouts and more) from Freesound, Creative
+  Commons 0 only (free for paid gigs, no credit needed), with a free API key in `.env`
+  (`FREESOUND_API_KEY=...`, from https://freesound.org/apiv2/apply), at most 2 GB.
 - Mixing with stems: when both tracks have them, Auto also tries "vocals swap" (the outgoing vocal goes as
   the bass swaps and the incoming's comes in on it: never two lead vocals at once) and "drums in" (the
   incoming's drums alone until the bar before the swap), and every blend is charged for the seconds two

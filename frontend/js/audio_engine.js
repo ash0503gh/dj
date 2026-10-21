@@ -722,6 +722,19 @@ class DJDeckAudio {
     return src;
   }
 
+  /** A sound from the effects library (sfx_pads.js) at ctx t, from `offset` seconds into it: a library
+   *  riser into a switch, an impact on its landing, a crash on a bass swap. */
+  playSample(buffer, t, offset = 0, gain = 0.5) {
+    if (!buffer) return null;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buffer;
+    const g = this.ctx.createGain();
+    g.gain.value = gain;
+    src.connect(g).connect(this.destination);
+    src.start(t, Math.max(0, offset));
+    return src;
+  }
+
   /** Impact on the 1 at ctx t: a sub boom falling from 70 to 35 Hz and a bright noise crash. */
   playImpact(t) {
     const sr = this.ctx.sampleRate;
@@ -1288,6 +1301,11 @@ class DJAudioEngine {
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.value = 1.0;
     this.masterGain.connect(this.ctx.destination);
+
+    // Sound effects fired from the pads (sfx_pads.js) go straight to the master
+    this.sfxBus = this.ctx.createGain();
+    this.sfxBus.gain.value = 0.5;
+    this.sfxBus.connect(this.masterGain);
 
     this.deck1 = new DJDeckAudio(this.ctx, 1, this.masterGain);
     this.deck2 = new DJDeckAudio(this.ctx, 2, this.masterGain);

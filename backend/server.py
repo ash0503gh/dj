@@ -38,6 +38,7 @@ from .vocal_listen import carry_vocal_labels
 from . import next_track
 from . import library
 from . import stems as track_stems
+from . import sfx
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -1232,6 +1233,25 @@ async def track_layers(file_id: str, ratio: float = 1.0, start: float = 0.0, end
         if old != out:
             os.remove(old)
     return stream_file(out, "audio/flac", {"Cache-Control": "no-cache"})
+
+
+@app.get("/api/sfx")
+async def sfx_list():
+    """The sound-effects library (backend/sfx.py): id, category, role (build / fall / hit), name, source
+    and licence of every sound."""
+    sounds = await run_in_threadpool(sfx.library)
+    return JSONResponse(content={"status": "success", "sounds": [
+        dict({k: s.get(k) for k in ("id", "category", "role", "name", "source", "license", "author")},
+             url=f"/api/sfx/file/{s['id']}") for s in sounds]})
+
+
+@app.get("/api/sfx/file/{sound_id}")
+async def sfx_file(sound_id: str):
+    path = await run_in_threadpool(sfx.path_of, sound_id)
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="No such sound")
+    media = "audio/mpeg" if path.endswith(".mp3") else "audio/wav"
+    return FileResponse(path, media_type=media, headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.post("/api/grid-confirm")

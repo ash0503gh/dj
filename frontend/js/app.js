@@ -930,6 +930,20 @@ document.addEventListener('DOMContentLoaded', () => {
   }
   loadAvailableTracksDropdown();
 
+  // ── Sound-effects pads (sfx_pads.js), on the beat of the deck on air: the playing deck with its fader
+  // highest ──
+  const sfxRoot = document.getElementById('sfx-pads');
+  if (sfxRoot && window.SfxPads) {
+    SfxPads.init(sfxRoot, {
+      engine, level: document.getElementById('sfx-level'),
+      onAir: () => {
+        const live = [[engine.deck1, track1Data], [engine.deck2, track2Data]].filter(([d, t]) => d.isPlaying && t);
+        live.sort((a, b) => b[0].faderGain.gain.value - a[0].faderGain.gain.value);
+        return live.length ? { deck: live[0][0], track: live[0][1] } : null;
+      },
+    });
+  }
+
   // ── Next track: the library tracks that mix best after the one on air (scored on the server from the
   // stored analyses: tempo, key, room to blend, loudness; no AI). They top the other deck's track
   // list, and the best one shows as its "Up next" line with a one-tap LOAD ──

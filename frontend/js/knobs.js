@@ -28,7 +28,7 @@
   /** What a knob reads while it turns: dB for EQs, low-/high-pass for the filter, else the number. */
   function readout(input) {
     const v = parseFloat(input.value);
-    if (/-eq-/.test(input.id)) return `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`;
+    if (/-eq-|-level$/.test(input.id)) return `${v > 0 ? '+' : ''}${v.toFixed(1)}dB`;
     if (/-filter$/.test(input.id)) return v < 0 ? `LP ${Math.round(-v * 2)}` : v > 0 ? `HP ${Math.round(v * 2)}` : 'OFF';
     const step = parseFloat(input.step) || 1;
     return v.toFixed(step < 1 ? 1 : 0);

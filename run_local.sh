@@ -22,6 +22,8 @@ export PULSE_LIBRARY="$LIB"
 if [ -z "$SKIP_PREPARE" ]; then
   python3 -m backend.library prepare
 fi
+# The built-in sound effects (seconds, the first time only; nothing to do after)
+python3 -m backend.sfx generate > /dev/null
 
 PORT="${PORT:-8000}"
 URL="http://localhost:$PORT"
