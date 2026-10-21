@@ -401,37 +401,49 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .mixer-header { display: flex; justify-content: space-between; font-size: 11px; letter-spacing: 0.16em; color: var(--muted); }
 .ch-a { color: var(--deck-a); font-family: var(--font-cond); font-weight: 700; letter-spacing: 0.1em; }
 .ch-b { color: var(--deck-b); font-family: var(--font-cond); font-weight: 700; letter-spacing: 0.1em; }
-.mixer-body { display: grid; grid-template-columns: auto minmax(96px, 1fr) auto; gap: 20px; flex-grow: 1; min-height: 0; }
-.channel-strip { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; align-items: center; }
+.mixer-body { display: grid; grid-template-columns: auto minmax(150px, 1fr) auto; gap: 12px; flex-grow: 1; min-height: 0; }
+.channel-strip { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; align-items: stretch; width: 124px; }
 .strip-a { --deck: var(--deck-a); }
 .strip-b { --deck: var(--deck-b); }
-.knob-group { display: flex; flex-direction: column; align-items: center; gap: 3px; }
-
-/* Rotary knob: the range input stays (keyboard, app state); knobs.js draws and drags the knob */
-.knob { position: relative; width: 40px; height: 40px; border-radius: 50%; touch-action: none; cursor: grab; }
-/* The knob and its label are one target (knobs.js): swipe, drag or double-click on either */
-.knob-group { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
-.knob-group:hover .knob-cap, .knob-group.turning .knob-cap { border-color: var(--text-2); }
-/* (the value floats centred over the label's place: the strip never shifts as it changes) */
-.knob-group.turning .knob-label { color: var(--text); font-family: var(--font-mono); letter-spacing: 0; white-space: nowrap;
-                                  display: flex; justify-content: center; width: 40px; }
+/* Bar sliders (knobs.js): name and value above a wide bar, KILL beside it. The range input stays
+   (keyboard, app state); click or drag on the bar sets the value there, a swipe moves it */
+.knob-group {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name name" "bar kill";
+  align-items: center; column-gap: 6px; row-gap: 4px; width: 100%;
+  cursor: ew-resize; touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.knob-group .knob-label { grid-area: name; text-align: left; }
+.knob-value {                      /* over the whole first row: its width never moves the bar */
+  grid-row: 1; grid-column: 1 / -1; justify-self: end; font-family: var(--font-mono); font-size: 11px; color: var(--text-2);
+  text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.knob-group .knob { grid-area: bar; }
+.knob-group .btn-kill { grid-area: kill; }
+.knob-group:not(:has(.btn-kill)) .knob { grid-column: 1 / -1; }
+.knob {
+  position: relative; height: 26px; min-width: 64px; border-radius: 5px; touch-action: none; cursor: ew-resize;
+  background: #050506; border: 1px solid #2a2a30; overflow: hidden;
+}
 .knob .rotary-knob { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; pointer-events: none; }
-.knob-ring {
-  position: absolute; inset: 0; border-radius: 50%;
-  background:
-    conic-gradient(from calc(var(--a0, 0) * 1deg), var(--deck) 0 calc(var(--span, 0) * 1deg), transparent 0),
-    conic-gradient(from -135deg, #26262b 0 270deg, transparent 0);
+.knob-zero {                       /* the flat point: 0 dB, filter off */
+  position: absolute; top: 4px; bottom: 4px; width: 1px; left: calc(var(--z, 0) * 100%);
+  background: #4a4a52;
 }
-.knob-fx .knob-ring { --deck: var(--text); }
-.knob-cap {
-  position: absolute; inset: 4px; border-radius: 50%; background: #1d1d21; border: 2px solid #2e2e34;
-  transform: rotate(calc(var(--rot, 0) * 1deg));
+.knob-fill {                       /* from the flat point to the value */
+  position: absolute; top: 0; bottom: 0; left: calc(min(var(--z, 0), var(--v, 0)) * 100%);
+  width: calc(max(var(--z, 0) - var(--v, 0), var(--v, 0) - var(--z, 0)) * 100%);
+  background: var(--deck); opacity: 0.35;
 }
-.knob-cap::after {
-  content: ""; position: absolute; left: 50%; top: 2px; width: 2px; height: 10px; margin-left: -1px;
-  border-radius: 1px; background: var(--text);
+.knob-thumb {
+  position: absolute; top: 2px; bottom: 2px; width: 4px; margin-left: -2px; border-radius: 2px;
+  left: clamp(3px, calc(var(--v, 0) * 100%), calc(100% - 3px)); background: var(--text);
+  box-shadow: 0 0 0 1px #0b0b0c;
 }
-.knob:focus-within .knob-cap { border-color: var(--text-2); }
+.knob-fx .knob-fill { background: var(--text); opacity: 0.25; }
+.knob.at-zero .knob-thumb { background: var(--text-2); }
+.knob-group:hover .knob, .knob-group.turning .knob, .knob:focus-within { border-color: #55555e; }
+.knob-group.turning .knob-value, .knob-group:hover .knob-value { color: var(--text); }
+.knob-group.turning .knob-fill { opacity: 0.55; }
 .knob-label { font-size: 10px; }
 .btn-kill {
   height: 18px; padding: 0 7px; border-radius: 4px; border: 1px solid var(--line-2); background: transparent;
@@ -508,7 +520,10 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .tb-row { display: flex; align-items: center; gap: 10px; }
 /* Sound-effects pads (sfx_pads.js): a pad fires on the beat; its › steps through that kind of sound */
 .sfx-row { gap: 8px; }
-.sfx-pads { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; }
+.sfx-level { width: 112px; flex: none; }
+/* Two rows of four (a pad needs ~90 px for its name), one row of eight where the transition bar is wide */
+.sfx-pads { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; }
+@media (min-width: 2100px) { .sfx-pads { grid-template-columns: repeat(8, minmax(0, 1fr)); } }
 .sfx-pads.empty::after { content: "No sounds yet: python -m backend.sfx generate"; grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
 .sfx-pad-wrap { display: flex; min-width: 0; }
 .sfx-pad {
@@ -814,12 +829,10 @@ html.landscape-ui .btn-play.playing::before { width: 11px; height: 12px; }
 
 html.landscape-ui .mixer-header { font-size: 9px; }
 html.landscape-ui .mixer-body { gap: 8px; grid-template-columns: auto minmax(100px, 1fr) auto; }
-html.landscape-ui .channel-strip { gap: 4px; }
-html.landscape-ui .knob-group { display: grid; grid-template-columns: 28px auto; column-gap: 4px; row-gap: 1px; align-items: center; }
-html.landscape-ui .knob-group .knob { grid-row: span 2; width: 28px; height: 28px; }
-html.landscape-ui .knob-cap { inset: 3px; border-width: 1px; }
-html.landscape-ui .knob-cap::after { top: 1px; height: 7px; }
-html.landscape-ui .knob-label { font-size: 8px; }
+html.landscape-ui .channel-strip { gap: 4px; width: 104px; }
+html.landscape-ui .knob-group { row-gap: 1px; column-gap: 4px; }
+html.landscape-ui .knob { height: 18px; min-width: 48px; border-radius: 4px; }
+html.landscape-ui .knob-label, html.landscape-ui .knob-value { font-size: 8px; }
 html.landscape-ui .btn-kill { height: 14px; padding: 0 4px; font-size: 7px; border-radius: 3px; }
 html.landscape-ui .mixer-center { padding: 6px; gap: 6px; }
 html.landscape-ui .fader-row { gap: 8px; }
