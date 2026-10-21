@@ -402,31 +402,31 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .ch-a { color: var(--deck-a); font-family: var(--font-cond); font-weight: 700; letter-spacing: 0.1em; }
 .ch-b { color: var(--deck-b); font-family: var(--font-cond); font-weight: 700; letter-spacing: 0.1em; }
 .mixer-body { display: grid; grid-template-columns: auto minmax(150px, 1fr) auto; gap: 12px; flex-grow: 1; min-height: 0; }
-.channel-strip { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; align-items: stretch; width: 124px; }
+.channel-strip { display: flex; flex-direction: column; justify-content: space-between; gap: 8px; align-items: stretch; width: 104px; }
 .strip-a { --deck: var(--deck-a); }
 .strip-b { --deck: var(--deck-b); }
 /* Bar sliders (knobs.js): name and value above a wide bar, KILL beside it. The range input stays
    (keyboard, app state); click or drag on the bar sets the value there, a swipe moves it */
 .knob-group {
   display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "name name" "bar kill";
-  align-items: center; column-gap: 6px; row-gap: 4px; width: 100%;
+  align-items: center; column-gap: 5px; row-gap: 3px; width: 100%;
   cursor: ew-resize; touch-action: none; user-select: none; -webkit-user-select: none;
 }
 .knob-group .knob-label { grid-area: name; text-align: left; }
 .knob-value {                      /* over the whole first row: its width never moves the bar */
-  grid-row: 1; grid-column: 1 / -1; justify-self: end; font-family: var(--font-mono); font-size: 11px; color: var(--text-2);
+  grid-row: 1; grid-column: 1 / -1; justify-self: end; font-family: var(--font-mono); font-size: 10px; color: var(--text-2);
   text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
 .knob-group .knob { grid-area: bar; }
 .knob-group .btn-kill { grid-area: kill; }
 .knob-group:not(:has(.btn-kill)) .knob { grid-column: 1 / -1; }
 .knob {
-  position: relative; height: 26px; min-width: 64px; border-radius: 5px; touch-action: none; cursor: ew-resize;
+  position: relative; height: 16px; min-width: 48px; border-radius: 4px; touch-action: none; cursor: ew-resize;
   background: #050506; border: 1px solid #2a2a30; overflow: hidden;
 }
 .knob .rotary-knob { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; pointer-events: none; }
 .knob-zero {                       /* the flat point: 0 dB, filter off */
-  position: absolute; top: 4px; bottom: 4px; width: 1px; left: calc(var(--z, 0) * 100%);
+  position: absolute; top: 2px; bottom: 2px; width: 1px; left: calc(var(--z, 0) * 100%);
   background: #4a4a52;
 }
 .knob-fill {                       /* from the flat point to the value */
@@ -435,7 +435,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
   background: var(--deck); opacity: 0.35;
 }
 .knob-thumb {
-  position: absolute; top: 2px; bottom: 2px; width: 4px; margin-left: -2px; border-radius: 2px;
+  position: absolute; top: 1px; bottom: 1px; width: 3px; margin-left: -1.5px; border-radius: 1.5px;
   left: clamp(3px, calc(var(--v, 0) * 100%), calc(100% - 3px)); background: var(--text);
   box-shadow: 0 0 0 1px #0b0b0c;
 }
@@ -444,7 +444,8 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 .knob-group:hover .knob, .knob-group.turning .knob, .knob:focus-within { border-color: #55555e; }
 .knob-group.turning .knob-value, .knob-group:hover .knob-value { color: var(--text); }
 .knob-group.turning .knob-fill { opacity: 0.55; }
-.knob-label { font-size: 10px; }
+.knob-label { font-size: 9px; }
+.knob-group .btn-kill { height: 16px; padding: 0 5px; font-size: 8px; }
 .btn-kill {
   height: 18px; padding: 0 7px; border-radius: 4px; border: 1px solid var(--line-2); background: transparent;
   color: var(--muted); font-size: 9px; font-weight: 600; letter-spacing: 0.12em;

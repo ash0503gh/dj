@@ -65,8 +65,16 @@
     value.className = 'knob-value';
     target.append(value);
     const min = parseFloat(input.min), max = parseFloat(input.max), range = max - min;
-    const zero = min < 0 && max > 0 ? 0 : parseFloat(input.defaultValue);
-    const knob = { el, input, value, last: null, zero: (zero - min) / range };
+    // A range across 0 (EQ -24..+6 dB, filter, level) has its 0 in the middle of the bar, as a mixer's
+    // centre detent: each side scaled on its own. Every move is made along the bar (position 0-1)
+    const bipolar = min < 0 && max > 0;
+    const pos = v => (bipolar ? (v < 0 ? 0.5 * (v - min) / -min : 0.5 + 0.5 * v / max) : (v - min) / range);
+    const val = q => {
+      q = Math.max(0, Math.min(1, q));
+      return bipolar ? (q < 0.5 ? min - min * q / 0.5 : max * (q - 0.5) / 0.5) : min + q * range;
+    };
+    const zero = bipolar ? 0 : parseFloat(input.defaultValue);
+    const knob = { el, input, value, last: null, zero: pos(zero), pos };
     knobs.push(knob);
 
     // On the bar: the value where the pointer is. Elsewhere on its group (its name and value): moved
@@ -75,9 +83,8 @@
     const at = e => {
       const r = el.getBoundingClientRect();
       const x = UI.local(e, el).x;
-      let v = min + Math.max(0, Math.min(1, x / Math.max(1, r.width))) * range;
-      if (Math.abs(v - zero) < DETENT * range) v = zero;
-      return v;
+      const q = x / Math.max(1, r.width);
+      return Math.abs(q - knob.zero) < DETENT ? zero : val(q);
     };
     let mode = null, startX = 0, startY = 0, startV = 0;
     target.addEventListener('pointerdown', (e) => {
@@ -100,7 +107,7 @@
         return;
       }
       const p = UI.local(e, el);
-      setValue(input, startV + ((startY - p.y + p.x - startX) / DRAG_PX) * range * (e.shiftKey ? 0.25 : 1));
+      setValue(input, val(pos(startV) + ((startY - p.y + p.x - startX) / DRAG_PX) * (e.shiftKey ? 0.25 : 1)));
     });
     const release = (e) => {
       if (target.hasPointerCapture(e.pointerId)) target.releasePointerCapture(e.pointerId);
@@ -113,7 +120,7 @@
     target.addEventListener('wheel', (e) => {
       if (!mine(e)) return;
       e.preventDefault();
-      setValue(input, parseFloat(input.value) + (swipePx(e) / WHEEL_PX) * range * (e.shiftKey ? 0.25 : 1));
+      setValue(input, val(pos(parseFloat(input.value)) + (swipePx(e) / WHEEL_PX) * (e.shiftKey ? 0.25 : 1)));
       target.classList.add('turning');
       clearTimeout(swiping);
       swiping = setTimeout(() => target.classList.remove('turning'), 400);
@@ -176,8 +183,7 @@
     for (const k of knobs) {
       if (k.input.value === k.last) continue;
       k.last = k.input.value;
-      const min = parseFloat(k.input.min), max = parseFloat(k.input.max);
-      const v = (parseFloat(k.input.value) - min) / (max - min);
+      const v = k.pos(parseFloat(k.input.value));
       k.el.style.setProperty('--z', k.zero.toFixed(4));
       k.el.style.setProperty('--v', v.toFixed(4));
       k.el.classList.toggle('at-zero', Math.abs(v - k.zero) < 1e-6);
