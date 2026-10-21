@@ -35,6 +35,7 @@ from .ai_advisor import generate_ai_dj_strategy
 from .set_energy import SetEnergyManager, TECHNIQUE_ENERGY, ENERGY_ARC_TEMPLATES
 from .vocal_listen import carry_vocal_labels
 from . import next_track
+from . import library
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 UPLOAD_DIR = os.path.join(BASE_DIR, "uploads")
@@ -114,6 +115,11 @@ async def local_track(file_id: str) -> Optional[str]:
     instance doesn't have it yet. None if it exists nowhere."""
     import urllib.parse
     ids = [file_id] if urllib.parse.unquote(file_id) == file_id else [file_id, urllib.parse.unquote(file_id)]
+    if library.enabled():
+        for fid in ids:
+            path = await run_in_threadpool(library.path_of, fid)
+            if path:
+                return path
     for fid in ids:
         path = os.path.join(UPLOAD_DIR, fid)
         if os.path.exists(path):
@@ -126,7 +132,11 @@ async def local_track(file_id: str) -> Optional[str]:
 
 
 async def persist_analysis(file_id: str, an: dict) -> None:
-    """Keep an analysis in memory, on local disk and (Cloud Run) in the bucket."""
+    """Keep an analysis in memory, on local disk and (Cloud Run) in the bucket; a library track's
+    in the library index (local mode)."""
+    if library.enabled() and await run_in_threadpool(library.get, file_id):
+        await run_in_threadpool(library.save_analysis, file_id, an)
+        return
     ANALYSIS_CACHE[file_id] = an
     save_cache_to_disk()
     meta = {k: an.get(k) for k in ("title", "bpm", "camelot", "key", "duration", "content_sha1")
@@ -136,7 +146,12 @@ async def persist_analysis(file_id: str, an: dict) -> None:
 
 async def get_cached_analysis(file_id: str) -> Optional[dict]:
     """Cached analysis for an uploaded file, re-analyzing entries written by an older
-    analyzer version (v1 grids only covered the first 90 s). None if the file is missing."""
+    analyzer version (v1 grids only covered the first 90 s). None if the file is missing.
+    A library track's (local mode) is its prepared analysis: `prepare` keeps it current, never a request."""
+    if library.enabled():
+        row = await run_in_threadpool(library.get, file_id)
+        if row:
+            return row["analysis"]
     cached = ANALYSIS_CACHE.get(file_id)
     if not (cached and cached.get("analysis_version") == ANALYSIS_VERSION) and storage.enabled():
         remote = await run_in_threadpool(storage.get_json, f"analysis/{file_id}.json")
@@ -231,7 +246,11 @@ def _song_keys(file_id: str, data: dict) -> list:
 @app.get("/api/presets")
 async def get_presets():
     """Returns available pre-loaded club tracks and sets: every song once, however many copies were
-    uploaded (from either deck, or under another name)."""
+    uploaded (from either deck, or under another name). Local mode: the library's prepared tracks."""
+    if library.enabled():
+        return JSONResponse(content={"status": "success", "mode": "local",
+                                     "tracks": await run_in_threadpool(library.ready_tracks), "sets": [],
+                                     "library": await run_in_threadpool(library.summary)})
     load_cache_from_disk()
     candidates = []
     for fn, data in ANALYSIS_CACHE.items():
@@ -268,13 +287,25 @@ async def get_presets():
             "deck_2": "Overworld.mp3",
             "description": "High energy club house transition with phrase-locked bass drop."
         })
-    return JSONResponse(content={"status": "success", "tracks": available_tracks, "sets": sets})
+    return JSONResponse(content={"status": "success", "mode": "upload", "tracks": available_tracks, "sets": sets})
+
+
+@app.get("/api/library")
+async def library_status():
+    """Local mode: track counts by status (ready, pending, failed, missing), and tracks to check."""
+    if not library.enabled():
+        return JSONResponse(content={"status": "success", "mode": "upload"})
+    return JSONResponse(content=dict(await run_in_threadpool(library.summary), status="success", mode="local",
+                                     folder=library.library_dir()))
 
 LIBRARY: dict = {}  # bucket analysis object -> (last update, next_track features), fetched once per change
 
 
 async def _library() -> list:
-    """next_track features of every analyzed track: the bucket's library and this instance's."""
+    """next_track features of every analyzed track: the bucket's library and this instance's (local
+    mode: the prepared library's)."""
+    if library.enabled():
+        return await run_in_threadpool(library.features_all)
     feats = {}
     if storage.enabled():
         objs = await run_in_threadpool(lambda: [(n, u) for n, u in storage.list_objects("analysis/")
@@ -325,8 +356,19 @@ async def suggest_next(file_id: str, bpm: Optional[float] = None, exclude: List[
 
 @app.post("/api/load-preset")
 async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
-    """Instantly loads a pre-analyzed track into Deck 1 or Deck 2."""
+    """Instantly loads a pre-analyzed track into Deck 1 or Deck 2. Local mode: only a library track
+    whose every stage has passed (prepare first)."""
     import urllib.parse
+    if library.enabled():
+        fid = urllib.parse.unquote(file_id)
+        row = await run_in_threadpool(library.get, fid)
+        if not row or row["status"] == "missing":
+            raise HTTPException(status_code=404, detail=f"Not in the library: {file_id}")
+        if row["status"] != "ready" or not row["analysis"]:
+            raise HTTPException(status_code=409, detail=f"{row['title']} isn't prepared yet ({row['status']})")
+        data = dict(row["analysis"], file_id=fid, deck=deck, flags=row["flags"],
+                    audio_url=f"/api/audio/{urllib.parse.quote(fid)}")
+        return JSONResponse(content={"status": "success", "track": data})
     load_cache_from_disk()
     target_id = file_id
     if target_id not in ANALYSIS_CACHE:
@@ -395,8 +437,11 @@ def _sha1_file(path: str) -> str:
 
 @app.post("/api/upload")
 async def upload_track(file: UploadFile = File(...), deck: str = Form("deck_1")):
-    """Uploads an audio file, analyzes BPM, Key, Beatgrid, and Waveform."""
+    """Uploads an audio file, analyzes BPM, Key, Beatgrid, and Waveform. Off in local mode: tracks come
+    from the library folder, prepared before the set."""
     import urllib.parse
+    if library.enabled():
+        raise HTTPException(status_code=403, detail="Local mode: add tracks to the library folder and prepare them")
     try:
         clean_name = os.path.basename(file.filename)
         ext = os.path.splitext(clean_name)[1].lower()
@@ -1073,12 +1118,15 @@ async def get_stretched(file_id: str, ratio: float):
     if not path:
         raise HTTPException(status_code=404, detail=f"File not found: {file_id}")
     ratio = round(ratio, 6)
-    out = stretched_path(path, ratio, STRETCH_DIR)
+    # A library file's name isn't its id, nor unique across folders: its (audio-derived) id names it
+    fid = urllib.parse.unquote(file_id) if library.enabled() and await run_in_threadpool(
+        library.get, urllib.parse.unquote(file_id)) else os.path.basename(path)
+    out = stretched_path(path, ratio, STRETCH_DIR, name=fid)
     key = f"stretch/{os.path.basename(out)}"
     # Rendered before (this instance, or any instance via the bucket)? Otherwise render + keep it.
     if not os.path.exists(out) and not await run_in_threadpool(storage.fetch_file, key, out):
-        grid = ((await get_cached_analysis(os.path.basename(path))) or {}).get("grid")
-        out = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid)
+        grid = ((await get_cached_analysis(fid)) or {}).get("grid")
+        out = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid, name=fid)
         await run_in_threadpool(storage.put_file, key, out, "audio/flac")
     return stream_file(out, "audio/flac",
                        {"Cache-Control": "public, max-age=86400", "Access-Control-Allow-Origin": "*"})

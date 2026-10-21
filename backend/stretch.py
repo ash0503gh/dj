@@ -101,17 +101,18 @@ def _align(path: str, late: float) -> None:
     os.replace(tmp, path)
 
 
-def stretched_path(src: str, ratio: float, cache_dir: str) -> str:
-    key = hashlib.sha1(os.path.basename(src).encode()).hexdigest()[:12]
+def stretched_path(src: str, ratio: float, cache_dir: str, name: str = None) -> str:
+    """`name`: what identifies the track (default: the file's name)."""
+    key = hashlib.sha1((name or os.path.basename(src)).encode()).hexdigest()[:12]
     return os.path.join(cache_dir, f"{key}_{ratio:.6f}_a2.flac")
 
 
-def stretch_file(src: str, ratio: float, cache_dir: str, grid: dict = None) -> str:
+def stretch_file(src: str, ratio: float, cache_dir: str, grid: dict = None, name: str = None) -> str:
     """Render `src` at `ratio` x tempo (pitch unchanged) into the cache; returns the FLAC path.
     With the track's beat `grid`, the result is aligned on the track's own kicks so native
     time t sits exactly at t / ratio."""
     os.makedirs(cache_dir, exist_ok=True)
-    dst = stretched_path(src, ratio, cache_dir)
+    dst = stretched_path(src, ratio, cache_dir, name)
     if os.path.exists(dst):
         return dst
     tmp = dst + ".part.flac"

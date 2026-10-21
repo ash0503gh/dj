@@ -34,6 +34,7 @@ const TrackPicker = (() => {
     let suggestedAfter = '';
     let order = 'az';
     let highlightId = null;     // the row a DJ controller's browse knob is on
+    let emptyText = 'No tracks yet: upload one.';
     const coarse = window.matchMedia('(pointer: coarse)').matches;
 
     const trigger = document.createElement('button');
@@ -107,8 +108,9 @@ const TrackPicker = (() => {
       }
       const meta = document.createElement('span');
       meta.className = 'tp-meta';
+      // A prepared library track whose grid drifts or fits poorly (local mode): worth a check
       meta.textContent = [t.bpm ? Math.round(t.bpm) : null, t.camelot && t.camelot !== '--' ? t.camelot : null,
-                          fmtTime(t.duration)].filter(Boolean).join(' · ');
+                          fmtTime(t.duration), t.flags && t.flags.length ? 'CHECK GRID' : null].filter(Boolean).join(' · ');
       const hint = tempoHint(t.bpm, ctx.otherBpm);
       const tag = document.createElement('span');
       tag.className = `tp-tag${hint && hint.ok ? ' ok' : ''}`;
@@ -145,7 +147,7 @@ const TrackPicker = (() => {
       if (!all.length) {
         const empty = document.createElement('div');
         empty.className = 'track-pick-empty';
-        empty.textContent = library.length ? 'No track matches.' : 'No tracks yet: upload one.';
+        empty.textContent = library.length ? 'No track matches.' : emptyText;
         rows.push(empty);
       }
       list.replaceChildren(...rows);
@@ -230,6 +232,7 @@ const TrackPicker = (() => {
 
     return {
       setLibrary(tracks) { library = tracks.slice(); if (!panel.hidden) render(); },
+      setEmptyText(text) { emptyText = text; if (!panel.hidden) render(); },
       setSuggestions(list2, afterTitle) {
         suggestions = list2.slice();
         suggestedAfter = afterTitle || '';

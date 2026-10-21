@@ -49,3 +49,6 @@ waveform_math_results.json
 run_full_qa_suite.py
 test_live_api.py
 test_waveform_math.js
+
+# Local mode: the remembered music folder
+.pulse_library

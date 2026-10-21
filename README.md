@@ -166,6 +166,29 @@ FastAPI Backend (Python 3.11)
 
 ---
 
+## Local mode (Mac, prepared library)
+
+The console's main setup from now on (see [docs/ROADMAP.md](docs/ROADMAP.md)). One folder of music is
+prepared before the set, the way Serato and rekordbox prepare a collection. The track browser lists only
+prepared tracks, and uploads are off.
+
+```bash
+./setup_mac.sh                 # once: ffmpeg + Rubber Band, Python 3.12, packages in .venv
+./run_local.sh ~/Music/DJ      # prepares new or changed tracks, starts the console, opens Chrome
+./run_local.sh                 # later runs: the folder is remembered
+```
+
+- `python -m backend.library prepare` analyzes every track once, several at a time. It can be stopped
+  and run again: finished tracks are kept, and only new, changed or outdated ones are prepared.
+  `python -m backend.library status` lists what is ready, failed or worth a check.
+- The library index (`~/.pulsepro/library.db`, or `$PULSE_DATA`) holds one track per audio content.
+  Renamed, moved or duplicated files stay one track, with their grid fixes and vocal labels.
+- Stages: the full analysis, plus loudness (EBU R128 LUFS) and loudness range. A track loads only once
+  every stage has passed. A grid that drifts or fits poorly shows CHECK GRID in the browser.
+- Use Chrome or Edge: the DJ controller needs Web MIDI, which Safari lacks.
+
+---
+
 ## Local Quickstart
 
 ### Prerequisites

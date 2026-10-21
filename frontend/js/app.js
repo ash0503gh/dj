@@ -23,6 +23,7 @@ document.addEventListener('DOMContentLoaded', () => {
   let suggestTimer = null;
   const playedIds = new Set();     // tracks already mixed this session: not suggested again
   const trackPickers = {};         // each deck's track browser (track_picker.js)
+  let localLibrary = false;        // local mode: tracks come prepared from the library folder, no uploads
   let currentAIRec = null;
   let serverHasJev = false;
   let serverHasGemini = false;
@@ -442,6 +443,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- Upload Handler (Instant Client-Side Audio Loading + Background DSP Analysis) ---
   async function handleFileUpload(file, deck) {
     if (!file) return;
+    if (localLibrary) {
+      transitionStatusBanner.textContent = 'LOCAL LIBRARY: ADD TRACKS TO THE MUSIC FOLDER AND PREPARE THEM FIRST';
+      return;
+    }
     const isDeck1 = (deck === 'deck_1');
     const deckNum = isDeck1 ? 1 : 2;
     const deckName = isDeck1 ? 'DECK 1' : 'DECK 2';
@@ -884,7 +889,8 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/load-preset', { method: 'POST', body: form });
       if (!res.ok) {
-        throw new Error(`Server returned ${res.status}: ${res.statusText}`);
+        const detail = await res.json().then(d => d.detail).catch(() => null);
+        throw new Error(detail || `Server returned ${res.status}: ${res.statusText}`);
       }
       const data = await res.json();
       if (data.status === 'success' && data.track) {
@@ -904,6 +910,15 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch('/api/presets');
       const data = await res.json();
       if (data.status === 'success' && data.tracks) {
+        localLibrary = data.mode === 'local';
+        if (localLibrary) {
+          document.querySelectorAll('.btn-upload').forEach(b => { b.style.display = 'none'; });
+          Object.values(trackPickers).forEach(p => p.setEmptyText('No prepared tracks: run ./run_local.sh with your music folder.'));
+          const c = data.library && data.library.counts;
+          if (c && (c.pending || c.failed)) {
+            transitionStatusBanner.textContent = `LIBRARY: ${c.ready} READY · ${c.pending} NOT PREPARED · ${c.failed} FAILED`;
+          }
+        }
         Object.values(trackPickers).forEach(p => p.setLibrary(data.tracks));
         refreshSuggestions();
       }

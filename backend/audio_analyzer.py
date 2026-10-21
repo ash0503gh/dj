@@ -778,8 +778,9 @@ def estimate_grid(y: np.ndarray, sr: int, duration: float) -> Dict[str, Any]:
     boundaries, drops, bar_low_db, hooks = [], [], [], []
 
     # Track body loudness (mean RMS of its louder half of bars): what a DJ matches with the trim knob
-    bar_rms_db = np.array([20 * np.log10(np.sqrt(np.mean(y[int(a * sr):int(b * sr)] ** 2)) + 1e-9)
-                           for a, b in zip(bar_t[:-1], bar_t[1:]) if b * sr <= len(y)])
+    # (the first bar can start a few ms before 0 when the track opens on a kick: clip it to the audio)
+    bar_rms_db = np.array([20 * np.log10(np.sqrt(np.mean(y[max(0, int(a * sr)):int(b * sr)] ** 2)) + 1e-9)
+                           for a, b in zip(bar_t[:-1], bar_t[1:]) if 0 < b * sr <= len(y)])
     loudness_db = float(np.mean(np.sort(bar_rms_db)[len(bar_rms_db) // 2:])) if len(bar_rms_db) else -20.0
 
     if len(bar_t) >= 17:
