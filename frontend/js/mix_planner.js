@@ -19,6 +19,8 @@ const MixPlanner = (() => {
   const FLAM_MAX_MS = 10;      // kicks this far apart start to smear: a blend is shortened or not played
   const GLIDE_FROM = 0.04;     // tempos closer than this: the incoming takes the whole gap, no glide
   const GLIDE_MAX = 0.20;      // with glides, tempos this far apart still blend (each side stretched ≤ ~9.5%)
+  const TRIM_UP_DB = 3;        // the incoming is raised at most this much to match (lowered up to 6 dB): a
+                               // bigger boost made landings jump (the mix log: +3.8 dB under a +9 dB landing)
   const GLIDE_PER_BAR = 0.005; // a glide changes the tempo at most this much a bar (unheard on the floor)
   const KILL_HZ = 220;         // isolator bass-kill frequency
   const OPEN_HZ = 10;
@@ -77,8 +79,8 @@ const MixPlanner = (() => {
    * keylock ratio), glide (the outgoing glides from where it is to outSpeed first) }, or null when no
    * blend can match them (only a switch then). Within GLIDE_FROM the incoming takes the whole gap, as
    * without glides; past it, when the outgoing can glide (`canGlide`: a keylocked deck with time left),
-   * both meet at the geometric mean of their own tempos, up to GLIDE_MAX apart; otherwise the incoming
-   * takes it up to MAX_STRETCH.
+   * both meet at the geometric mean of their own tempos, up to GLIDE_MAX apart (at the incoming's own
+   * tempo only, not at half or double time); otherwise the incoming takes it up to MAX_STRETCH.
    */
   function mixTempo(outTrack, outDeck, inTrack, canGlide) {
     const s0 = deckSpeed(outDeck);
@@ -88,7 +90,9 @@ const MixPlanner = (() => {
       const r = outBpm * s0 / (inBpm * m);
       if (Math.abs(r - 1) <= GLIDE_FROM) return { multiple: m, outSpeed: s0, inRatio: r, glide: false };
       const own = outBpm / (inBpm * m);
-      if (canGlide && Math.max(own, 1 / own) - 1 <= GLIDE_MAX) {   // either way round: they meet halfway
+      // Glides only at the incoming's own tempo: speeding a track up (or down) by up to ~10% to meet one
+      // counted at half or double its tempo is heard (a 165 BPM track pushed to 181) and rarely blends
+      if (canGlide && m === 1 && Math.max(own, 1 / own) - 1 <= GLIDE_MAX) {   // either way round: they meet halfway
         const outSpeed = Math.sqrt(1 / own);
         if (Math.abs(outSpeed - s0) < 0.002) return { multiple: m, outSpeed: s0, inRatio: r, glide: false };
         return { multiple: m, outSpeed, inRatio: Math.sqrt(own), glide: true };
@@ -259,7 +263,7 @@ const MixPlanner = (() => {
     const outLevel = lufs ? outTrack.loudness_body_lufs : outTrack.loudness_db;
     const inLevel = lufs ? inTrack.loudness_body_lufs : inTrack.loudness_db;
     const inTrimDb = (outLevel != null && inLevel != null)
-      ? Math.max(-6, Math.min(6, outLevel + (outDeck.trimDb || 0) - inLevel))
+      ? Math.max(-6, Math.min(TRIM_UP_DB, outLevel + (outDeck.trimDb || 0) - inLevel))
       : 0;
 
     // ── Exit point on the outgoing track: score its phrase starts ──

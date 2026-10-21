@@ -226,8 +226,10 @@ prepared tracks, and uploads are off.
   land together, a blend whose kicks would still drift more than 10 ms apart is shortened (or becomes a
   switch), and the sound check counts what's left as flam. Past a 2% tempo change the incoming never
   plays pitched: the mix waits for the keylocked copy and moves to a later phrase.
+- Loudness match: the incoming is lowered up to 6 dB, or raised up to 3 dB, to sit at the level of the
+  track on air (by the body loudness the prepare stage measured).
 - Tempo glides (`backend/glide.py`): when the two tempos are more than 4% apart (up to 20%), they meet
-  halfway. The outgoing eases to the mix tempo, keylocked, over the 8-32 bars before the blend (at most
+  halfway (at the incoming's own tempo only; a half- or double-time pairing never glides). The outgoing eases to the mix tempo, keylocked, over the 8-32 bars before the blend (at most
   0.5% a bar), the incoming is stretched only the rest of the way, and after the mix it eases back to its
   own tempo the same way. Each glide is a short window the server renders with Rubber Band, its tempo
   stepped every 23 ms (kicks within ~2 ms of where they should be all along it), and the deck switches to
