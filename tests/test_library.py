@@ -415,3 +415,45 @@ def test_without_the_separator_tracks_are_still_ready(with_stems, monkeypatch):
     assert res["counts"]["ready"] == 1 and not any(c[0] == "stems" for c in calls)
     an = library.get(library.ready_tracks()[0]["file_id"])["analysis"]
     assert "vocal_source" not in an
+
+
+def test_song_name_ignores_what_copies_and_sites_add():
+    names = ["Mitran Di Chhatri-Babbu Maan.mp3", "Mitran Di Chhatri-Babbu Maan (1).mp3",
+             "07 - Mitran Di Chhatri-Babbu Maan (Mp3Hungama.com).mp3", "Mitran_Di_Chhatri-Babbu_Maan_(320 kbps).mp3",
+             "Mitran Di Chhatri-Babbu Maan - Copy.mp3", "deck_1_Mitran Di Chhatri-Babbu Maan [128k].mp3",
+             "www.DJPunjab.com - Mitran Di Chhatri-Babbu Maan.mp3"]
+    assert {library.song_name(n) for n in names} == {"mitrandichhatribabbumaan"}
+    assert library.song_name("Mitran Di Chhatri (Remix)-Babbu Maan.mp3") != "mitrandichhatribabbumaan"
+
+
+def test_copies_of_one_song_prepared_and_listed_once(lib, monkeypatch):
+    music, calls = lib
+    # (lengths and bitrates as ffprobe would give them)
+    probe = {"Song.mp3": (335.2, 320000), "Song (1).mp3": (335.4, 128000), "Song (Extended).mp3": (402.0, 320000),
+             "Other.mp3": (335.2, 320000)}
+    monkeypatch.setattr(library, "_probe", lambda p: probe[os.path.basename(p)])
+    for n in probe:
+        (music / n).write_bytes(f"audio {n}".encode())
+    res = prep()
+    assert sorted(t["title"] for t in library.ready_tracks()) == ["Other.mp3", "Song (Extended).mp3", "Song.mp3"]
+    assert res["counts"]["duplicate"] == 1
+    assert not any(c[1] == "Song (1).mp3" for c in calls)            # never processed
+
+    # The kept copy goes: the other one takes its place
+    calls.clear()
+    os.remove(music / "Song.mp3")
+    prep()
+    assert "Song (1).mp3" in [t["title"] for t in library.ready_tracks()]
+    assert ("analysis", "Song (1).mp3") in calls
+
+
+def test_a_prepared_copy_stays_the_one_listed(lib, monkeypatch):
+    music, calls = lib
+    probe = {"Song.mp3": (300.0, 128000), "Song (320 kbps).mp3": (300.3, 320000)}
+    monkeypatch.setattr(library, "_probe", lambda p: probe[os.path.basename(p)])
+    (music / "Song.mp3").write_bytes(b"audio low")
+    prep()
+    (music / "Song (320 kbps).mp3").write_bytes(b"audio high")
+    calls.clear()
+    prep()
+    assert [t["title"] for t in library.ready_tracks()] == ["Song.mp3"] and calls == []

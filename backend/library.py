@@ -19,6 +19,7 @@ rupees, asks, keeps to a budget and saves each song's labels as it goes.
     python -m backend.library prepare [--library DIR] [--workers N] [--retry-failed]
     python -m backend.library listen [--yes] [--max-inr N]
     python -m backend.library status
+    python -m backend.library duplicates
 """
 
 import argparse
@@ -110,6 +111,11 @@ def _connect() -> sqlite3.Connection:
             bpm REAL, camelot TEXT, key TEXT, duration REAL, loudness_lufs REAL,
             analysis TEXT, updated REAL);
     """)
+    # Columns added since: a file's length and bitrate (to tell copies of one song apart), and the
+    # track a duplicate copy stands behind
+    for table, col, kind in (("files", "duration", "REAL"), ("files", "bitrate", "REAL"), ("tracks", "dup_of", "TEXT")):
+        if col not in [r["name"] for r in con.execute(f"PRAGMA table_info({table})")]:
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {kind}")
     return con
 
 
@@ -167,6 +173,83 @@ def audio_sha1(path: str) -> str:
         size = int.from_bytes(data[end - 20:end - 16], "little")
         end -= size + (32 if int.from_bytes(data[end - 12:end - 8], "little") & 0x80000000 else 0)
     return hashlib.sha1(data[start:end]).hexdigest()
+
+
+def _probe(path: str):
+    """(seconds, bits per second) of an audio file by ffprobe; (None, None) when unreadable."""
+    try:
+        out = subprocess.run(['ffprobe', '-v', 'quiet', '-show_entries', 'format=duration,bit_rate', '-of', 'json', path],
+                             capture_output=True, text=True, timeout=30).stdout
+        fmt = json.loads(out or "{}").get("format", {})
+        return float(fmt["duration"]), float(fmt.get("bit_rate") or 0) or None
+    except (ValueError, KeyError, subprocess.TimeoutExpired):
+        return None, None
+
+
+# What download sites and copies add to a song's file name, removed to tell two files are one song
+_NAME_JUNK = [
+    r"\(\s*\d+\s*\)\s*$",                                    # "Song (1)"
+    r"[-\s]+copy(\s*\d+)?\s*$",                                # "Song copy", "Song - Copy 2"
+    r"[\[(]\s*\d{2,3}\s*k(bps)?\s*[\])]", r"\b\d{2,3}\s*kbps\b",  # "(320 kbps)", "[128k]"
+    r"[\[(]?\s*(www\.)?[a-z0-9-]+\.(com|net|org|in|co|info|pk|me|io|cc|to)\s*[\])]?",   # "(Mp3Hungama.com)"
+    r"^\s*0?\d{1,2}\s*[-–.]\s+",                                 # "07 - Song"
+]
+
+
+def song_name(path: str) -> str:
+    """A file's song as its name says, without what copies and download sites add (lowercase letters
+    and digits only): "07 - Mitran Di Chhatri (Mp3Hungama.com) (1).mp3" -> "mitrandichhatri"."""
+    t = os.path.splitext(os.path.basename(path))[0].lower().replace("_", " ")
+    t = re.sub(r"^(deck [12] |lib )", "", t)
+    for _ in range(2):                    # junk can hide junk: "Song (320 kbps) (1)"
+        for j in _NAME_JUNK:
+            t = re.sub(j, " ", t).strip()
+    return re.sub(r"[^a-z0-9]+", "", t)
+
+
+DUP_SECONDS = 1.0     # two files of one song name this close in length are copies of one song
+
+
+def _mark_duplicates(con: sqlite3.Connection, log=print) -> None:
+    """Copies of one song (the same name once cleaned, lengths within DUP_SECONDS) are prepared and
+    listed once: the copy already prepared stays, else the highest bitrate; the others wait behind it
+    (status 'duplicate') and come back if it goes."""
+    rows = con.execute("""SELECT t.file_id, t.path, t.title, t.status, t.stages, t.error, t.dup_of,
+                                 t.analysis IS NOT NULL AS done, f.duration, f.bitrate
+                          FROM tracks t JOIN files f ON f.path = t.path WHERE t.status != 'missing'""").fetchall()
+    groups: Dict[str, List[Any]] = {}
+    for r in rows:
+        if r["duration"]:
+            groups.setdefault(song_name(r["path"]), []).append(r)
+    behind: Dict[str, str] = {}
+    for name, rs in groups.items():
+        rs = sorted(rs, key=lambda r: r["duration"])
+        clusters, cur = [], [rs[0]]
+        for r in rs[1:]:
+            if r["duration"] - cur[0]["duration"] <= DUP_SECONDS:
+                cur.append(r)
+            else:
+                clusters.append(cur)
+                cur = [r]
+        clusters.append(cur)
+        for c in clusters:
+            if len(c) < 2 or not name:
+                continue
+            keep = max(c, key=lambda r: (r["done"], r["bitrate"] or 0, r["file_id"]))
+            behind.update({r["file_id"]: keep["file_id"] for r in c if r is not keep})
+    changed = 0
+    for r in rows:
+        if r["file_id"] in behind and (r["status"] != "duplicate" or r["dup_of"] != behind[r["file_id"]]):
+            con.execute("UPDATE tracks SET status = 'duplicate', dup_of = ? WHERE file_id = ?", (behind[r["file_id"]], r["file_id"]))
+            changed += 1
+        elif r["file_id"] not in behind and r["status"] == "duplicate":
+            con.execute("UPDATE tracks SET status = ?, dup_of = NULL WHERE file_id = ?",
+                        (_status(json.loads(r["stages"] or "{}"), r["error"]), r["file_id"]))
+    con.commit()
+    n = sum(1 for r in rows if r["file_id"] in behind)
+    if n:
+        log(f"{n} files are copies of a song already in the library: prepared and listed once "
+            f"(python -m backend.library duplicates lists them)")
 
 
 def _migrate_hashes(con: sqlite3.Connection, log=print) -> None:
@@ -344,7 +427,9 @@ def index(con: sqlite3.Connection, root: str, log=print) -> None:
         r = known.get(p)
         if r and r["size"] == st.st_size and r["mtime"] == st.st_mtime:
             continue
-        con.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?, ?)", (p, st.st_size, st.st_mtime, audio_sha1(p)))
+        dur, rate = _probe(p)
+        con.execute("INSERT OR REPLACE INTO files (path, size, mtime, sha1, duration, bitrate) VALUES (?, ?, ?, ?, ?, ?)",
+                    (p, st.st_size, st.st_mtime, audio_sha1(p), dur, rate))
         hashed += 1
     gone = set(known) - set(paths)
     con.executemany("DELETE FROM files WHERE path = ?", [(p,) for p in gone])
@@ -371,6 +456,13 @@ def index(con: sqlite3.Connection, root: str, log=print) -> None:
     con.commit()
     log(f"Library {root}: {len(paths)} files ({hashed} hashed), {len(by_sha)} tracks"
         f" ({added} new, {len(lost)} missing)")
+    # Files indexed before lengths were kept: measured once now
+    for r in con.execute("SELECT path FROM files WHERE duration IS NULL").fetchall():
+        dur, rate = _probe(r["path"])
+        if dur:
+            con.execute("UPDATE files SET duration = ?, bitrate = ? WHERE path = ?", (dur, rate, r["path"]))
+    con.commit()
+    _mark_duplicates(con, log)
 
 
 def _finite(o):
@@ -513,7 +605,7 @@ def summary(con: Optional[sqlite3.Connection] = None) -> Dict[str, Any]:
                    for r in con.execute("SELECT file_id, title, flags FROM tracks WHERE status = 'ready' AND flags != '[]'")]
         failed = [{"file_id": r["file_id"], "title": r["title"], "error": r["error"]}
                   for r in con.execute("SELECT file_id, title, error FROM tracks WHERE status = 'failed'")]
-        return {"counts": {s: counts.get(s, 0) for s in ("ready", "pending", "failed", "missing")},
+        return {"counts": {s: counts.get(s, 0) for s in ("ready", "pending", "failed", "missing", "duplicate")},
                 "flagged": flagged, "failed": failed}
     finally:
         if own:
@@ -650,7 +742,16 @@ def main(argv=None) -> None:
     li.add_argument("--yes", action="store_true", help="don't ask before spending")
     li.add_argument("--max-inr", type=float, help="stop before spending more than this many rupees")
     sub.add_parser("status", help="track counts, and tracks to check")
+    sub.add_parser("duplicates", help="files that are copies of a song already in the library")
     args = ap.parse_args(argv)
+    if args.cmd == "duplicates":
+        with closing(_connect()) as con:
+            rows = con.execute("""SELECT d.path AS copy, k.path AS kept FROM tracks d JOIN tracks k ON k.file_id = d.dup_of
+                                  WHERE d.status = 'duplicate' ORDER BY k.path""").fetchall()
+        for r in rows:
+            print(f"{r['copy']}\n    copy of {r['kept']}")
+        print(f"{len(rows)} copies (prepared and listed once; delete them from the folder if you like)")
+        return
     if args.cmd == "listen":
         listen(args.yes, args.max_inr, log=lambda m: print(m, flush=True))
         return
@@ -661,7 +762,8 @@ def main(argv=None) -> None:
     else:
         res = summary()
     c = res["counts"]
-    print(f"Ready {c['ready']} · pending {c['pending']} · failed {c['failed']} · missing {c['missing']}")
+    print(f"Ready {c['ready']} · pending {c['pending']} · failed {c['failed']} · missing {c['missing']}"
+          f" · duplicates {c['duplicate']}")
     for t in res["flagged"]:
         print(f"  check {t['title']}: {', '.join(t['flags'])}")
     for t in res["failed"]:
