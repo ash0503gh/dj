@@ -114,7 +114,9 @@ const TrackPicker = (() => {
       const hint = tempoHint(t.bpm, ctx.otherBpm);
       const tag = document.createElement('span');
       tag.className = `tp-tag${hint && hint.ok ? ' ok' : ''}`;
-      tag.textContent = ctx.played && ctx.played.has(t.file_id) ? 'PLAYED' : hint ? hint.text : '';
+      // A played track still says how it fits the other deck's tempo
+      tag.textContent = [ctx.played && ctx.played.has(t.file_id) ? 'PLAYED' : null, hint ? hint.text : null]
+        .filter(Boolean).join(' · ');
       b.append(main, meta, tag);
       b.addEventListener('click', () => pick(t));
       return b;

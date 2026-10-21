@@ -35,6 +35,9 @@
 html, body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); }
 /* A console, not a document: taps and drags go to the controls, never to page zoom */
 html { touch-action: pan-x pan-y; -webkit-text-size-adjust: 100%; }
+/* The console fits the window: it never scrolls sideways (a Mac showing classic scroll bars narrows the
+   page by their width, and anything sized to the full window then stuck out by that much) */
+html { overflow-x: hidden; }
 button, .knob, .fader, canvas { touch-action: manipulation; }
 .knob, .fader { touch-action: none; }
 body { min-height: 100vh; -webkit-font-smoothing: antialiased; }
