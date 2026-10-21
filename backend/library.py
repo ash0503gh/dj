@@ -33,12 +33,15 @@ from typing import Any, Dict, List, Optional
 
 from .audio_analyzer import analyze_track, ANALYSIS_VERSION
 from .vocal_listen import carry_vocal_labels
+from .grid_check import check_track, DRIFT_FLAG_MS
 from . import next_track
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
 
-# Stage -> version. Bump a version to re-run that stage on the whole library at the next prepare.
-STAGES = {"analysis": ANALYSIS_VERSION, "loudness": 1}
+# Stage -> version, in the order they run. Bump a version to re-run that stage on the whole library at
+# the next prepare. A stage re-runs too when one it builds on does (AFTER).
+STAGES = {"analysis": ANALYSIS_VERSION, "loudness": 2, "grid_check": 1}
+AFTER = {"grid_check": "analysis"}   # the grid check measures the analysis's grid
 
 # A grid that lands fewer of its strong beats within 20 ms than this is flagged for a check
 # (provisional: tuned on the Phase 2 benchmark)
@@ -99,26 +102,40 @@ def scan(root: str) -> List[str]:
     return sorted(found)
 
 
-def measure_loudness(path: str) -> Dict[str, Optional[float]]:
-    """Integrated loudness (LUFS) and loudness range (LU) by EBU R128 (ITU-R BS.1770, the K-weighted
-    loudness the ear hears), measured by ffmpeg on the full-rate audio."""
-    out = subprocess.run(['ffmpeg', '-nostats', '-hide_banner', '-i', path, '-map', '0:a:0',
-                          '-af', 'ebur128=framelog=quiet', '-f', 'null', '-'],
+def measure_loudness(path: str) -> Dict[str, Any]:
+    """Loudness by EBU R128 (ITU-R BS.1770: the K-weighted loudness the ear hears), measured by ffmpeg on
+    the full-rate audio: integrated (LUFS), loudness range (LU), and short-term loudness every second
+    (loudness_st[k]: the 3 s ending at k + 1 seconds, None where silent), and the body's loudness (the
+    louder half of those seconds, power-averaged): what a DJ matches with the trim knob, the track's
+    main sections rather than its quiet intro or breakdown."""
+    out = subprocess.run(['ffmpeg', '-nostats', '-hide_banner', '-v', 'verbose', '-i', path, '-map', '0:a:0',
+                          '-af', 'ebur128=framelog=verbose', '-f', 'null', '-'],
                          capture_output=True, text=True).stderr
     summary = out[out.rfind("Summary:"):]
     i = re.search(r"I:\s+(-?[\d.]+) LUFS", summary)
     lra = re.search(r"LRA:\s+([\d.]+) LU", summary)
     if not i:
         raise RuntimeError("loudness: no measurement (silent or undecodable audio)")
-    return {"loudness_lufs": float(i.group(1)), "loudness_range_lu": float(lra.group(1)) if lra else None}
+    st, last = [], 0
+    for t, s in re.findall(r"t:\s*([\d.]+)\s+TARGET:.*?S:\s*(-?[\d.]+|-?inf|nan)", out):
+        k = int(round(float(t)))
+        if abs(float(t) - k) < 0.05 and k > last:   # one value a second, at whole seconds
+            last = k
+            v = float(s) if s not in ("inf", "-inf", "nan") else None
+            st.append(round(v, 1) if v is not None and v > -70 else None)
+    heard = sorted(v for v in st if v is not None)
+    loud = heard[len(heard) // 2:]
+    body = 10 * math.log10(sum(10 ** (v / 10) for v in loud) / len(loud)) if loud else None
+    return {"loudness_lufs": float(i.group(1)), "loudness_range_lu": float(lra.group(1)) if lra else None,
+            "loudness_st": st, "loudness_body_lufs": round(body, 2) if body is not None else None}
 
 
 def flags_for(an: Dict[str, Any]) -> List[str]:
     """What a DJ should check before trusting this track in a mix (it still loads)."""
     g = an.get("grid") or {}
     flags = []
-    if g and not g.get("tempo_stable", True):
-        flags.append("grid_drift")       # the tempo wanders: no single grid follows it
+    if (g and not g.get("tempo_stable", True)) or (an.get("grid_err_spread_ms") or 0) > DRIFT_FLAG_MS:
+        flags.append("grid_drift")       # the kicks wander off the grid: no single grid follows them
     if g.get("confidence") is not None and g["confidence"] < LOW_GRID_CONFIDENCE:
         flags.append("grid_fit")         # few beats land on the grid
     return flags
@@ -132,12 +149,14 @@ def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]]) ->
             warnings.simplefilter("ignore", RuntimeWarning)   # numpy empty-slice noise on short sections
             fresh = analyze_track(path)
         carry_vocal_labels(fresh, prior)   # Gemini's labels survive a re-analysis
-        for keep in ("loudness_lufs", "loudness_range_lu"):
+        for keep in ("loudness_lufs", "loudness_range_lu", "loudness_st"):
             if keep in an:
                 fresh[keep] = an[keep]
         an = fresh
     if "loudness" in todo:
         an.update(measure_loudness(path))
+    if "grid_check" in todo:
+        an.update(check_track(path, an["grid"], an["duration"]))
     return an
 
 
@@ -240,6 +259,7 @@ def prepare(root: Optional[str] = None, workers: Optional[int] = None, retry_fai
                 continue
             stages = json.loads(t["stages"] or "{}")
             todo = [s for s, v in STAGES.items() if stages.get(s) != v]
+            todo = [s for s in STAGES if s in todo or AFTER.get(s) in todo]
             if todo:
                 prior = json.loads(t["analysis"]) if t["analysis"] else labelled.get(t["sha1"])
                 jobs.append((t["file_id"], t["path"], todo, prior, stages, t["sha1"], t["title"]))

@@ -14,6 +14,7 @@
 const MixPlanner = (() => {
   const MAX_STRETCH = 0.12;    // beyond ±12% a blend sounds wrong: use an overlap-free technique
   const CLEAN_STRETCH = 0.08;  // keylocked stretching past ±8% starts to smear: blends beyond it cost a little
+  const FLAM_MAX_MS = 10;      // kicks this far apart start to smear: a blend is shortened or not played
   const KILL_HZ = 220;         // isolator bass-kill frequency
   const OPEN_HZ = 10;
 
@@ -106,6 +107,34 @@ const MixPlanner = (() => {
     return (i >= 0 && i < lv.length) ? lv[i] : null;
   }
 
+  /** How far the track's kicks sit from its grid (ms, + late) at native time t, from its prepared grid
+   *  check (grid_err: one value per 4 bars, grid_check.py); null where unknown (no clear kick there, or
+   *  the track wasn't checked). */
+  function gridErrAt(track, t) {
+    const ge = track.grid_err;
+    if (!ge || !ge.ms || !ge.window_sec) return null;
+    const i = Math.floor((t - ge.start) / ge.window_sec);
+    const v = i >= 0 && i < ge.ms.length ? ge.ms[i] : null;
+    return typeof v === 'number' ? v : null;
+  }
+
+  /** Where the incoming's kicks will land against the outgoing's (ms, + late) over `sec` ctx seconds of
+   *  overlap from exitNative / inStart, measured every `step` seconds (the decks running outSpeed and
+   *  inSpeed native seconds a second): the median (shiftMs: starting the incoming that much later in
+   *  its track cancels it), and what is left once it is cancelled (residualMs: the flam heard, from a
+   *  grid that wanders). null when fewer than two points have both tracks' kicks measured. */
+  function flamCheck(outTrack, outSpeed, inTrack, inSpeed, exitNative, inStart, sec, step) {
+    const d = [];
+    for (let x = 0; x < sec - 1e-6; x += step) {
+      const eo = gridErrAt(outTrack, exitNative + x * outSpeed);
+      const ei = gridErrAt(inTrack, inStart + x * inSpeed);
+      if (eo !== null && ei !== null) d.push(ei / inSpeed - eo / outSpeed);
+    }
+    if (d.length < 2) return null;
+    const shift = median(d);
+    return { shiftMs: shift, residualMs: Math.max(...d.map(v => Math.abs(v - shift))) };
+  }
+
   function nearTime(list, t, tol = 0.05) {
     return (list || []).some(x => Math.abs(x - t) < tol);
   }
@@ -186,9 +215,13 @@ const MixPlanner = (() => {
         if (lv !== null && lv < ref) inHoles++;
       }
     }
-    // Trim: match the incoming track's body loudness to what the room hears now
-    const inTrimDb = (outTrack.loudness_db != null && inTrack.loudness_db != null)
-      ? Math.max(-6, Math.min(6, outTrack.loudness_db + (outDeck.trimDb || 0) - inTrack.loudness_db))
+    // Trim: match the incoming track's body loudness to what the room hears now. Perceived loudness
+    // (LUFS, the louder half of each track) when both are prepared; RMS, which bass dominates, otherwise
+    const lufs = outTrack.loudness_body_lufs != null && inTrack.loudness_body_lufs != null;
+    const outLevel = lufs ? outTrack.loudness_body_lufs : outTrack.loudness_db;
+    const inLevel = lufs ? inTrack.loudness_body_lufs : inTrack.loudness_db;
+    const inTrimDb = (outLevel != null && inLevel != null)
+      ? Math.max(-6, Math.min(6, outLevel + (outDeck.trimDb || 0) - inLevel))
       : 0;
 
     // ── Exit point on the outgoing track: score its phrase starts ──
@@ -244,6 +277,12 @@ const MixPlanner = (() => {
     }
 
     const beatSec = 60 / outBpm;
+    // Kicks: where the two grids' kicks really land over the overlap (each track's grid check). The
+    // incoming starts by their median offset, so they hit together; what is left is the flam heard. An
+    // intro-edit loop keeps its own timing
+    const flam = opts.blend ? flamCheck(outTrack, speed, inTrack, tempoRatio, best, inStart,
+                                        (bars + tailBars) * 4 * beatSec, 4 * beatSec) : null;
+    if (flam && !loop) inStart += flam.shiftMs / 1000 * tempoRatio;
     const vocalClash = hasVocals(outTrack, best, best + bars * outBar) && inVocal;
     return {
       bars,
@@ -268,6 +307,8 @@ const MixPlanner = (() => {
       exit: chosen || null,       // the scored exit this plan uses (null: forced near the end)
       exits,                      // every scored exit, best first
       holes: (chosen ? chosen.outHoles : 0) + inHoles,  // bars the floor would lose its bass
+      flamMs: flam ? +flam.residualMs.toFixed(1) : null,    // kicks apart over the blend (null: not checked)
+      flamShiftMs: flam && !loop ? +flam.shiftMs.toFixed(1) : 0,   // how much later the incoming started for it
     };
   }
 
@@ -288,7 +329,24 @@ const MixPlanner = (() => {
   function candidates(outTrack, outDeck, inTrack, opts) {
     const list = [];
     const seen = new Set();
+    // A blend whose kicks would drift apart (a grid that wanders, by the tracks' grid checks; unchecked,
+    // a grid the analyzer found unstable past 8 bars) is shortened from the same moment until they stay
+    // together; when no length does, the moment gets an overlap-free mix instead
+    const unstable = [outTrack, inTrack].some(t => !t.grid_err && t.grid && t.grid.tempo_stable === false);
+    const kicksHold = p => (p.flamMs === null ? !unstable || p.bars <= 8 : p.flamMs <= FLAM_MAX_MS);
     const add = (p, technique) => {
+      if (technique === 'blend' && !kicksHold(p)) {
+        let q = null;
+        for (let bars = Math.floor(p.bars / 2); bars >= 4 && !q; bars = Math.floor(bars / 2)) {
+          const s = plan(outTrack, outDeck, inTrack, bars, Object.assign({}, opts, { exit: p.exitNative, entry: p.entry }));
+          if (kicksHold(s) && Math.abs(s.exitNative - p.exitNative) < 0.05) q = s;
+        }
+        if (q) p = q;
+        else {
+          p = plan(outTrack, outDeck, inTrack, p.bars, Object.assign({}, opts, { exit: p.exitNative, blend: false }));
+          technique = opts.cutTechnique || 'echo_freeze';
+        }
+      }
       // Too near the end for a real blend (it would last a bar or two): an echo out there instead
       if (technique === 'blend' && p.bars < 4) {
         p = plan(outTrack, outDeck, inTrack, p.bars, Object.assign({}, opts, { blend: false }));
@@ -500,7 +558,7 @@ const MixPlanner = (() => {
     return { start: T, swap, end: T + D };
   }
 
-  return { MAX_STRETCH, CLEAN_STRETCH, setTrim, gridOf, beatPhase, deckBpm, deckSpeed, tempoMultiple, atTempoMultiple,
+  return { MAX_STRETCH, CLEAN_STRETCH, FLAM_MAX_MS, setTrim, gridErrAt, flamCheck, gridOf, beatPhase, deckBpm, deckSpeed, tempoMultiple, atTempoMultiple,
            plan, candidates, candidateFeatures,
            trackSummary, scheduleBlueprint, neutral, clearAutomation, holdAutomation, cutAt, hasVocals,
            curve, bassKill, swapTime };

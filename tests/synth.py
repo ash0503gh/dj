@@ -42,14 +42,17 @@ def _noise_hit(rng, dur, decay, lo, hi):
     return sosfilt(sos, n) * np.exp(-np.arange(len(n)) / SR / decay)
 
 
-def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0.9, seed=0):
-    """Returns (audio, truth) where truth has beat_times, downbeat_times, phrase_16_times."""
+def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0.9, seed=0, drift_bpm=0.0):
+    """Returns (audio, truth) where truth has beat_times, downbeat_times, phrase_16_times.
+    drift_bpm: the tempo moves linearly from `bpm` to `bpm + drift_bpm` over the track (a live drummer)."""
     rng = np.random.default_rng(seed)
     P = 60.0 / bpm
     sections = [('intro', 16), ('verse', 16), ('breakdown', 16), ('drop', 32), ('outro', 16)]
     n_bars = pre_bars + sum(b for _, b in sections)
     total_beats = pickup_beats + 4 * n_bars
-    dur = first_beat + total_beats * P + 1.0
+    tempo = bpm + drift_bpm * np.arange(total_beats) / max(1, total_beats - 1)
+    beat_t = first_beat + np.concatenate([[0.0], np.cumsum(60.0 / tempo[:-1])])
+    dur = beat_t[-1] + P + 1.0
     buf = np.zeros(int(dur * SR))
 
     kick = _kick()
@@ -61,7 +64,7 @@ def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0
         bar_section += [name] * bars
 
     for k in range(total_beats):
-        t = first_beat + k * P
+        t = beat_t[k]
         if k < pickup_beats:
             sec, bar, beat_in_bar = 'pre', -1, 4 - pickup_beats + k
         else:
@@ -90,7 +93,7 @@ def make_track(bpm=126.0, first_beat=0.0, pickup_beats=0, pre_bars=0, hat_gain=0
                 _add(buf, t + P / 2, note)
 
     buf /= np.max(np.abs(buf)) + 1e-9
-    beats = first_beat + P * np.arange(total_beats)
+    beats = beat_t
     downbeats = beats[pickup_beats::4]
     bar_idx = np.arange(len(downbeats))
     phrase16 = downbeats[(bar_idx - pre_bars) % 16 == 0]

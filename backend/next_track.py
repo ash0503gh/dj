@@ -62,6 +62,7 @@ def features(an: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "bpm": bpm,
         "camelot": an.get("camelot"),
         "loudness_db": an.get("loudness_db"),
+        "loudness_body_lufs": an.get("loudness_body_lufs"),
         "bar_sec": 4 * 60.0 / bpm,
         "intro_s": intro_s,
         "intro_energy": intro_energy,
@@ -134,11 +135,14 @@ def score(out: Dict[str, Any], master_bpm: float, cand: Dict[str, Any]) -> Dict[
         if intro_bars >= 8:
             reasons.append(f"{intro_bars}-bar intro before its vocals")
     energy = 10.0
-    if out.get("loudness_db") is not None and cand.get("loudness_db") is not None:
-        diff = abs(out["loudness_db"] - cand["loudness_db"])
+    # Perceived loudness (LUFS) when both tracks are prepared, RMS otherwise: never one against the other
+    level = "loudness_body_lufs" if out.get("loudness_body_lufs") is not None and \
+        cand.get("loudness_body_lufs") is not None else "loudness_db"
+    if out.get(level) is not None and cand.get(level) is not None:
+        diff = abs(out[level] - cand[level])
         energy = max(0.0, 10 - 2.5 * max(0.0, diff - 2))
         if diff > 4:
-            reasons.append(f"{diff:.0f} dB {'quieter' if cand['loudness_db'] < out['loudness_db'] else 'louder'}")
+            reasons.append(f"{diff:.0f} dB {'quieter' if cand[level] < out[level] else 'louder'}")
     return {
         "file_id": cand["file_id"],
         "title": cand["title"],

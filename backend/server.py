@@ -1167,6 +1167,12 @@ async def grid_adjust(request: Request):
     grid["phrase_offset_bars"] = (grid["phrase_offset_bars"] + int(body.get("shift_bars", 0))) % 32
     an["grid"] = grid
     an.update(build_grid_times(grid, an["duration"]))
+    if an.get("grid_err"):
+        # Kicks measured against the grid (grid_check.py): the grid moved, so they sit that much earlier on it
+        ge = dict(an["grid_err"])
+        ge["start"] = round(ge["start"] + shift_s, 4)
+        ge["ms"] = [None if v is None else round(v - shift_s * 1000.0, 1) for v in ge["ms"]]
+        an["grid_err"] = ge
     for key in ("suggested_cue_intro", "suggested_cue_outro"):
         an[key] = round(an[key] + shift_s, 3)
     await persist_analysis(file_id, an)

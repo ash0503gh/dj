@@ -1116,6 +1116,13 @@ document.addEventListener('DOMContentLoaded', () => {
     transitionStatusBanner.textContent = `🛑 TRANSITION ABORTED: DECK ${keepNum} STAYS LIVE`;
   }
 
+  /** Call off a mix before anything of it is heard, saying why (the deck on air plays on). */
+  function cancelTransition(t, reason) {
+    if (activeTransition !== t) return;
+    abortTransition();
+    transitionStatusBanner.textContent = `${reason}: DECK ${t.outDeckNum} STAYS LIVE`;
+  }
+
   // ═══════════════════════════════════════════════════
   // Manual override: stop the automation, leave every knob where it is, DJ takes over
   // ═══════════════════════════════════════════════════
@@ -2351,7 +2358,9 @@ document.addEventListener('DOMContentLoaded', () => {
     phraseHud.classList.remove('hidden');
     t.intervals.push(setInterval(() => {
       const remain = p.startCtx - engine.ctx.currentTime;
-      if (remain > 0) {
+      if (t.waitingKeylock) {
+        show(line('WAITING FOR THE KEYLOCKED COPY: MOVES TO A LATER PHRASE'));
+      } else if (remain > 0) {
         const beats = remain / p.beatSec;
         phraseHudCounter.textContent = `IN ON THE 1: ${Math.floor(beats / 4)} BARS (${Math.floor(beats % 4) + 1}/4)`;
         phraseHudProgress.style.width = `${(100 * (1 - remain / total0)).toFixed(1)}%`;
@@ -2363,19 +2372,35 @@ document.addEventListener('DOMContentLoaded', () => {
     }, 50));
   }
 
+  // A vinyl tempo match (pitch follows) past this much is heard as another key: never played
+  const VINYL_MAX = 0.02;
+
   async function armTransition(t) {
     if (activeTransition !== t) return;
     const p = t.plan;
+    let waited = false;
     if (t.blend) {
       const waitMs = Math.max(0, (p.startCtx - 0.08 - engine.ctx.currentTime) * 1000);
       t.stretched = await Promise.race([t.bufferPromise, new Promise(r => setTimeout(() => r(null), waitMs))]);
       if (activeTransition !== t) return;
+      if (!t.stretched && Math.abs(p.tempoRatio - 1) > VINYL_MAX) {
+        // The keylocked copy isn't in yet: wait for it rather than play the incoming in another key
+        waited = t.waitingKeylock = true;    // the countdown says so meanwhile
+        t.stretched = await t.bufferPromise;
+        t.waitingKeylock = false;
+        if (activeTransition !== t) return;
+        if (!t.stretched) return cancelTransition(t, 'KEYLOCK FAILED: MIX CANCELLED');
+      }
     }
-    // Missed the slot (busy tab)? Slide by whole bars so the start stays on a downbeat
-    const barSec = 4 * p.beatSec;
+    // Missed the slot (busy tab)? Slide by whole bars so the start stays on a downbeat; by whole
+    // phrases after waiting for the keylocked copy, so it still starts on a phrase line
+    const barSec = 4 * p.beatSec * (waited ? 8 : 1);
     while (p.startCtx - t.leadInSec < engine.ctx.currentTime + 0.03) {
       p.startCtx += barSec;
       p.exitNative += barSec * MixPlanner.deckSpeed(t.outDeck);
+    }
+    if (waited && p.exitNative + p.blendSec * MixPlanner.deckSpeed(t.outDeck) > (t.outTrack.duration || Infinity) - 0.5) {
+      return cancelTransition(t, 'NO ROOM LEFT IN THE OUTGOING TRACK: MIX CANCELLED');
     }
 
     const inDeck = t.inDeck;
@@ -2385,7 +2410,7 @@ document.addEventListener('DOMContentLoaded', () => {
       if (t.stretched) {
         inDeck.audio.useBuffer(t.stretched, p.tempoRatio);
       } else {
-        // Tempo still exact, but pitch follows (vinyl) until a keylocked copy is available
+        // Within VINYL_MAX only: tempo exact, pitch follows (vinyl) until a keylocked copy is available
         inDeck.audio.useBuffer(inDeck.audio.nativeBuffer, 1.0);
         inDeck.audio.playbackRate = p.tempoRatio;
         console.warn('Keylocked incoming not ready: vinyl tempo match for this transition');

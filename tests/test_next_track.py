@@ -86,3 +86,14 @@ def test_half_tempo_track_blends_at_half_time():
     lib = [next_track.features(a) for a in LIB + [analysis("deck_1_half.mp3", 61.0, "8A", "h")]]
     half = next(r for r in next_track.rank(lib[0], 122.0, lib) if r["file_id"] == "deck_1_half.mp3")
     assert half["blend"] and "half time" in half["reasons"][0]
+
+
+def test_loudness_by_lufs_when_both_prepared():
+    # Prepared tracks compare perceived loudness (LUFS), whatever their RMS says; the key still counts
+    out = {"file_id": "o", "title": "o", "bpm": 124.0, "camelot": "8A", "loudness_db": -10.0,
+           "loudness_body_lufs": -8.0, "bar_sec": 4 * 60 / 124.0, "intro_s": None, "intro_energy": None, "songs": ["o"]}
+    same = dict(out, file_id="a", title="a", loudness_db=-18.0, loudness_body_lufs=-8.5, songs=["a"])
+    quiet = dict(out, file_id="b", title="b", loudness_db=-10.0, loudness_body_lufs=-16.0, songs=["b"])
+    a, b = next_track.score(out, 124.0, same), next_track.score(out, 124.0, quiet)
+    assert a["score"] > b["score"]
+    assert any("quieter" in r for r in b["reasons"]) and not any("dB" in r for r in a["reasons"])

@@ -43,10 +43,16 @@ def lib(tmp_path, monkeypatch):
 
     def fake_loudness(path):
         calls.append(("loudness", os.path.basename(path)))
-        return {"loudness_lufs": -8.5, "loudness_range_lu": 5.0}
+        return {"loudness_lufs": -8.5, "loudness_range_lu": 5.0, "loudness_st": [-9.0] * 200}
+
+    def fake_check(path, grid, duration):
+        calls.append(("grid_check", os.path.basename(path)))
+        spread = 35.0 if b"wander" in open(path, "rb").read() else 1.0
+        return {"grid_err": {"start": 0.1, "window_sec": 7.74, "ms": [0.0, spread]}, "grid_err_spread_ms": spread}
 
     monkeypatch.setattr(library, "analyze_track", fake_analyze)
     monkeypatch.setattr(library, "measure_loudness", fake_loudness)
+    monkeypatch.setattr(library, "check_track", fake_check)
     return music, calls
 
 
@@ -59,15 +65,18 @@ def test_prepare_one_track_per_audio_and_flags(lib):
     (music / "a.mp3").write_bytes(b"audio a")
     (music / "house" / "a copy.mp3").write_bytes(b"audio a")      # same audio, another name and folder
     (music / "b.mp3").write_bytes(b"audio b drift")
+    (music / "c.mp3").write_bytes(b"audio c wander")               # a grid the analyzer thinks is stable
     (music / "notes.txt").write_bytes(b"not audio")
     (music / ".hidden.mp3").write_bytes(b"hidden")
 
     res = prep()
-    assert res["counts"]["ready"] == 2
-    assert len([c for c in calls if c[0] == "analysis"]) == 2
+    assert res["counts"]["ready"] == 3
+    assert len([c for c in calls if c[0] == "analysis"]) == 3
     tracks = {t["title"]: t for t in library.ready_tracks()}
-    assert set(tracks) == {"a.mp3", "b.mp3"}
+    assert set(tracks) == {"a.mp3", "b.mp3", "c.mp3"}
+    assert tracks["a.mp3"]["flags"] == []
     assert tracks["b.mp3"]["flags"] == ["grid_drift"]
+    assert tracks["c.mp3"]["flags"] == ["grid_drift"]       # caught by the grid check
     assert tracks["a.mp3"]["file_id"].startswith("lib_") and tracks["a.mp3"]["file_id"].endswith(".mp3")
     row = library.get(tracks["a.mp3"]["file_id"])
     assert row["analysis"]["loudness_lufs"] == -8.5
@@ -87,6 +96,14 @@ def test_rerun_only_touches_what_changed(lib, monkeypatch):
     prep()
     assert calls == [("loudness", "a.mp3")]
     assert library.ready_tracks()[0]["title"] == "a.mp3"
+
+    # A newer analysis re-runs the grid check on its new grid too, but not loudness
+    calls.clear()
+    monkeypatch.setitem(library.STAGES, "analysis", library.STAGES["analysis"] + 1)
+    prep()
+    assert calls == [("analysis", "a.mp3"), ("grid_check", "a.mp3")]
+    an = library.get(library.ready_tracks()[0]["file_id"])["analysis"]
+    assert an["loudness_st"] == [-9.0] * 200 and an["grid_err"]["ms"] == [0.0, 1.0]
 
 
 def test_rename_keeps_track_and_removal_marks_missing(lib):
@@ -129,6 +146,7 @@ def test_measure_loudness_ebu_r128(tmp_path):
     sf.write(path, 0.5 * np.sin(2 * np.pi * 997 * t), sr)
     res = library.measure_loudness(path)
     assert abs(res["loudness_lufs"] - (-9.03)) < 0.3
+    assert len(res["loudness_st"]) in (9, 10) and all(abs(v - (-9.03)) < 0.3 for v in res["loudness_st"][3:])
 
 
 def test_server_local_mode(lib):
@@ -161,4 +179,6 @@ def test_server_local_mode(lib):
     r = client.post("/api/grid-adjust", json={"file_id": fid, "shift_beats": 1})
     assert r.status_code == 200
     assert library.get(fid)["analysis"]["grid"]["downbeat_offset"] == 1
+    r = client.post("/api/grid-adjust", json={"file_id": fid, "shift_ms": 5})
+    assert library.get(fid)["analysis"]["grid_err"]["ms"] == [-5.0, -4.0]     # kicks now 5 ms earlier on it
     assert library.get(fid)["status"] == "ready"

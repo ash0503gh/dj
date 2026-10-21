@@ -603,10 +603,11 @@ def _odd_ratio_check(env: np.ndarray, fps: float, coarse: float, fit: Dict[str, 
     return best
 
 
-def _refine_beat_offset(y: np.ndarray, sr: int, beat_times: np.ndarray, period_sec: float) -> float:
+def _refine_beat_offset(y: np.ndarray, sr: int, beat_times: np.ndarray, period_sec: float, unclear=0.0):
     """Place the grid on the kick TRANSIENT rather than the spectral-flux frame.
     Averages the low-band (< 200 Hz) Hilbert envelope around every kick beat and returns
-    the shift (s) from the predicted beat to the point where that average rises to 30%."""
+    the shift (s) from the predicted beat to the point where that average rises to 30%
+    (`unclear` when there are too few beats or no clear transient on them)."""
     from scipy.signal import butter, sosfiltfilt, hilbert
     sos = butter(4, 200, btype='low', fs=sr, output='sos')
     w = int(0.3 * period_sec * sr)
@@ -622,13 +623,13 @@ def _refine_beat_offset(y: np.ndarray, sr: int, beat_times: np.ndarray, period_s
         acc += np.abs(hilbert(seg))[pad:pad + 2 * w]
         n += 1
     if n < 8:
-        return 0.0
+        return unclear
     E = acc / n
     r = int(0.2 * period_sec * sr)
     j = w - r + int(np.argmax(E[w - r:w + r]))
     base = float(np.percentile(E[max(0, j - int(0.25 * period_sec * sr)):j + 1], 10))
     if E[j] < 1.5 * base:
-        return 0.0  # no clear transient on the beat (e.g. sustained bass): keep flux estimate
+        return unclear  # no clear transient on the beat (e.g. sustained bass): keep flux estimate
     thr = base + 0.3 * (E[j] - base)
     i = j
     while i > 0 and E[i] > thr:

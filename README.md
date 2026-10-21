@@ -183,8 +183,16 @@ prepared tracks, and uploads are off.
   `python -m backend.library status` lists what is ready, failed or worth a check.
 - The library index (`~/.pulsepro/library.db`, or `$PULSE_DATA`) holds one track per audio content.
   Renamed, moved or duplicated files stay one track, with their grid fixes and vocal labels.
-- Stages: the full analysis, plus loudness (EBU R128 LUFS) and loudness range. A track loads only once
-  every stage has passed. A grid that drifts or fits poorly shows CHECK GRID in the browser.
+- Stages: the full analysis; loudness (EBU R128: integrated, range, short-term every second, and the
+  body's loudness the trim matches); and a grid check, where each beat's kick really lands against the
+  grid, per 4 bars (`backend/grid_check.py`). A track loads only once every stage has passed. A grid
+  whose kicks wander more than 20 ms across the track shows CHECK GRID in the browser.
+- Auto mixes use the grid check: the incoming starts a few ms earlier or later so both tracks' kicks
+  land together, a blend whose kicks would still drift more than 10 ms apart is shortened (or becomes a
+  switch), and the sound check counts what's left as flam. Past a 2% tempo change the incoming never
+  plays pitched: the mix waits for the keylocked copy and moves to a later phrase.
+- `python -m backend.benchmark` is the yardstick for every change: grids that wander, how the library's
+  pairs split into blends, 12-20% near misses and switches, and how the rated Auto mixes went.
 - Use Chrome or Edge: the DJ controller needs Web MIDI, which Safari lacks.
 
 ---

@@ -42,7 +42,7 @@ gig, Serato/rekordbox style. Take it online afterwards on the same code.
 
 Effort is a rough size (S: days, M: 1-2 weeks, L: several weeks), to be revised as each phase starts.
 
-### Phase 1: Local-first foundation (S-M) · in progress
+### Phase 1: Local-first foundation (S-M) · built, to verify on the real library
 
 - A library folder (`PULSE_LIBRARY`) and a resumable, parallel `prepare` command.
 - SQLite library index keyed by audio fingerprint (SHA-1 of the file): renamed, moved or duplicated
@@ -57,17 +57,25 @@ Effort is a rough size (S: days, M: 1-2 weeks, L: several weeks), to be revised 
 Done when: the whole library prepares unattended, a re-run only touches new or changed files, and the
 console lists and loads only prepared tracks.
 
-### Phase 2: Accuracy fixes, Tier 1 (S-M)
+### Phase 2: Accuracy fixes, Tier 1 (S-M) · built, to verify on the real library
 
-- **Benchmark first**: ~30 real pairs from the library (extend `tests/real_tracks_report.py`). Metrics:
-  kick flam (ms), loudness step (LU), share of pairs that blend vs switch, share rated GOOD.
-- **Flam check in the sound check**: cross-correlate both decks' low-band onsets in the overlap. Correct
-  the offset by the measured lag when it is small and consistent; reject the blend above ~10 ms.
-- **Grid-quality gating**: drifting or low-confidence grids get shorter blends or a switch on the phrase
-  line, never a 32-bar blend.
-- **No vinyl fallback** beyond ~2-3%: wait or shorten the mix. Stretch the blend window first and the
-  rest of the track in the background.
-- **Loudness trim in LUFS**, measured locally around the exit and entry points, not over the whole track.
+- **Benchmark**: `python -m backend.benchmark`. Library (grids that wander, loudness spread), pairs
+  (share that blend, 12-20% apart, switch only; tracks with no blend partner) and played mixes (share
+  rated GOOD by kind, kick flam, loudness jumps, reasons).
+- **Grid check** (prepare stage): each beat's kick against the grid, a median per 4 bars. Within 1-3 ms of
+  the truth on synthetic tracks, breakdowns left out. It caught a track drifting 0.5 BPM (kicks 137 ms
+  off) that the analyzer's own `drift_ms` called stable.
+- **Flam correction and gating**: the planner predicts where both tracks' kicks land over the overlap,
+  starts the incoming by their median offset, shortens a blend whose kicks would still drift more than
+  10 ms apart, and makes it a switch when no length holds. The sound check counts the rest as flam.
+- **No vinyl fallback** past 2%: the mix waits for the keylocked copy and moves to a later phrase, or is
+  cancelled cleanly if the stretch fails.
+- **Trim in LUFS**: each track's body loudness (the louder half of its short-term loudness), also used by
+  the next-track suggestions. Matching local windows around the exit and entry was dropped: it would turn
+  an incoming drop down to an outgoing outro's level for the rest of the track.
+
+Learned: an incoming that drifts in its intro can't blend even for 8 bars (its kicks move ~18 ms every
+4 bars), so it gets a switch. Phase 5's time maps, straightening its grid, are what let it blend.
 
 Done when: no benchmark blend has a flam over 10 ms, loudness steps stay within ~1 LU, and a pitched
 incoming never plays.

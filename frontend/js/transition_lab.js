@@ -249,7 +249,7 @@ const TransitionLab = (() => {
   /**
    * Measure a blend before it's played: render it offline from the exact buffers, plan and
    * automation the live console would use, and compute the same bass/mids/loudness scores as
-   * /api/score-transition (kick flam aside: the grid is the same for every candidate).
+   * /api/score-transition (kick flam from the tracks' grid checks, see below).
    * out/inc: { buffer, tempoRatio, rate, trimDb }. ~0.1-0.3 s per candidate.
    */
   async function quickScore({ out, inc, plan }) {
@@ -309,6 +309,10 @@ const TransitionLab = (() => {
       .filter((v, k) => !inBuild(a0 + k));
     const hole = heard.length ? floorDb - Math.min(...heard) : 0;
     const m = {
+      // Kicks apart over the blend, from both tracks' grid checks (MixPlanner.flamCheck: the same kicks this
+      // render plays, measured once per track instead of in every render)
+      kick_flam_ms: beatMatched ? (plan.flamMs || 0) : 0,
+      kick_shift_ms: beatMatched ? (plan.flamShiftMs || 0) : 0,   // how much later the incoming started for it
       hole_db: +Math.max(0, hole).toFixed(2),
       bass_overlap_s: +(both * beat).toFixed(2),
       bass_gap_s: +(neither * beat).toFixed(2),
