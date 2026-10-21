@@ -66,6 +66,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- UI Elements ---
   const masterBpmEl = document.getElementById('master-bpm');
   const camelotStatusEl = document.getElementById('camelot-status');
+  // The version in the top bar: the asset version this page loaded (index.html ?v=), so it always says
+  // which update is running
+  const versionEl = document.getElementById('app-version');
+  const appScript = document.querySelector('script[src*="/js/app.js"]');
+  const appVersion = appScript ? new URL(appScript.src, location.href).searchParams.get('v') : null;
+  if (versionEl && appVersion) versionEl.textContent = `v${appVersion}`;
   const btnExportMix = document.getElementById('btn-export-mix');
   const btnTriggerTransition = document.getElementById('btn-trigger-transition');
   const transitionStatusBanner = document.getElementById('transition-status-banner');
@@ -1057,7 +1063,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // --- Harmonic Compatibility & AI Live Recommendation ---
   async function updateHarmonicCompatibility() {
-    if (!track1Data || !track2Data) return;
+    if (!track1Data || !track2Data || !camelotStatusEl) return;   // (no key pill in the top bar now)
     try {
       const res = await fetch(`/api/compatibility?camelot_1=${track1Data.camelot}&camelot_2=${track2Data.camelot}&direction=${transitionDirection}`);
       const compat = await res.json();
@@ -1890,7 +1896,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const MAX_WAIT_SEC = 60;     // a mix starts within a minute of pressing MIX...
   const LATE_WAIT_SEC = 120;   // ...unless none there clears the bar: then the next clean moment, within two
   const MIX_SOON_SEC = 30;     // MIX SOON: only mixes that start (lead-in included) within this of pressing MIX
-  const WAIT_COST = 0.15;      // confidence points a second of waiting costs in the final choice
+  const WAIT_COST = 0.15;      // confidence points a second of waiting costs in the final choice...
+  const WAIT_COST_OUTRO = 0.05; // ...a third of that for a mix in the outgoing's outro or breakdown
   const mixSoonToggle = document.getElementById('mix-soon-toggle');
   if (mixSoonToggle) {
     try { mixSoonToggle.checked = localStorage.getItem('mix_soon') === '1'; } catch (e) { /* blocked */ }
@@ -2569,7 +2576,8 @@ document.addEventListener('DOMContentLoaded', () => {
    *  goes by confidence alone). */
   function utility(c) {
     return c.conf + TransitionLab.likesBonus(c, tastePrefs)
-      - WAIT_COST * Math.max(0, c.startCtx - MixBlocks.preSec(c) - engine.ctx.currentTime) - (c.lastResort ? 10 : 0);
+      - (c.exit && c.exit.outro ? WAIT_COST_OUTRO : WAIT_COST) * Math.max(0, c.startCtx - MixBlocks.preSec(c) - engine.ctx.currentTime)
+      - (c.lastResort ? 10 : 0);
   }
 
   /** Commit to the best of `ranked` (confident ones, or the best left when `below` the bar). A near
@@ -3428,11 +3436,13 @@ document.addEventListener('DOMContentLoaded', () => {
       mixing: () => !!(isTransitioning && activeTransition && activeTransition.plan &&
                        engine.ctx.currentTime >= activeTransition.plan.startCtx - (activeTransition.leadInSec || 0)),
       mix: () => btnTriggerTransition.click(),
+      transitioning: () => !!isTransitioning,          // searching, counting down or mixing
       abort: () => { if (visible(btnAbortTransition)) btnAbortTransition.click(); },
       takeOver: () => { if (visible(btnManualOverride)) btnManualOverride.click(); },
       trim: n => deckOf(n).trimDb || 0,
       setTrim: (n, db) => MixPlanner.setTrim(deckOf(n), db, engine.ctx.currentTime),
       browse: (delta, n = browseDeck()) => { if (trackPickers[n]) trackPickers[n].browse(delta); },
+      crate: (delta, n = browseDeck()) => { if (trackPickers[n]) trackPickers[n].cycleCrate(delta); },
       browsed: () => [1, 2].map(n => trackPickers[n] && trackPickers[n].highlighted()).find(Boolean) || null,
       load: (n, fileId) => {
         unlockAudio();

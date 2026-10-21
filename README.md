@@ -134,14 +134,17 @@ Pulse Pro is a full-stack, browser-based professional DJ mixing console engineer
   - Pads 1-4 (hot cue mode): the cue points (intro, build, drop, outro). In any other pad mode (sampler,
     loops) they fire the console's SFX pads: deck A's four pads the first four, deck B's the last four.
   - Browse knob: the track list of the deck not playing, its highlight moving; LOAD A / LOAD B load the
-    highlighted track. Browse push: Auto MIX; shift + push: abort.
+    highlighted track. Browse push: the next crate (folder or smart crate); shift + turn: crates either
+    way; shift + push: Auto MIX, or abort the mix under way.
   - FX 1 / 2 / 3 on each side: echo / flanger / a one-bar loop roll on that side's deck; the FX knob sets how
     much is heard. Crossfader, master volume, headphone volume and cue mix.
-  - Knobs and faders pick up where the screen is: one does nothing until it reaches the on-screen value or
-    passes it (no jumps). Moved while an Auto mix is running (not while it searches or counts down), one
-    takes over from the mix, as the TAKE OVER button does.
-  - Lights: play, cue, sync, headphone cue, pads, FX; the master level on its meters; its jog screens show
-    BPM, time and length, the position ring and the spinning dot (MIDI sysex, asked for when connecting).
+  - Knobs and faders move the on-screen ones at once. Moved while an Auto mix is running (not while it
+    searches or counts down), one takes over from the mix, as the TAKE OVER button does.
+  - Lights: play, cue, sync, headphone cue, keylock and wheel (always on here), pads, FX; the master level
+    on its meters; its jog screens show BPM, time and length, the position ring and the spinning dot. They
+    need MIDI SysEx ("control and reprogram your MIDI devices", asked for when connecting): it takes the
+    controller out of its demo light show. Every light is sent again after that, and all of them every two
+    seconds; decks 3 and 4 light as A and B.
   - Sound: with the controller chosen as sound output (the panel lists the devices), the master plays on its
     outputs 1-2 and the headphones on 3-4 (the cued decks, and the master by the cue mix knob); on a stereo
     sound card the cued decks play with the master, as before.

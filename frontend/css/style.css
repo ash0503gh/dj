@@ -95,6 +95,7 @@ button:disabled { cursor: not-allowed; opacity: 0.45; }
 }
 .brand { display: flex; align-items: center; gap: 10px; color: var(--accent); flex-shrink: 0; }
 .brand-name { font-family: var(--font-cond); font-weight: 700; font-size: 22px; letter-spacing: 0.08em; color: var(--text); }
+.app-version { align-self: flex-end; margin-bottom: 3px; font-family: var(--font-mono); font-size: 10px; color: var(--muted); }
 .nav-stat { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .nav-bpm { font-family: var(--font-mono); font-weight: 700; font-size: 20px; }
 .nav-unit { font-size: 11px; color: var(--muted); }

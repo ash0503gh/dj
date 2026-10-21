@@ -397,6 +397,20 @@ const TrackPicker = (() => {
         highlightId = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? 0 : i + delta))].dataset.fileId;
         markHighlight();
       },
+      /** A DJ controller's browse push: opens the list on the crate `delta` crates on (round the list). */
+      cycleCrate(delta) {
+        if (panel.hidden) open();
+        const all = crateList(context());
+        const i = Math.max(0, all.findIndex(c => c.id === crate));
+        crate = all[(i + delta + all.length * 8) % all.length].id;
+        store.set(`pp_crate_${deckNum}`, crate);
+        search.value = '';
+        highlightId = null;
+        render();
+        list.scrollTop = 0;
+        const on = crates.querySelector('[aria-pressed="true"]');
+        if (on) on.scrollIntoView({ block: 'nearest' });
+      },
       /** The highlighted track's file id while the list is open, else null. */
       highlighted() { return panel.hidden ? null : highlightId; },
       close,

@@ -2,8 +2,14 @@
  * controller.js - A hardware DJ controller over Web MIDI (Chrome and Edge on a computer; not Safari):
  * the Numark Mixtrack Platinum. Its buttons, knobs, faders and jog wheels play the console the way the
  * screen's own controls do (it presses the same buttons and moves the same sliders), and its lights,
- * level meter and jog-wheel screens show the decks. A knob or fader picks up where the screen is: it does
- * nothing until it reaches the on-screen value (no jumps), and one moved during an Auto mix takes over.
+ * level meter and jog-wheel screens show the decks. A knob or fader moves its on-screen control at once
+ * (the screen follows the hardware), and one moved during an Auto mix takes over from the mix.
+ *
+ * Lights: the controller leaves its demo mode on a SysEx message and then resets its lights, so every
+ * light is sent again after it, and all of them again every couple of seconds (anything the controller
+ * changed by itself is put right). Decks 3 and 4 (its layer buttons) play decks A and B here, so their
+ * lights mirror A's and B's. The browse knob moves through the list; pushed, it goes to the next crate
+ * (shift + turn: crates either way); shift + push starts the Auto mix, or calls off one under way.
  *
  * MIDI layout from the controller's published mapping (Mixxx's): decks 1-4 on channels 1-4 (3 and 4,
  * its layer buttons, play decks A and B here), pads on 5-8, the FX units on 9-10, and browse, shift,
@@ -12,7 +18,8 @@
  */
 const DJController = (() => {
   const DECK = { play: 0x00, cue: 0x01, sync: 0x02, shiftSync: 0x03, shiftPlay: 0x04, shiftCue: 0x05,
-                 jogTouch: 0x06, bendUp: 0x0B, bendDown: 0x0C, load: 0x10, pfl: 0x1B };
+                 jogTouch: 0x06, wheel: 0x07, bpmUp: 0x09, bpmDown: 0x0A, bendUp: 0x0B, bendDown: 0x0C,
+                 keylock: 0x0D, slip: 0x0F, load: 0x10, pfl: 0x1B };
   const KNOB = { jog: 0x06, pitchMsb: 0x09, pitchLsb: 0x77, gain: 0x16, hi: 0x17, mid: 0x18, low: 0x19,
                  filter: 0x1A, volume: 0x1C, ring: 0x3F };
   const HOTCUE_PADS = [0x18, 0x19, 0x1A, 0x1B];
@@ -26,7 +33,7 @@ const DJController = (() => {
   const TICK_SEC = 1.8 / 1240;   // a jog tick: 1240 to a turn, a turn at 33 1/3 rpm is 1.8 s of the record
   const NUDGE_PER_TICK = 0.004;  // playing: each tick speeds the deck up (or down) 0.4% while the wheel turns
   const BEND = 0.04;             // pitch bend buttons: 4% while held
-  const PICKUP = 0.03;           // a knob takes over within 3% of the screen's value, or when it passes it
+  const RESEND_MS = 2000;        // every light and screen sent again this often
   const TEMPO_RANGE = 16;        // the screen's tempo faders: ±16%
   const TRIM_RANGE = 12;         // gain knob: ±12 dB
   const isMixtrack = port => /mixtrack\s*platinum/i.test(port.name || '');
@@ -39,7 +46,7 @@ const DJController = (() => {
   let shift = false;
   let refreshTimer = null;
   const sent = new Map();                 // last value sent to each light and screen: only changes go out
-  const pickups = {};                     // per knob and fader: taken over yet?
+  let lastResend = 0;
   const pitchHalves = { 1: [64, 0], 2: [64, 0] };
   const nudges = {};
   const bends = {};
@@ -78,27 +85,41 @@ const DJController = (() => {
     send([0xF0, 0x00, 0x20, 0x7F, deckNum, field].concat(digits, [0xF7]));
   }
 
+  /** A deck's light on its own channel (`base` | 0 or 1) and on its layer's (decks 3 and 4: + 2). */
+  function deckLight(base, n, data1, value) {
+    light(base | (n - 1), data1, value);
+    light(base | (n + 1), data1, value);
+  }
+
   function refresh() {
     if (!output || !bridge) return;
+    // Everything again now and then: what the controller changed by itself is put right
+    const now = performance.now();
+    if (now - lastResend > RESEND_MS) {
+      lastResend = now;
+      sent.clear();
+    }
     for (const n of [1, 2]) {
       const deck = bridge.deck(n);
       const loaded = !!(bridge.track(n) && deck.audio.buffer);
-      const ch = n - 1;
       const playing = !!deck.isPlaying;
-      [DECK.play, DECK.shiftPlay].forEach(x => light(0x90 | ch, x, playing ? ON : DIM));
-      [DECK.cue, DECK.shiftCue].forEach(x => light(0x90 | ch, x, loaded && !playing ? ON : DIM));
-      [DECK.sync, DECK.shiftSync].forEach(x => light(0x90 | ch, x, bridge.synced(n) ? ON : DIM));
-      light(0x90 | ch, DECK.pfl, deck.isCueActive ? ON : DIM);
-      HOTCUE_PADS.forEach(x => light(0x94 | ch, x, loaded ? ON : OFF));
-      light(0x98 | ch, FX_BUTTONS[0], deck._echoEngaged ? ON : DIM);
-      light(0x98 | ch, FX_BUTTONS[1], deck._flangerEngaged ? ON : DIM);
-      light(0x98 | ch, FX_BUTTONS[2], DIM);
-      if (!loaded) continue;
+      [DECK.play, DECK.shiftPlay].forEach(x => deckLight(0x90, n, x, playing ? ON : DIM));
+      [DECK.cue, DECK.shiftCue].forEach(x => deckLight(0x90, n, x, loaded && !playing ? ON : DIM));
+      [DECK.sync, DECK.shiftSync].forEach(x => deckLight(0x90, n, x, bridge.synced(n) ? ON : DIM));
+      deckLight(0x90, n, DECK.pfl, deck.isCueActive ? ON : DIM);
+      deckLight(0x90, n, DECK.keylock, ON);          // the console always plays keylocked
+      deckLight(0x90, n, DECK.wheel, ON);            // the jog wheels always scrub and nudge
+      [DECK.bpmUp, DECK.bpmDown, DECK.slip].forEach(x => deckLight(0x90, n, x, OFF));
+      HOTCUE_PADS.forEach(x => deckLight(0x94, n, x, loaded ? ON : OFF));
+      light(0x98 | (n - 1), FX_BUTTONS[0], deck._echoEngaged ? ON : DIM);
+      light(0x98 | (n - 1), FX_BUTTONS[1], deck._flangerEngaged ? ON : DIM);
+      light(0x98 | (n - 1), FX_BUTTONS[2], DIM);
       // Jog screen: position ring (0-52), spinner (64-115: a turn of the record every 1.8 s), BPM, time
-      const dur = deck.audio.duration || 0;
-      const pos = Math.max(0, deck.audio.currentTime || 0);
-      light(0xB0 | ch, KNOB.ring, dur ? Math.min(52, Math.round((pos / dur) * 52)) : 0);
-      light(0xB0 | ch, KNOB.jog, 64 + Math.round(((pos % 1.8) / 1.8) * 51));
+      const dur = loaded ? deck.audio.duration || 0 : 0;
+      const pos = loaded ? Math.max(0, deck.audio.currentTime || 0) : 0;
+      deckLight(0xB0, n, KNOB.ring, dur ? Math.min(52, Math.round((pos / dur) * 52)) : 0);
+      deckLight(0xB0, n, KNOB.jog, 64 + Math.round(((pos % 1.8) / 1.8) * 51));
+      if (!loaded) continue;
       if (sysex) {
         screen(n, 0x01, nibbles(Math.round((bridge.bpm(n) || 0) * 100)).slice(2));
         screen(n, 0x03, nibbles(Math.max(0, Math.round(dur * 1000) - 1)));
@@ -133,19 +154,10 @@ const DJController = (() => {
     if (ui.last) ui.last.textContent = what;
   }
 
-  /** A knob or fader at `v` (0-1) moves `name` only once it has reached where the screen is (`now`, 0-1)
-   *  or passed it: no jumps. `mixer`: moving it during an Auto mix takes over from the mix. */
+  /** A knob or fader at `v` (0-1) moves `name` on screen at once. `mixer`: moving it during an Auto mix
+   *  takes over from the mix. (`key` and `now`, the screen's value, are kept for a pick-up mode.) */
   function pickUp(key, name, v, now, apply, mixer = true) {
-    const p = pickups[key] || (pickups[key] = { held: false, last: null, set: null });
-    if (p.held && p.set !== null && Math.abs(now - p.set) > PICKUP) p.held = false;   // the screen moved it since
-    if (!p.held && (Math.abs(v - now) <= PICKUP || (p.last !== null && (p.last - now) * (v - now) <= 0))) p.held = true;
-    p.last = v;
-    if (!p.held) {
-      touched(`${name}: turn it to ${Math.round(now * 100)}% to pick up`);
-      return;
-    }
     if (mixer && bridge.mixing()) bridge.takeOver();
-    p.set = v;
     apply(v);
     touched(`${name} · ${Math.round(v * 100)}%`);
   }
@@ -288,8 +300,8 @@ const DJController = (() => {
     if (type === 0xB0) {
       const k = d2 / 127;
       if (d1 === MAIN.browse) {
-        bridge.browse(d2 === 127 ? -1 : d2 === 1 ? 1 : (d2 < 64 ? d2 : d2 - 128));
-        touched('BROWSE');
+        const delta = d2 === 127 ? -1 : d2 === 1 ? 1 : (d2 < 64 ? d2 : d2 - 128);
+        if (shift) { bridge.crate(delta); touched('CRATE'); } else { bridge.browse(delta); touched('BROWSE'); }
       } else if (d1 === MAIN.crossfader) {
         pickUp('crossfader', 'CROSSFADER', k, rangeValue('crossfader') / 100, x => setRange('crossfader', Math.round(x * 100)));
       } else if (d1 === MAIN.master) {
@@ -307,7 +319,9 @@ const DJController = (() => {
     if (d1 === MAIN.shift) { shift = on; return; }
     if (d1 === MAIN.browsePush && on) {
       bridge.unlock();
-      if (shift) { bridge.abort(); touched('ABORT'); } else { bridge.mix(); touched('AUTO MIX'); }
+      if (!shift) { bridge.crate(1); touched('NEXT CRATE'); }
+      else if (bridge.transitioning()) { bridge.abort(); touched('ABORT'); }
+      else { bridge.mix(); touched('AUTO MIX'); }
     }
   }
 
@@ -339,6 +353,8 @@ const DJController = (() => {
       sent.clear();
       if (sysex) send(HELLO);
       refresh();
+      // Out of demo mode it resets its lights: all of them again once it has
+      [300, 1500].forEach(ms => setTimeout(() => { sent.clear(); refresh(); }, ms));
     }
     if (!refreshTimer) refreshTimer = setInterval(refresh, 50);
     render();
@@ -378,9 +394,10 @@ const DJController = (() => {
   function render(message = null) {
     if (ui.chip) ui.chip.classList.toggle('on', !!input);
     if (!ui.status) return;
-    ui.status.textContent = message || (input ? `${input.name}: connected${sysex ? '' : ' (no jog screens: MIDI sysex not allowed)'}`
+    ui.status.textContent = message || (input ? `${input.name}: connected${sysex ? ''
+      : '. Its lights and jog screens need one more permission: press CONNECT and allow Chrome to "control and reprogram your MIDI devices".'}`
       : access ? 'No Mixtrack Platinum found: plug it in by USB.' : 'Not connected.');
-    ui.connect.hidden = !!access;
+    ui.connect.hidden = !!access && (sysex || !input);
     renderOutput();
   }
 
@@ -440,8 +457,8 @@ const DJController = (() => {
   }
 
   /**
-   * bridge: { engine, deck(n), track(n), bpm(n), synced(n), mixing(), mix(), abort(), takeOver(), trim(n),
-   *   setTrim(n, db), browse(delta, deckNum?), browsed(), load(n, fileId), unlock() }
+   * bridge: { engine, deck(n), track(n), bpm(n), synced(n), mixing(), transitioning(), mix(), abort(), takeOver(),
+   *   trim(n), setTrim(n, db), browse(delta, deckNum?), crate(delta, deckNum?), browsed(), load(n, fileId), unlock() }
    */
   function init(b) {
     bridge = b;

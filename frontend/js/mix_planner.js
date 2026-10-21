@@ -276,7 +276,8 @@ const MixPlanner = (() => {
       // The incoming drop lands at t + blend: better on a big phrase line of the outgoing too
       if (nearTime(outTrack.phrase_16_times, t + blendNative)) score += 10;
       const secs = sectionsIn(outTrack, t, t + blendNative);
-      if (secs.some(s => s.section_type === 'outro' || s.section_type === 'breakdown')) score += 20;
+      const outro = secs.some(s => s.section_type === 'outro' || s.section_type === 'breakdown');
+      if (outro) score += 20;
       if (secs.some(s => s.section_type === 'drop')) score -= 20;
       const energyFalling = secs.length >= 2 && secs[secs.length - 1].energy < secs[0].energy;
       if (energyFalling) score += 10;
@@ -296,10 +297,11 @@ const MixPlanner = (() => {
         }
       }
       // Waiting costs from the first second: a later moment wins only when clearly better (10 points
-      // for 20 s more: a 16-bar phrase line, or the outgoing's outro)
+      // for 20 s more: a 16-bar phrase line). The outgoing's outro or breakdown, where it gets out of the
+      // way by itself, costs less to wait for (4 points for 20 s): one up to ~65 s later still wins
       const waitSec = (t - outNow) / speed;
-      score -= waitSec * 0.5;
-      exits.push({ t, score, outVocal, bassDropouts, outHoles, energyFalling });
+      score -= waitSec * (outro ? 0.2 : 0.5);
+      exits.push({ t, score, outVocal, bassDropouts, outHoles, energyFalling, outro });
     }
     // Best first; ties keep the earliest exit
     exits.sort((a, b) => b.score - a.score || a.t - b.t);
