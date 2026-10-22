@@ -66,3 +66,10 @@ def test_tags_and_neural():
     rep = benchmark.neural_report(nn)
     assert rep["tracks"] == 2 and rep["downbeat_by_neural"] == 1 and rep["tempo_conflict"] == 1
     assert rep["agree"]["median"] == 0.675
+
+
+def test_straightened_tracks_are_reported():
+    live = dict(track("live", 122.0), straightened={"spread_before_ms": 190.0, "spread_after_ms": 1.0})
+    rep = benchmark.library_report([track("a", 124.0), live])
+    assert rep["straightened"] == [{"title": "live", "before_ms": 190.0, "after_ms": 1.0}]
+    assert benchmark.library_report([track("a", 124.0)])["straightened"] == []

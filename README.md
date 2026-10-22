@@ -226,6 +226,12 @@ prepared tracks, and uploads are off.
   land together, a blend whose kicks would still drift more than 10 ms apart is shortened (or becomes a
   switch), and the sound check counts what's left as flam. Past a 2% tempo change the incoming never
   plays pitched: the mix waits for the keylocked copy and moves to a later phrase.
+- Live-played tracks (`backend/straighten.py`): a track whose kicks wander more than 20 ms off its grid (a
+  drummer speeding up) is put on a steady beat once, in prepare: its kicks are followed beat by beat, and
+  Rubber Band renders it along them, keylocked, at its average tempo (a synthetic 3 BPM drift: kicks off
+  the grid by 190 ms before, 1 ms after). The copy is analysed again and the console plays it and
+  separates its stems from it (`~/.pulsepro/straight`, ~30 MB a track). A grid you fixed or confirmed with
+  GRID OK is left alone; prepare says which tracks it straightened and the benchmark lists them.
 - Loudness match: the incoming is lowered up to 6 dB, or raised up to 3 dB, to sit at the level of the
   track on air (by the body loudness the prepare stage measured).
 - Tempo glides (`backend/glide.py`): when the two tempos are more than 4% apart (up to 20%), they meet

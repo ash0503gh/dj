@@ -486,3 +486,54 @@ def test_mix_log_keeps_entries_newest_first(lib):
     got = client.get("/api/mix-log", params={"limit": 2}).json()["entries"]
     assert [e["label"] for e in got] == ["mix 2", "mix 1"]
     assert os.path.exists(os.path.join(os.environ["PULSE_DATA"], "mix_log.jsonl"))    # next to the library index
+
+
+@pytest.fixture
+def straightening(lib, monkeypatch):
+    """The straighten stage on, Rubber Band stood in for: the copy it writes is steady."""
+    monkeypatch.setitem(library.STAGES, "straighten", 1)
+    made = []
+
+    def fake_straighten(src, dst, an):
+        made.append(os.path.basename(src))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        open(dst, "wb").write(b"audio straight copy")
+        return {"points": 40, "spread_before_ms": an["grid_err_spread_ms"], "max_change_pct": 1.0}
+
+    monkeypatch.setattr(library.straightener, "straighten", fake_straighten)
+    return made
+
+
+def test_drifting_track_is_straightened_and_played_from_its_copy(lib, straightening):
+    music, calls = lib
+    (music / "w.mp3").write_bytes(b"audio w wander")      # its kicks wander 35 ms off the grid
+    (music / "s.mp3").write_bytes(b"audio s")
+    prep()
+    tracks = {t["title"]: t for t in library.ready_tracks()}
+    wid, sid = tracks["w.mp3"]["file_id"], tracks["s.mp3"]["file_id"]
+    assert straightening == ["w.mp3"]                     # only the drifting one, from its own file
+    w = library.get(wid)["analysis"]
+    assert w["straightened"]["spread_before_ms"] == 35.0 and w["straightened"]["spread_after_ms"] == 1.0
+    assert tracks["w.mp3"]["flags"] == []                 # no longer flagged
+    assert library.path_of(wid) == library.straight_path(wid)
+    # the copy analysed again by every stage before (what is played is what was analysed)
+    assert [c[0] for c in calls if c[1] == os.path.basename(library.straight_path(wid))] == \
+        ["beats_nn", "analysis", "key", "loudness", "grid_check"]
+    assert library.path_of(sid).endswith("s.mp3") and "straightened" not in library.get(sid)["analysis"]
+    calls.clear()
+    prep()
+    assert calls == [] and straightening == ["w.mp3"]     # nothing again: steady tracks are done too
+
+    from backend import server
+    track = TestClient(server.app).post("/api/load-preset", data={"file_id": wid}).json()["track"]
+    assert track["audio_url"].endswith("?straight=1")     # never a browser's cached drifting original
+
+
+def test_straightened_copy_gets_its_own_stems(with_stems, straightening):
+    music, calls, _ = with_stems
+    (music / "w.mp3").write_bytes(b"audio w wander")
+    prep()
+    wid = library.ready_tracks()[0]["file_id"]
+    copy = os.path.basename(library.straight_path(wid))
+    assert ("stems", copy) in calls and ("vocals", copy) in calls
+    assert library.get(wid)["analysis"]["vocal_source"] == "stems:htdemucs"

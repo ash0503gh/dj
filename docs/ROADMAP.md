@@ -136,7 +136,7 @@ The original plan:
 Done when: no benchmark mix has two lead vocals at full level together, and the console needs no
 network to mix.
 
-### Phase 5: Variable tempo, Tier 2 (M-L) · part 1 built (glides), part 2 (straightening drift) next
+### Phase 5: Variable tempo, Tier 2 (M-L) · built (glides; straightening drift), to verify on the Mac
 
 Part 1, built: tempo glides. Tempos more than 4% apart (up to 20%, either way round) meet halfway: the
 outgoing glides to the geometric mean of the two tempos over the 8-32 bars before the blend (at most 0.5%
@@ -151,6 +151,20 @@ tempo ratio; the planner plans on the deck as it will run after the glide, so th
 renders exactly what plays (the outgoing's keylocked copy at the mix tempo). Track suggestions and the
 benchmark's PAIRS line count blends up to 20% apart. A glide is a ~30-60 s window, rendered outside the
 queue of whole-track renders; one that isn't in time cancels the mix (the deck plays on).
+
+Part 2, built: live-played tracks put on a steady beat (`backend/straighten.py`, the prepare pipeline's
+straighten stage, after the grid check). A track whose kicks wander more than 20 ms off its one grid is
+followed kick by kick (each beat looked for within a quarter beat of where the last one and the local
+tempo put it; the grid check alone can't follow a drift of a few BPM: its kicks move more than a quarter
+beat off the one grid and it reads the wrong ones). A point every bar (a line through the kicks of it and
+its neighbours, misread kicks left out) maps the track onto one grid at its average tempo, and Rubber Band
+renders it along the map once, keylocked. The copy is analysed again by every stage before (neural beats,
+analysis, key, loudness, grid check) and separated into stems; the console plays it (under another URL,
+so no browser plays a cached original) and its renders are named apart from the file's. On synthetic
+live tracks (124 to 127 BPM, 122 to 125): kicks off the grid 217 and 190 ms before, 0.4 and 1.0 ms after,
+the length unchanged; a steady track isn't touched, a bar of misread kicks bends nothing, a sudden 20%
+tempo jump is refused (not drift). In a live mix the straightened track blended (16 bars, 94%). Its
+first real runs are the Mac's: the benchmark's LIBRARY line lists what was straightened.
 
 The original plan:
 - Keylocked tempo ramps rendered with Rubber Band time maps (`rubberband --timemap`): the outgoing eases

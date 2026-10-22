@@ -372,8 +372,10 @@ async def load_preset(file_id: str = Form(...), deck: str = Form("deck_1")):
             raise HTTPException(status_code=404, detail=f"Not in the library: {file_id}")
         if row["status"] != "ready" or not row["analysis"]:
             raise HTTPException(status_code=409, detail=f"{row['title']} isn't prepared yet ({row['status']})")
+        # A straightened track plays its copy: another URL, so a browser never plays a cached original
+        st = (row["analysis"] or {}).get("straightened")
         data = dict(row["analysis"], file_id=fid, deck=deck, flags=row["flags"],
-                    audio_url=f"/api/audio/{urllib.parse.quote(fid)}",
+                    audio_url=f"/api/audio/{urllib.parse.quote(fid)}" + (f"?straight={st.get('version', 1)}" if st else ""),
                     stems=track_stems.have(library.stems_folder(fid)))
         return JSONResponse(content={"status": "success", "track": data})
     load_cache_from_disk()
@@ -1161,7 +1163,8 @@ async def get_audio(filename: str):
     if not path:
         raise HTTPException(status_code=404, detail=f"File not found: {filename}")
 
-    media = "audio/mpeg" if path.lower().endswith(".mp3") else "audio/wav"
+    media = {".mp3": "audio/mpeg", ".flac": "audio/flac", ".m4a": "audio/mp4", ".aac": "audio/aac",
+             ".ogg": "audio/ogg"}.get(os.path.splitext(path)[1].lower(), "audio/wav")
     headers = {
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
@@ -1192,8 +1195,16 @@ async def _track_name(file_id: str, path: str) -> str:
     import urllib.parse
     fid = urllib.parse.unquote(file_id)
     if library.enabled() and await run_in_threadpool(library.get, fid):
-        return fid
+        return _render_name(fid, path)
     return os.path.basename(path)
+
+
+def _render_name(fid: str, path: str) -> str:
+    """A library track's renders (keylocked copies, glides, stem windows) are named by its id, and by
+    its straightened copy's when that is what it plays: renders of the drifting file are never reused."""
+    if library.enabled() and os.path.dirname(os.path.abspath(path)) == os.path.dirname(library.straight_path(fid)):
+        return f"{fid}#straight"
+    return fid
 
 
 async def _keylocked(path: str, fid: str, ratio: float) -> str:
@@ -1310,13 +1321,14 @@ async def track_layers(file_id: str, ratio: float = 1.0, start: float = 0.0, end
         raise HTTPException(status_code=404, detail="No stems for this track")
     path = await local_track(fid)
     ratio = round(ratio, 6)
+    name = _render_name(fid, path)
     reference = path
     if abs(ratio - 1) >= 0.0005:
-        reference = stretched_path(path, ratio, STRETCH_DIR, name=fid)
+        reference = stretched_path(path, ratio, STRETCH_DIR, name=name)
         if not os.path.exists(reference):
             grid = ((await get_cached_analysis(fid)) or {}).get("grid")
-            reference = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid, name=fid)
-    key = hashlib.sha1(f"{fid}|{ratio}|{start:.3f}|{end:.3f}".encode()).hexdigest()[:16]
+            reference = await heavy(stretch_file, path, ratio, STRETCH_DIR, grid, name=name)
+    key = hashlib.sha1(f"{name}|{ratio}|{start:.3f}|{end:.3f}".encode()).hexdigest()[:16]
     dst = os.path.join(OUTPUT_DIR, "layers", f"{key}.flac")
     out = await heavy(track_stems.layers_file, folder, reference, ratio, start, end, dst)
     # Keep the disk bounded: the last 16 windows

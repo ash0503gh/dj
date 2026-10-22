@@ -50,6 +50,10 @@ def library_report(analyses: List[Dict[str, Any]]) -> Dict[str, Any]:
         "grid_checked": len(spreads),
         "grid_wander_ms": {"median": _pct(spreads, 50), "p90": _pct(spreads, 90), "max": _pct(spreads, 100)},
         "grid_drift_tracks": len(flagged),
+        # Put on a steady beat (straighten.py): how far their kicks wandered before and after
+        "straightened": [{"title": a.get("title"), "before_ms": a["straightened"].get("spread_before_ms"),
+                          "after_ms": a["straightened"].get("spread_after_ms")}
+                         for a in analyses if a.get("straightened")],
         "worst_grids": [{"title": a.get("title"), "spread_ms": a.get("grid_err_spread_ms")}
                         for a in sorted(flagged, key=lambda a: -(a.get("grid_err_spread_ms") or 0))[:5]],
         "body_lufs": {"p10": _pct(body, 10), "median": _pct(body, 50), "p90": _pct(body, 90)},
@@ -190,7 +194,10 @@ def _fmt(rep: Dict[str, Any]) -> str:
         f"  kicks off the grid across a track: median {L['grid_wander_ms']['median']} ms, "
         f"p90 {L['grid_wander_ms']['p90']} ms, worst {L['grid_wander_ms']['max']} ms; "
         f"{L['grid_drift_tracks']} tracks flagged",
-    ] + [f"    {w['title']}: {w['spread_ms']} ms" for w in L["worst_grids"]] + [
+    ] + [f"    {w['title']}: {w['spread_ms']} ms" for w in L["worst_grids"]] + (
+        [f"  straightened (live-played, put on a steady beat): {len(L['straightened'])} tracks"]
+        + [f"    {s['title']}: {s['before_ms']} -> {s['after_ms']} ms" for s in L["straightened"][:5]]
+        if L["straightened"] else []) + [
         f"  body loudness: p10 {L['body_lufs']['p10']} / median {L['body_lufs']['median']} / "
         f"p90 {L['body_lufs']['p90']} LUFS; {L['past_trim_reach']} tracks past the trim's 6 dB",
         (f"TAGS  key tags on {T['key_tagged']} tracks: key now "

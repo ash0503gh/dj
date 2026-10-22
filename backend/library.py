@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional
 from .audio_analyzer import analyze_track, build_grid_times, ANALYSIS_VERSION
 from .vocal_listen import carry_vocal_labels
 from .grid_check import check_track, DRIFT_FLAG_MS
-from . import beats_nn, key_detect, next_track, stems
+from . import beats_nn, key_detect, next_track, stems, straighten as straightener
 
 AUDIO_EXTS = (".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac")
 
@@ -51,7 +51,7 @@ def _stages() -> Dict[str, int]:
     st["analysis"] = ANALYSIS_VERSION
     if key_detect.available():
         st["key"] = 1
-    st.update(loudness=2, grid_check=1)
+    st.update(loudness=2, grid_check=1, straighten=1)
     if stems.available():
         st.update(stems=1, vocals=1)
     return st
@@ -61,16 +61,38 @@ STAGES = _stages()
 # A stage re-runs after one it builds on has run: the analysis takes the neural beats as a second
 # opinion, the key replaces the analysis's, the grid check measures the analysis's grid
 AFTER = {"analysis": ("beats_nn",), "key": ("analysis",), "grid_check": ("analysis",),
-         "vocals": ("analysis", "stems")}   # the vocal stem labels the analysis's sections and bars
+         "straighten": ("grid_check",),     # a drifting grid is straightened once it is measured
+         "stems": ("straighten",),          # a straightened copy is separated again (in the stems pass)
+         "vocals": ("analysis", "stems", "straighten")}   # the vocal stem labels the analysis's sections and bars
 # Stages a track is ready without (it keeps the analyzer's own grid decisions, key and vocal guess):
 # tried again at the next prepare when they fail
-OPTIONAL = {"beats_nn", "key", "stems", "vocals"}
+OPTIONAL = {"beats_nn", "key", "straighten", "stems", "vocals"}
 # Stages that fill the GPU and memory on their own: one track at a time, after the others
 SEQUENTIAL = {"stems"}
 
 
 class SkipStage(Exception):
     """A stage with nothing to work on yet (the vocals before the stems exist): neither run nor failed."""
+
+
+class Unchanged(Exception):
+    """A stage that ran and found nothing to change (a steady track's straighten): its version is kept,
+    and the stages that build on it don't run again."""
+
+
+# The stages a straightened copy is analysed again with (straighten): those before it
+REANALYSE = ("beats_nn", "analysis", "key", "loudness", "grid_check")
+
+
+def straight_path(file_id: str) -> str:
+    """The straightened copy of a drifting track (straighten.py), kept with the stems."""
+    return os.path.join(os.path.dirname(db_path()), "straight", f"{file_id}.flac")
+
+
+def source_of(file_id: str, path: str, an: Optional[Dict[str, Any]]) -> str:
+    """What a track is played and analysed from: its straightened copy when it has one, else its file."""
+    sp = straight_path(file_id) if file_id else ""
+    return sp if an and an.get("straightened") and sp and os.path.exists(sp) else path
 
 
 def stems_folder(file_id: str) -> str:
@@ -371,7 +393,53 @@ def _run_stage(stage: str, path: str, an: Dict[str, Any], prior: Optional[Dict[s
         if not stems.have(folder):
             raise SkipStage()
         stems.label_vocals(an, stems.sung_frames(stems.paths(folder)["vocals"], path))
+    elif stage == "straighten":
+        an = _straighten(path, an, prior, file_id)
     return an
+
+
+def _straighten(path: str, an: Dict[str, Any], prior: Optional[Dict[str, Any]], file_id: str) -> Dict[str, Any]:
+    """A track whose kicks wander off its grid, rendered on a steady beat (straighten.py) and analysed
+    again from the copy, which it is played and separated from from then on. `path` is always the file
+    itself; `an` is the analysis of what the track plays now (the copy, when it has one)."""
+    dst = straight_path(file_id)
+    done = an.get("straightened")
+    if done and os.path.exists(dst) and done.get("version") == STAGES.get("straighten"):
+        raise Unchanged()                    # straightened before, and the analysis in hand is the copy's
+    original = an
+    if done:                                 # the analysis in hand is an older copy's: measure the file again
+        original = {k: v for k, v in an.items() if k != "straightened"}
+        for stage in ("analysis", "grid_check"):
+            original = _run_stage(stage, path, original, prior, file_id)
+    if not straightener.drifting(original):
+        if os.path.exists(dst):
+            os.remove(dst)
+        if not done:
+            raise Unchanged()                # steady: nothing to do
+        original.pop("straightened", None)
+        return original                      # steady now (a better analysis): played as it is again
+    info = straightener.straighten(path, dst, original)
+    if info is None:                         # too few clear kicks, or a misread: left as it is (still flagged)
+        if os.path.exists(dst):
+            os.remove(dst)
+        original.pop("straightened", None)
+        if not done:
+            raise Unchanged()
+        return original
+    # The copy, analysed by the stages before this one (the neural beats too: the file's are off by the drift)
+    copy = {k: v for k, v in original.items() if k not in ("nn_beats", "nn_downbeats", "nn_bpm", "straightened")}
+    for stage in REANALYSE:
+        if stage not in STAGES:
+            continue
+        try:
+            copy = _run_stage(stage, dst, copy, prior, file_id)
+        except Exception:
+            if stage not in OPTIONAL:
+                raise
+    info.update(version=STAGES.get("straighten"), spread_after_ms=copy.get("grid_err_spread_ms"),
+                bpm_before=round(float(original.get("bpm") or 0), 2))
+    copy["straightened"] = info
+    return copy
 
 
 def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]], file_id: str = ""):
@@ -380,20 +448,29 @@ def _prepare_one(path: str, todo: List[str], prior: Optional[Dict[str, Any]], fi
     seconds it took)."""
     t0 = time.time()
     an = dict(prior or {})
-    ran, failed = [], {}
+    ran, changed, failed = [], [], {}
     for stage in STAGES:
-        if stage not in todo and not any(d in ran for d in AFTER.get(stage, ())):
+        if stage not in todo and not any(d in changed for d in AFTER.get(stage, ())):
             continue
+        if stage in SEQUENTIAL and stage not in todo:
+            continue                       # its own pass (one track at a time) picks it up: see redo
+        # Every stage but straighten reads what the track plays: its straightened copy when it has one
+        src = path if stage == "straighten" else source_of(file_id, path, an)
         try:
-            an = _run_stage(stage, path, an, prior, file_id)
+            an = _run_stage(stage, src, an, prior, file_id)
             ran.append(stage)
+            changed.append(stage)
         except SkipStage:
             continue
+        except Unchanged:
+            ran.append(stage)
         except Exception as e:
             if stage not in OPTIONAL:
                 raise
             failed[stage] = str(e) or type(e).__name__
-    return an, ran, failed, time.time() - t0
+    # A new copy: its stems (and vocal labels) are done again, in the stems pass
+    redo = [s for s in SEQUENTIAL | {"vocals"} if "straighten" in changed and s not in ran]
+    return an, ran, failed, time.time() - t0, redo
 
 
 def _uploaded_labels() -> Dict[str, Dict[str, Any]]:
@@ -558,8 +635,8 @@ def _run_jobs(con: sqlite3.Connection, jobs: list, workers: int, log) -> None:
         file_id, _, todo, prior, stages, sha, title = job
         failed, secs = {}, 0.0
         if err is None:
-            an, ran, failed, secs = result
-            stages = dict(stages, **{s: STAGES[s] for s in ran})
+            an, ran, failed, secs, redo = result
+            stages = dict({k: v for k, v in stages.items() if k not in redo}, **{s: STAGES[s] for s in ran})
             an.update(file_id=file_id, title=title, content_sha1=sha)
         else:
             an = prior if prior and prior.get("file_id") == file_id else {}   # not an upload's labels
@@ -571,7 +648,10 @@ def _run_jobs(con: sqlite3.Connection, jobs: list, workers: int, log) -> None:
             what = (f"stems in {secs:.0f} s, vocals in {sung}/{len(an.get('section_map', []))} sections"
                     if "stems" in ran else "no stems")
         else:
+            st = an.get("straightened") if "straighten" in ran else None
             what = (f"{float(an.get('bpm') or 0):.2f} BPM, {an.get('camelot', '--')}, {an.get('loudness_lufs', '?')} LUFS"
+                    + (f", straightened (kicks wandered {st.get('spread_before_ms')} ms, now {st.get('spread_after_ms')} ms)"
+                       if st else "")
                     + (f", check: {', '.join(flags_for(an))}" if flags_for(an) else ""))
         what += "".join(f", {s} skipped: {why}" for s, why in failed.items()) if err is None else ""
         log(f"[{n}/{len(jobs)}] {title} · {what}")
@@ -625,9 +705,14 @@ def get(file_id: str) -> Optional[Dict[str, Any]]:
 
 
 def path_of(file_id: str) -> Optional[str]:
+    """The audio the console plays for a track: its straightened copy when it has one, else its file."""
     with closing(_connect()) as con:
-        r = con.execute("SELECT path FROM tracks WHERE file_id = ? AND status != 'missing'", (file_id,)).fetchone()
-    return r["path"] if r and os.path.exists(r["path"]) else None
+        r = con.execute("SELECT path, analysis FROM tracks WHERE file_id = ? AND status != 'missing'",
+                        (file_id,)).fetchone()
+    if not r or not os.path.exists(r["path"]):
+        return None
+    an = json.loads(r["analysis"]) if r["analysis"] else None
+    return source_of(file_id, r["path"], an)
 
 
 _SUNG: Dict[str, Any] = {}       # file_id -> (updated, share of the track sung, or None): parsed once per change
